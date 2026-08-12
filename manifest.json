@@ -16,7 +16,6 @@
   "dependencies": [],
   "optional_dependencies": [],
   "conflicts": [],
-  "github": "Deftones565/gen1recomp-mod-stadium2-importer",
   "affects_link": false,
   "description": "Pokemon Stadium 2 extractor and renderer with owned 3D battle presentation for Gen 1 and Gen 2."
 }

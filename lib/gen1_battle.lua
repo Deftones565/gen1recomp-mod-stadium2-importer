@@ -10,6 +10,7 @@ local Actor = require("mods.STADIUM2_IMPORTER.lib.battle_actor")
 local Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
 local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
+local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 
 local Gen1={COUNT=251}
 local modRef,installed,session
@@ -245,6 +246,10 @@ local function active(battle)
   return session and battle and session.battle==battle and session or nil
 end
 
+
+-- Native trainer portraits use opaque cartridge paper. The shared helper
+-- removes only their edge-connected paper when they are drawn over Stadium.
+
 local function withFullPaperRemoved(fn)
   local g=love and love.graphics
   if not (g and g.rectangle and g.getColor) then return fn() end
@@ -425,6 +430,19 @@ local function installHooks()
     self.stadium2ImporterGen1Shot=nil
     if not ok then error(result,0) end
     return result
+  end
+
+  originals.picImage=BattleState.picImage
+  function BattleState:picImage(img)
+    local rendered=originals.picImage(self,img)
+    if not active(self) then return rendered end
+    if self.showEnemyTrainer and img==self.trainerPic then
+      return TrainerSprite.keyed(self.trainerPic,rendered)
+    end
+    if self.showPlayerBack and img==self.playerBackPic then
+      return TrainerSprite.keyed(self.playerBackPic,rendered)
+    end
+    return rendered
   end
 
   originals.drawPicsLayer=BattleState.drawPicsLayer

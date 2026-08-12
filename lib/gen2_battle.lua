@@ -9,6 +9,7 @@ local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
 local Actor = require("mods.STADIUM2_IMPORTER.lib.battle_actor")
 local Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
+local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local Unown = require("src.core.gen2.Unown")
 
 local Gen2 = { COUNT = 251 }
@@ -343,12 +344,39 @@ local function installScreenHooks()
   BattleState.stadium2ImporterGen2 = true
 
   local originalPic = BattleState.drawPic
+
+  -- Gold's opponent trainer sheets are the odd one out in the Gen 2 import:
+  -- Chris/Dude backpics go through writeCompressedPic(), which mattes
+  -- edge-connected shade 0, but TrainerPicPointers are decoded with plain
+  -- write2bpp(..., transparent=nil). The resulting battle/trainers/*.png files
+  -- therefore contain an opaque white rectangle. Fix the loaded screen images
+  -- themselves from their asset paths once, before any intro compositor sees
+  -- them. That makes every native draw path (including presentSlide's baked BG
+  -- bands) consume the same cutout image; no love.graphics.draw interception
+  -- or GPU readback is involved.
+  local function prepareTrainerImages(screen)
+    if not screen or screen.stadium2ImporterTrainerImagesPrepared then return end
+    screen.stadium2ImporterTrainerImagesPrepared = true
+    if screen.enemyTrainerImage and screen.enemyTrainerPath then
+      screen.enemyTrainerImage = TrainerSprite.fromPath(
+        screen.enemyTrainerPath, screen.enemyTrainerImage, "shade0")
+    end
+    -- Current Chris/Dude imports are already matted, but keep this for old
+    -- caches and asset overrides. fromPath is a no-op when no edge paper exists.
+    if screen.playerBackImage and screen.playerBackPath
+        and not screen.playerBackTrueColor then
+      screen.playerBackImage = TrainerSprite.fromPath(
+        screen.playerBackPath, screen.playerBackImage, "shade0")
+    end
+  end
+
   function BattleState:drawPic(mon, back)
     local scene = active(self)
     local side = back and "player" or "enemy"
     if scene then
       scene.screen = self
       scene:sync()
+      prepareTrainerImages(self)
       if scene:ownsSlot(side, self) then return end
     end
     return originalPic(self, mon, back)
@@ -390,6 +418,7 @@ local function installScreenHooks()
     if not scene then return originalWide(self,width,height) end
     scene.screen = self
     scene:sync()
+    prepareTrainerImages(self)
     -- Resize/orientation changes can occur between the fixed update and the
     -- presentation pass on Android.  Rebuild immediately when the actual
     -- widescreen rect changes so the HUD, glass panels, camera and projected
