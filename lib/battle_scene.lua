@@ -154,8 +154,8 @@ function Scene:render(requestedWidth,requestedHeight)
     if self.depth then g.setCanvas({self.canvas,depthstencil=self.depth})
     else g.setCanvas(self.canvas) end
     self.environment=Sky.resolve(self:environmentGame())
-    Sky.draw(g,renderWidth,renderHeight,self.environment)
     local frame=Camera.frame(width,height)
+    Sky.draw(g,renderWidth,renderHeight,self.environment,frame)
     local vp=frame.vp
     self.hudBox=frame.letterbox
     local matrices,drawActors={},{}

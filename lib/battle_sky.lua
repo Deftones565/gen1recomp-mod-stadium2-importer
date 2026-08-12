@@ -2,6 +2,7 @@ local okPalettes, Palettes = pcall(require,"src.world.gen2.Palettes")
 if not okPalettes then Palettes=nil end
 
 local Sky = {}
+local gradientMesh, gradientCount
 
 local PRESETS = {
   MORN={bands={{.18,.19,.32},{.34,.30,.43},{.62,.46,.48},{.90,.67,.48},{.98,.79,.58}},
@@ -78,7 +79,14 @@ local function outdoorAt(hour)
   out.shadowStrength=day and (.42+.58*elevation) or (.24+.20*elevation)
   out.orbKind=day and "sun" or "moon"
   out.orbX=.12+.76*phase
-  out.orbY=.30-.19*elevation
+  out.orbY=.20-.13*elevation
+  local azimuth=math.rad(-137.7)+(phase-.5)*math.rad(90)
+  local radius=150
+  out.orbWorld={
+    math.cos(azimuth)*radius,
+    38+62*math.sin(math.pi*phase),
+    math.sin(azimuth)*radius,
+  }
   return out
 end
 
@@ -117,26 +125,94 @@ function Sky.resolve(game)
   return result
 end
 
-function Sky.draw(g, width, height, env)
+local function projectOrb(frame,width,height,point)
+  local vp=frame and frame.vp
+  if not (vp and point) then return nil end
+  local x,y,z=point[1],point[2],point[3]
+  local cx=vp[1]*x+vp[2]*y+vp[3]*z+vp[4]
+  local cy=vp[5]*x+vp[6]*y+vp[7]*z+vp[8]
+  local cw=vp[13]*x+vp[14]*y+vp[15]*z+vp[16]
+  if cw<=.001 then return nil end
+  return (cx/cw*.5+.5)*width,(cy/cw*.5+.5)*height
+end
+
+local function drawSun(g,x,y,r,c,a)
+  g.setColor(c[1],c[2],c[3],a*.08)
+  g.circle("fill",x,y,r*2.25,64)
+  g.setColor(c[1],c[2],c[3],a*.14)
+  g.circle("fill",x,y,r*1.65,64)
+  g.setColor(c[1],c[2],c[3],a*.24)
+  g.circle("fill",x,y,r*1.22,64)
+  g.setColor(1,.90,.58,.94)
+  g.circle("fill",x,y,r*.96,64)
+  g.setColor(1,.98,.82,.90)
+  g.circle("fill",x-r*.10,y-r*.10,r*.58,64)
+  g.setColor(1,1,.94,.52)
+  g.circle("fill",x-r*.18,y-r*.18,r*.16,32)
+end
+
+local function drawMoon(g,x,y,r,c,a)
+  g.setColor(c[1],c[2],c[3],a*.10)
+  g.circle("fill",x,y,r*2.7,64)
+  g.setColor(c[1],c[2],c[3],a*.18)
+  g.circle("fill",x,y,r*1.9,64)
+  g.setColor(.68,.76,.90,.85)
+  g.circle("fill",x,y,r*1.04,64)
+  g.setColor(.93,.96,1,.98)
+  g.circle("fill",x,y,r,64)
+  g.setColor(.73,.79,.88,.25)
+  g.circle("fill",x-r*.28,y-r*.18,r*.25,40)
+  g.circle("fill",x+r*.29,y+r*.12,r*.18,40)
+  g.circle("fill",x-r*.05,y+r*.36,r*.13,32)
+  g.circle("fill",x+r*.18,y-r*.38,r*.10,32)
+  g.setColor(1,1,1,.28)
+  g.circle("fill",x-r*.18,y-r*.28,r*.20,40)
+end
+
+function Sky.draw(g, width, height, env, frame)
   local bands = env.bands
   g.setShader()
   if g.setDepthMode then g.setDepthMode("always",false) end
   g.clear(bands[1][1],bands[1][2],bands[1][3],1,true,true)
-  local bh = height / #bands
+  local vertices={}
+  local last=math.max(1,#bands-1)
   for i,c in ipairs(bands) do
-    g.setColor(c[1],c[2],c[3],1)
-    g.rectangle("fill",0,(i-1)*bh,width,bh+1)
+    local y=(i-1)/last*height
+    vertices[#vertices+1]={0,y,0,0,c[1],c[2],c[3],1}
+    vertices[#vertices+1]={width,y,1,0,c[1],c[2],c[3],1}
+  end
+  if g.newMesh and g.draw then
+    if not gradientMesh or gradientCount~=#vertices then
+      if gradientMesh and gradientMesh.release then pcall(gradientMesh.release,gradientMesh) end
+      gradientMesh=g.newMesh(vertices,"strip","stream")
+      gradientCount=#vertices
+    else
+      gradientMesh:setVertices(vertices)
+    end
+    g.setColor(1,1,1,1)
+    g.draw(gradientMesh)
+  else
+    for y=0,height-1 do
+      local p=(height>1 and y/(height-1) or 0)*last
+      local i=math.min(#bands-1,math.floor(p)+1)
+      local t=p-math.floor(p)
+      local a,b=bands[i],bands[math.min(#bands,i+1)]
+      g.setColor(a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t,a[3]+(b[3]-a[3])*t,1)
+      g.rectangle("fill",0,y,width,1)
+    end
   end
   if env.outdoor and env.orb then
-    local night = env.orbKind=="moon" or env.daytime == "NITE"
-    local x, y = width*(env.orbX or (night and .24 or .78)),
-      height*(env.orbY or .19)
-    g.setColor(env.orb[1],env.orb[2],env.orb[3],env.orb[4])
-    g.circle("fill",x,y,math.max(8,height*.035),40)
-    if night then
-      g.setColor(bands[2][1],bands[2][2],bands[2][3],.9)
-      g.circle("fill",x+height*.012,y-height*.006,math.max(7,height*.031),40)
+    local night=env.orbKind=="moon" or env.daytime=="NITE"
+    local x,y=projectOrb(frame,width,height,env.orbWorld)
+    if not x then
+      x=width*(env.orbX or (night and .24 or .78))
+      y=height*(env.orbY or .19)
     end
+    local r=math.max(10,height*.036)
+    if not night then r=r*.68 end
+    local a=math.max(.2,math.min(1,env.orb[4] or .3))
+    if night then drawMoon(g,x,y,r,env.orb,a)
+    else drawSun(g,x,y,r,env.orb,a) end
   end
   g.setColor(1,1,1,1)
 end

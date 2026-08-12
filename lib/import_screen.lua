@@ -114,7 +114,7 @@ function Screen:draw()
 
   if status.state == "picking" then
     centre("CHOOSE STADIUM 2 ROM", 50)
-    centre("SYSTEM FILE PICKER", 70)
+    centre("ANDROID FILE PICKER", 70)
     centre("RETURN HERE WHEN DONE", 102)
     g.setColor(1, 1, 1, 1)
     return
@@ -140,6 +140,7 @@ function Screen:draw()
   centre(("%3d%%"):format(math.floor(clamp(status.progress) * 100 + 0.5)), 91)
   centre(("%d/%d COMPLETE"):format(status.done or 0,
     status.total or 0), 105)
+  centre("DO NOT CLOSE THE GAME", 121)
   g.setColor(1, 1, 1, 1)
 end
 
