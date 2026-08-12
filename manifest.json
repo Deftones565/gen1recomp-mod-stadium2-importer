@@ -1,7 +1,7 @@
 {
   "id": "STADIUM2_IMPORTER",
   "name": "Pokemon Stadium 2 Importer",
-  "version": "0.9.21",
+  "version": "0.10.0",
   "api": 2,
   "games": ["gen1", "gen2"],
   "entry": "main.lua",
@@ -17,5 +17,5 @@
   "optional_dependencies": [],
   "conflicts": [],
   "affects_link": false,
-  "description": "Pokemon Stadium 2 extractor and renderer with native Gen 2 battle integration."
+  "description": "Pokemon Stadium 2 extractor and renderer with owned 3D battle presentation for Gen 1 and Gen 2."
 }

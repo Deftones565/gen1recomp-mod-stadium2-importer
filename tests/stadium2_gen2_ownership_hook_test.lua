@@ -1,5 +1,16 @@
 package.path="./?.lua;./?/init.lua;"..package.path
 
+local unownOk=pcall(require,"src.core.gen2.Unown")
+if not unownOk then
+  package.preload["src.core.gen2.Unown"]=function()
+    return {
+      index=function(value) return type(value)=="number" and value or nil end,
+      letterFromDVs=function() return 1 end,
+      name=function(index) return string.char(64+(tonumber(index) or 1)) end,
+    }
+  end
+end
+
 local calls={pic=0,wide=0,mouse=0,wheel=0,objects=0,scene=0,hud=0,modal=0,composite=0,lastRunner=nil}
 local BattleState={
   drawPic=function() calls.pic=calls.pic+1 end,
@@ -21,6 +32,7 @@ local Game2={keypressed=function() end,
 package.loaded["src.ui.gen2.BattleState"]=BattleState
 package.loaded["src.ui.gen2.BattleAnimView"]=View
 package.loaded["src.core.Game2"]=Game2
+package.loaded["src.core.TouchControls"]={hitTest=function() return false end}
 
 love={graphics={
   clear=function() end,setColor=function() end,draw=function() end,rectangle=function() end,

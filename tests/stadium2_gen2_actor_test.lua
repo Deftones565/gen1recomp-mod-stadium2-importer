@@ -1,5 +1,16 @@
 package.path="./?.lua;./?/init.lua;"..package.path
 
+local unownOk=pcall(require,"src.core.gen2.Unown")
+if not unownOk then
+  package.preload["src.core.gen2.Unown"]=function()
+    return {
+      index=function(value) return type(value)=="number" and value or nil end,
+      letterFromDVs=function() return 1 end,
+      name=function(index) return string.char(64+(tonumber(index) or 1)) end,
+    }
+  end
+end
+
 local Gen2=require("mods.STADIUM2_IMPORTER.lib.gen2_battle")
 local Pack=require("mods.STADIUM2_IMPORTER.lib.pack")
 local Importer=require("mods.STADIUM2_IMPORTER.lib.importer")

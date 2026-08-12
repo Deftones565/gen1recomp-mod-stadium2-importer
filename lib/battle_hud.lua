@@ -322,7 +322,7 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
   local box,s=layout.box,layout.scale
   -- The detached Stadium HUD follows REAL battle visibility only.  Do not
   -- inherit BattleAnimClearHud here: that flag exists to blank the attacker's
-  -- native BG HUD while a 2D move animation owns those tiles.  Dramatic-style
+  -- native BG HUD while a 2D move animation owns those tiles.  Detached
   -- snapped status cards are outside that animation layer and stay visible.
   local enemyLive=screen.showEnemyHud and not screen.showEnemyTrainer
   local playerLive=screen.showPlayerHud and not screen.showPlayerTrainer
@@ -375,6 +375,10 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
   end
   return true
 end
+
+Hud.panel = panel
+Hud.restoreSceneRect = restoreSceneRect
+Hud.gaugeShader = getGaugeShader
 
 function Hud.invalidate()
   release(frost);release(blurA);release(blurB);release(gaugeShader)

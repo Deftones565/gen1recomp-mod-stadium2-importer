@@ -1,4 +1,5 @@
-local Palettes = require("src.world.gen2.Palettes")
+local okPalettes, Palettes = pcall(require,"src.world.gen2.Palettes")
+if not okPalettes then Palettes=nil end
 
 local Sky = {}
 
@@ -96,8 +97,14 @@ function Sky.resolve(game)
     if ok then minute=tonumber(value) or 0 end
   end
   local clock=(tonumber(hour) or 12)+minute/60
-  local daytime = world and world.daytime
-    or Palettes.daytimeFor(def, hour, world and world.flashUsed)
+  local daytime=world and world.daytime
+  if not daytime and Palettes and Palettes.daytimeFor then
+    daytime=Palettes.daytimeFor(def,hour,world and world.flashUsed)
+  end
+  if not daytime then
+    local h=(tonumber(hour) or 12)%24
+    daytime=(h>=6 and h<10) and "MORN" or (h>=10 and h<19) and "DAY" or "NITE"
+  end
   local outdoor = env == "TOWN" or env == "ROUTE"
   local preset
   if outdoor then preset = outdoorAt(clock)

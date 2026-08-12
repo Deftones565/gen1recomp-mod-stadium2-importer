@@ -5,19 +5,15 @@
 -- records themselves (not Gen 1 battler wrappers).  Keep that distinction in
 -- one module so Gen 2 battle ownership stays isolated from Gen 1.
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
-local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
 local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
-local Stage = require("mods.STADIUM2_IMPORTER.lib.battle_stage")
-local Shadow = require("mods.STADIUM2_IMPORTER.lib.battle_shadow")
-local Sky = require("mods.STADIUM2_IMPORTER.lib.battle_sky")
+local Actor = require("mods.STADIUM2_IMPORTER.lib.battle_actor")
+local Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
-local AA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
 local Unown = require("src.core.gen2.Unown")
 
 local Gen2 = { COUNT = 251 }
 local modRef, installed, session
 local configured = 251
-local unpack = table.unpack or unpack
 
 local function clamp(value, lo, hi)
   return math.max(lo, math.min(hi, tonumber(value) or lo))
@@ -56,176 +52,34 @@ local function unownPack(mon,dex,variant)
   return variant=="shiny" and (name.."_shiny") or name
 end
 
-local Actor = {}
-Actor.__index = Actor
-local STATE_RANK={idle=0,entrance=1,attack=2,attack_default=2,faint=3}
-
-function Actor.new(side)
-  return setmetatable({ side=side, mon=nil, dex=nil, variant=nil,
-    renderer=nil, context="idle", callbackFrame=0, grow=nil, flash=0,
-    faintFinished=false, pendingFaint=false, failedFor=nil,failedForm=nil,
-    form=nil }, Actor)
-end
-
-function Actor:release()
-  if self.renderer and self.renderer.release then
-    pcall(self.renderer.release, self.renderer)
-  end
-  self.renderer, self.mon, self.dex, self.variant, self.form = nil,nil,nil,nil,nil
-  self.grow, self.flash, self.faintFinished = nil, 0, false
-  self.pendingFaint = false
-  self.context, self.callbackFrame = "idle", 0
-end
-
-function Actor:retire(reason)
-  -- A battle actor never turns a renderer failure into permission for Gold's
-  -- native pic to come back.  Keep the rig resident so the last complete
-  -- owned frame remains usable and report the defect through the scene.
-  if reason then warn("Gen 2 battle model retired: "..tostring(reason)) end
-  return false
-end
-
-function Actor:play(context, loop)
-  if not self.renderer then return false end
-  local now,want=STATE_RANK[self.context] or 0,STATE_RANK[context] or 0
-  if self.context == "faint" or want<now then return false end
-  local actual=context
-  local ok = self.renderer:setContext(actual, loop)
-  if not ok and actual == "attack" then
-    actual="attack_default"
-    ok = self.renderer:setContext(actual, loop)
-  end
-  if not ok and actual ~= "idle" then
-    actual="idle"
-    ok = self.renderer:setContext("idle", true)
-  end
-  self.context = ok and actual or "idle"
-  if ok then self.renderer.finished = false end
-  return ok
-end
-
-function Actor:load(data, mon, forcedDex)
-  local dex = forcedDex or dexOf(data, mon)
-  local variant = shiny(mon) and "shiny" or "normal"
-  local form=unownPack(mon,dex,variant)
-  if not dex then self:release(); return false end
-  if self.renderer and self.mon == mon and self.dex == dex
-      and self.variant == variant and self.form==form then return true end
-  if self.failedFor == mon and self.dex == dex and self.failedForm==form then
-    return false
-  end
-  self:release()
-  local options={
-    textureFilter="nearest", anisotropy=4, flipY=false, anchorTravel=true,
-  }
-  local renderer,err
-  if form then renderer,err=Importer.newSpecialRenderer(form,options)
-  else renderer,err=Importer.newRenderer(dex,variant,options) end
-  self.mon,self.dex,self.variant,self.form=mon,dex,variant,form
-  if not renderer then
-    self.failedFor = mon
-    self.failedForm = form
-    warn(("Gen 2 battle model %03d (%s) unavailable: %s")
-      :format(dex, variant, tostring(err)))
-    return false
-  end
-  self.failedFor,self.failedForm=nil,nil
-  self.renderer = renderer
-  -- The reference renderer deliberately offsets the opponent's model-local
-  -- texture/FX clock so the pair do not blink and flicker in lockstep.
-  self.callbackFrame = self.side=="enemy" and 4 or 0
-  self:play("idle", true)
-  return true
-end
-
-function Actor:attack(moveIndex)
-  if not self.renderer or self.pendingFaint or self.context=="faint" then return false end
-  if (STATE_RANK[self.context] or 0)>STATE_RANK.attack then return false end
-  local ok = moveIndex and self.renderer:setMove(moveIndex, false) or false
-  if not ok then ok = self:play("attack", false) end
-  if ok then self.context = "attack" end
-  return ok
-end
-
-function Actor:entrance()
-  if self.context=="faint" then return false end
-  self.grow = { time=0, duration=0.65 }
-  self.faintFinished = false
-  self.pendingFaint = false
-  return self:play("entrance", false)
-end
-
-function Actor:faint()
-  if not self.renderer or self.context=="faint" then return false end
-  self.grow = nil
-  self.pendingFaint = false
-  self.faintFinished = false
-  return self:play("faint", false)
-end
-
-function Actor:scale()
-  if not self.grow then return 1 end
-  local t = clamp(self.grow.time / self.grow.duration, 0, 1)
-  -- Stadium's send-out settles at both ends instead of snapping into motion.
-  t=t*t*(3-2*t)
-  return t
-end
-
-function Actor:update(dt)
-  if not self.renderer then return end
-  if self.grow then
-    self.grow.time = self.grow.time + dt
-    if self.grow.time >= self.grow.duration then self.grow = nil end
-  end
-  self.flash = math.max(0, (self.flash or 0) - dt)
-  self.callbackFrame = self.callbackFrame + dt * 30
-  -- This is the path that advances texture swaps, material callbacks and
-  -- model-local FX such as Charmander's flame at Stadium's authored 30 Hz.
-  self.renderer:setHandlerRuntime({
-    callbackFrame=math.floor(self.callbackFrame),
-    frame=self.renderer.frame, textureFrame=self.renderer.frame,
-    species=self.dex,
-  }, true)
-  self.renderer:step(dt)
-  if self.renderer.finished then
-    if self.context == "faint" then
-      self.faintFinished = true
-    elseif self.context ~= "idle" then
-      self.context="idle"
-      self:play("idle", true)
-    end
-  end
-end
-
-local Scene = {}
+local Scene = setmetatable({}, {__index=Presentation})
 Scene.__index = Scene
 
+local function gen2ActorOptions()
+  return {warn=warn,dexOf=dexOf,shiny=shiny,formFor=unownPack,label="Gen 2 battle"}
+end
+
 function Scene.new(battle)
-  return setmetatable({ battle=battle, screen=nil,
-    actors={player=Actor.new("player"), enemy=Actor.new("enemy")},
-    substituteActors={player=Actor.new("player"),enemy=Actor.new("enemy")},
-    canvas=nil, presentCanvas=nil, depth=nil, width=0, height=0,
-    renderWidth=0, renderHeight=0,
-    stickX=0, stickY=0, hudBox=nil, uiAnchors=nil, environment=nil,
-    readyFrame=false, defect=nil, substituteActive={player=false,enemy=false},
-    vanish={player={active=false},enemy={active=false}},
-  }, Scene)
+  local actorOpts=gen2ActorOptions()
+  local self=setmetatable({},Scene)
+  Presentation.init(self,{
+    actors={player=Actor.new("player",actorOpts),enemy=Actor.new("enemy",actorOpts)},
+    warn=warn,label="Gen 2 battle",
+  })
+  self.battle=battle
+  self.screen=nil
+  self.substituteActors={
+    player=Actor.new("player",actorOpts),enemy=Actor.new("enemy",actorOpts),
+  }
+  self.substituteActive={player=false,enemy=false}
+  self.vanish={player={active=false},enemy={active=false}}
+  return self
 end
 
 function Scene:release()
-  self.actors.player:release()
-  self.actors.enemy:release()
   self.substituteActors.player:release()
   self.substituteActors.enemy:release()
-  if self.canvas and self.canvas.release then pcall(self.canvas.release, self.canvas) end
-  if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
-  self.canvas, self.depth = nil, nil
-  self.presentCanvas = nil
-  Stage.invalidate()
-  Shadow.release()
-  Hud.invalidate()
-  AA.release()
-  Camera.reset()
+  Presentation.release(self)
 end
 
 function Scene:shownMon(side)
@@ -439,56 +293,16 @@ function Scene:handleEvent(event)
   end
 end
 
-function Scene:ensureCanvas(width, height)
-  if self.canvas and self.renderWidth == width and self.renderHeight == height then return true end
-  if self.canvas and self.canvas.release then pcall(self.canvas.release, self.canvas) end
-  if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
-  local g = love and love.graphics
-  if not g then return false end
-  local msaa=0
-  local ok, canvas = pcall(g.newCanvas, width, height,
-    {format="rgba8", readable=true, dpiscale=1})
-  if not ok then
-    msaa=0
-    ok, canvas = pcall(g.newCanvas, width, height,
-      {format="rgba8", readable=true, dpiscale=1})
-  end
-  if not ok then warn(canvas); return false end
-  local depthOk, depth = pcall(g.newCanvas, width, height,
-    {format="depth24stencil8", readable=false, dpiscale=1, msaa=msaa})
-  if not depthOk then
-    depthOk, depth = pcall(g.newCanvas, width, height,
-      {format="depth24stencil8", readable=false, dpiscale=1})
-  end
-  self.canvas, self.depth = canvas, depthOk and depth or nil
-  self.renderWidth, self.renderHeight = width, height
-  canvas:setFilter("nearest", "nearest")
-  return true
-end
-
-local function mul(a, b) return Renderer.matMul(a, b) end
-local function translate(x, y, z)
-  return {1,0,0,x, 0,1,0,y, 0,0,1,z, 0,0,0,1}
-end
-local function scale(value)
-  return {value,0,0,0, 0,value,0,0, 0,0,value,0, 0,0,0,1}
-end
-local function rotateY(angle)
-  local c, s = math.cos(angle), math.sin(angle)
-  return {c,0,s,0, 0,1,0,0, -s,0,c,0, 0,0,0,1}
-end
-
--- Gold's ReturnMon/EnterMon resize scripts use three discrete pic sizes per
--- side.  During a Pokeball throw, follow those authored states with the 3D
--- model as a smooth piece of geometry rather than leaving it full-sized until
--- the final hidden bit.  Outside a ball animation Stadium's own entrance/faint
--- animation owns model scale, so this deliberately returns 1.
+-- Gold's ReturnMon BG effect shrinks the native pic through its authored
+-- 7x7/5x5/3x3 (enemy) or 6x6/4x4/2x2 (player) states.  The shared scene
+-- owns the model transform, so the Gen 2 adapter translates those exact pic
+-- states into a model scale while a ball throw is running.
 local PIC_SCALE = {
   player = { [0]=1, [1]=4/6, [2]=2/6 },
-  enemy  = { [3]=1, [4]=5/7, [5]=3/7 },
+  enemy = { [3]=1, [4]=5/7, [5]=3/7 },
 }
 
-function Scene:picScale(side,screen)
+function Scene:picScale(side, screen)
   screen=screen or self.screen
   if not (screen and screen.anim and screen.ballThrow and screen.animPicState) then
     return 1
@@ -497,152 +311,6 @@ function Scene:picScale(side,screen)
   if not ok or type(state)~="table" then return 1 end
   local size=tonumber(state.size)
   return (PIC_SCALE[side] and PIC_SCALE[side][size]) or 1
-end
-
-function Scene:modelMatrix(side,actor)
-  actor=actor or self.actors[side]
-  local metrics = actor.renderer:worldMetrics()
-  local worldHeight = clamp(14 * math.sqrt(metrics.height / 52.25), 5, 18)
-  local k = worldHeight / metrics.height * actor:scale() * self:picScale(side)
-  local p = Stage.positions[side]
-  local yaw = side == "player" and math.pi or 0
-  local hover = math.min(math.max(metrics.floor, 0), metrics.height * 0.5)
-  return mul(translate(p[1], p[2], p[3]),
-    mul(rotateY(yaw), mul(scale(k), translate(0, -(metrics.floor-hover), 0)))), yaw
-end
-
-local function surfaceDimensions(g, requestedWidth, requestedHeight)
-  if not g then return nil end
-
-  -- Gen1Recomp's Gen 2 presenter lays out every widescreen screen in LOVE
-  -- window units.  Framebuffer pixels are a separate metric on HiDPI/mobile
-  -- displays and must only decide render-target resolution, never HUD scale,
-  -- letterbox origin, or battle-animation anchors.
-  local windowWidth,windowHeight
-  if g.getDimensions then
-    local ok,w,h=pcall(g.getDimensions)
-    if ok then windowWidth,windowHeight=tonumber(w),tonumber(h) end
-  end
-  local width=math.max(1,math.floor(tonumber(requestedWidth) or windowWidth or 1))
-  local height=math.max(1,math.floor(tonumber(requestedHeight) or windowHeight or 1))
-
-  local pixelWidth,pixelHeight=width,height
-  if g.getPixelDimensions then
-    local ok,pw,ph=pcall(g.getPixelDimensions)
-    pw,ph=ok and tonumber(pw) or nil,ok and tonumber(ph) or nil
-    if pw and ph and pw>0 and ph>0 then
-      if windowWidth and windowHeight and windowWidth>0 and windowHeight>0 then
-        -- Keep the physical render target matched to the requested logical
-        -- presentation rect even if a resize lands between update and draw.
-        pixelWidth=math.max(1,math.floor(width*pw/windowWidth+.5))
-        pixelHeight=math.max(1,math.floor(height*ph/windowHeight+.5))
-      else
-        pixelWidth,pixelHeight=math.floor(pw),math.floor(ph)
-      end
-    end
-  end
-  return width,height,pixelWidth,pixelHeight
-end
-
-function Scene:render(requestedWidth,requestedHeight)
-  local hadFrame=self.readyFrame
-  local g = love and love.graphics
-  if not (g and g.newCanvas) then return false end
-  local width,height,pixelWidth,pixelHeight=surfaceDimensions(
-    g,requestedWidth,requestedHeight)
-  if not width then return false end
-  local renderWidth,renderHeight=AA.expand(pixelWidth,pixelHeight)
-  if not self:ensureCanvas(renderWidth,renderHeight) then return false end
-  -- Public scene geometry is always in the same LOVE-unit coordinate space as
-  -- BattleState:drawWidescreen(width,height).  Only canvas allocation below
-  -- uses framebuffer pixels.
-  self.width,self.height=width,height
-  local previous = g.getCanvas and {g.getCanvas()} or nil
-  local ok, err = pcall(function()
-    if self.depth then g.setCanvas({self.canvas, depthstencil=self.depth})
-    else g.setCanvas(self.canvas) end
-    self.environment = Sky.resolve(self.screen and self.screen.game)
-    Sky.draw(g,renderWidth,renderHeight,self.environment)
-    local frame = Camera.frame(width,height)
-    local vp = frame.vp
-    self.hudBox = frame.letterbox
-    local matrices = {}
-    local drawActors={}
-    for _, side in ipairs({"enemy", "player"}) do
-      local actor=self:visualActor(side)
-      if actor and actor.renderer then
-        drawActors[side]=actor
-        matrices[side] = {self:modelMatrix(side,actor)}
-      end
-    end
-    local lightVP=Shadow.begin(self.environment.light,self.environment.shadowStrength)
-    if lightVP then
-      for _,side in ipairs({"enemy","player"}) do
-        local actor,entry=drawActors[side],matrices[side]
-        if entry and actor.renderer then
-          local drawn,drawErr=actor.renderer:drawShadowMap(entry[1],lightVP)
-          if not drawn then warn("Gen 2 shadow draw failed: "..tostring(drawErr)) end
-        end
-      end
-    end
-    local shadow=lightVP and Shadow.finish() or nil
-    if self.depth then g.setCanvas({self.canvas,depthstencil=self.depth})
-    else g.setCanvas(self.canvas) end
-    -- Stage anchors are measured in logical presentation units.  The
-    -- projection has the same aspect in the larger physical AA target, so
-    -- rendering at HiDPI resolution leaves HUD/animation framing unchanged.
-    local marks,stageErr=Stage.draw(g,width,height,frame,self.actors,shadow,self.environment)
-    if not marks then error("Gen 2 stage draw failed: "..tostring(stageErr)) end
-    local box=frame.letterbox
-    self.uiAnchors={
-      player={(marks.player.x-box.lx)/box.scale,(marks.player.y-box.ly)/box.scale},
-      enemy={(marks.enemy.x-box.lx)/box.scale,(marks.enemy.y-box.ly)/box.scale},
-    }
-    for _, pass in ipairs({"opaque", "additive"}) do
-      for _, side in ipairs({"enemy", "player"}) do
-        local actor, entry = drawActors[side], matrices[side]
-        if entry and actor.renderer then
-          local base=self.environment.modelTint or {1,1,1}
-          local drawn, drawErr = actor.renderer:drawScene(pass, entry[1], {
-            viewProjection=vp,
-            normalMatrix=Renderer.normalMatrix(entry[2], 0, false),
-            lightDir=self.environment.light, ambient=self.environment.ambient,
-            -- Pose callbacks run from Actor:update (extension stage 2).  The
-            -- render-stage callbacks run once with opaque geometry and their
-            -- resulting texture/material state is reused by attached FX.
-            diffuse=self.environment.diffuse, skipHandlers=pass=="additive",
-            flipWinding=true,disableCulling=true,
-            tint={base[1],base[2],base[3],1},
-            flashAmount=actor.flash>0 and .5 or 0,
-            sunMap=shadow and shadow.map, sunVP=shadow and shadow.sunVP,
-            sunDark=shadow and shadow.sunDark, sunBias=shadow and shadow.sunBias,
-            sunTexel=shadow and shadow.sunTexel,
-          })
-          if not drawn then
-            error("Gen 2 model draw failed: "..tostring(drawErr))
-          end
-        end
-      end
-    end
-    g.setColor(1,1,1,1)
-  end)
-  if previous and #previous > 0 then pcall(g.setCanvas, unpack(previous))
-  else pcall(g.setCanvas) end
-  if g.setShader then pcall(g.setShader) end
-  if g.setDepthMode then pcall(g.setDepthMode, "always", false) end
-  if g.setMeshCullMode then pcall(g.setMeshCullMode, "none") end
-  if g.setBlendMode then pcall(g.setBlendMode, "alpha", "alphamultiply") end
-  if not ok then
-    self.defect=tostring(err)
-    self.readyFrame=hadFrame
-    warn(err)
-    return false
-  end
-  self.presentCanvas=AA.resolve(self.canvas,pixelWidth,pixelHeight)
-  Hud.build(self.presentCanvas)
-  self.readyFrame=true
-  self.defect=nil
-  return true
 end
 
 function Scene:update(dt)
@@ -1111,7 +779,13 @@ function Gen2.resetForTests()
   installed, modRef, configured = false, nil, 251
 end
 
-Gen2.Actor = Actor
+local Gen2Actor=setmetatable({},{__index=Actor})
+function Gen2Actor.new(side)
+  return Actor.new(side,gen2ActorOptions())
+end
+
+Gen2.Actor = Gen2Actor
+Gen2.SharedActor = Actor
 Gen2.Scene = Scene
 Gen2._shouldDeferFinish = shouldDeferFinish
 Gen2._animationProjection = animationProjection

@@ -83,12 +83,18 @@ Camera.recentre()
 local sourceFile=assert(io.open("mods/STADIUM2_IMPORTER/lib/gen2_battle.lua","rb"))
 local source=sourceFile:read("*a")
 sourceFile:close()
-ok(source:find("local function surfaceDimensions",1,true)~=nil
-  and source:find("g.getDimensions",1,true)~=nil,
-  "owned battle layout uses LOVE window units rather than framebuffer pixels")
-ok(source:find("AA.expand(pixelWidth,pixelHeight)",1,true)~=nil
-  and source:find("AA.resolve(self.canvas,pixelWidth,pixelHeight)",1,true)~=nil,
-  "HiDPI framebuffer pixels remain confined to 3D render-target resolution")
+local sharedFile=assert(io.open("mods/STADIUM2_IMPORTER/lib/battle_scene.lua","rb"))
+local shared=sharedFile:read("*a")
+sharedFile:close()
+ok(shared:find("function Scene.surfaceDimensions",1,true)~=nil
+  and shared:find("g.getDimensions",1,true)~=nil,
+  "shared battle layout uses LOVE window units rather than framebuffer pixels")
+ok(shared:find("AA.expand(pixelWidth,pixelHeight)",1,true)~=nil
+  and shared:find("AA.resolve(self.canvas,pixelWidth,pixelHeight)",1,true)~=nil,
+  "HiDPI framebuffer pixels remain confined to shared 3D render-target resolution")
+ok(source:find('lib.battle_actor',1,true)~=nil
+  and source:find('lib.battle_scene',1,true)~=nil,
+  "Gold adapter consumes the generation-neutral Actor and Scene")
 ok(source:find("scene.width~=width or scene.height~=height",1,true)~=nil
   and source:find("scene:render(width,height)",1,true)~=nil,
   "widescreen presentation rebuilds HUD layout immediately after resize/orientation changes")

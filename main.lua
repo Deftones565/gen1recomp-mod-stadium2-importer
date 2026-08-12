@@ -1,6 +1,7 @@
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 local Battle = require("mods.STADIUM2_IMPORTER.lib.battle_router")
 local BattleAA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
+local BattlePresentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
 local ImportScreen = require("mods.STADIUM2_IMPORTER.lib.import_screen")
 
 return function(mod)
@@ -27,7 +28,7 @@ return function(mod)
     { key="stadium2_battle", label="STADIUM 2 BATTLE", type="toggle", default=true },
     { key="stadium2_battle_aa", label="BATTLE AA", type="choice", default=0,
       choices={{"OFF",0},{"2X",2},{"4X",4}},
-      help="Supersample the owned Gold battle arena; the native UI stays crisp." },
+      help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
   })
 
   -- DSM animations are authored at 30 Hz, but advance from presented-frame
@@ -45,7 +46,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.9.21"
+  mod.exports.version = "0.10.0"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.available = Importer.available
@@ -53,6 +54,9 @@ return function(mod)
   mod.exports.battleEnabled = Importer.battleEnabled
   mod.exports.battleStatus = Battle.status
   mod.exports.configureGame = Battle.configureGame
+  mod.exports.presentation = BattlePresentation
+  mod.exports.newBattleActor = BattlePresentation.newActor
+  mod.exports.newBattleScene = BattlePresentation.newScene
   mod.exports.autoImport = Importer.autoImport
   mod.exports.beginFrom = Importer.beginFrom
   mod.exports.beginPath = Importer.beginPath

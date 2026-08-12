@@ -9,7 +9,7 @@ end
 local importerSteps = 0
 local Importer = {
   bind=function() end, step=function() importerSteps = importerSteps + 1 end,
-  appendRow=function() end, configure=function() end, status=function() end,
+  appendRow=function() end, configure=function() end, status=function() return {state="idle"} end,
   available=function() end, modelsEnabled=function() return true end,
   battleEnabled=function() return true end, autoImport=function() end,
   beginFrom=function() end, beginPath=function() end, request=function() end,
@@ -27,6 +27,8 @@ local Battle = {
 }
 package.loaded["mods.STADIUM2_IMPORTER.lib.importer"] = Importer
 package.loaded["mods.STADIUM2_IMPORTER.lib.battle_router"] = Battle
+package.loaded["mods.STADIUM2_IMPORTER.lib.import_screen"] = {new=function() return {} end}
+package.loaded["mods.STADIUM2_IMPORTER.lib.battle_presentation"] = {}
 
 local pipeline, inputWrap
 local mod = {

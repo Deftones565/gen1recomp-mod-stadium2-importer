@@ -1,6 +1,6 @@
--- Supersampling for the owned Gen 2 battle scene.  Values are samples per
+-- Supersampling for the owned Stadium battle scene. Values are samples per
 -- output pixel, so 2X uses sqrt(2) in each axis and 4X uses twice the width
--- and height.  The native Gold UI is composited after this fold.
+-- and height. Native game UI is composited after this fold.
 local AA = {}
 
 local modRef, live = nil, 1

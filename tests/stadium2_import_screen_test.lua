@@ -1,5 +1,5 @@
 package.path = "./?.lua;./?/init.lua;" .. package.path
-require("tests.modkit")
+package.loaded["src.render.Font"]={draw=function() end}
 
 local Screen = require("mods.STADIUM2_IMPORTER.lib.import_screen")
 local checks = 0

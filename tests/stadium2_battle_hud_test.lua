@@ -41,7 +41,7 @@ ok(layout.snap and layout.enemyX==-32 and layout.playerX==672,
   "ordinary widescreen battle snaps native HUD rects to the two screen edges")
 ok(layout.enemyPanelX==0 and layout.playerPanelX==960,
   "frost panels touch the same edges as their native HUD rectangles")
--- AskNickname follows the established dramatic wide compositor: the status
+-- AskNickname follows the detached wide compositor: the status
 -- HUDs stay snapped, while the Yes/No modal remains in the centred GB frame.
 screen.phase="ask-nickname"
 screen.messageTimer=0

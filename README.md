@@ -1,6 +1,6 @@
 # Pokemon Stadium 2 Importer
 
-`STADIUM2_IMPORTER` is a standalone Pokemon Stadium 2 model extractor and renderer for Gen 1 and Gen 2 games in gen1recomp, with native 3D battle presentation on Gen 2.
+`STADIUM2_IMPORTER` is a standalone Pokemon Stadium 2 model extractor and renderer for Gen 1 and Gen 2 games in gen1recomp, with owned 3D battle presentation on both generations.
 
 It does not depend on another model importer or renderer. The mod owns ROM discovery, ROM validation, Stadium 2 archive parsing, PERS-SZP/Yay0 decompression, FRAGMENT model parsing, model-handler decoding, DSM3 cache generation, DSM3 loading, skeletal animation, texture animation, texture upload, skinning, render state, and model drawing.
 
@@ -10,15 +10,13 @@ The supported ROM is the US Pokemon Stadium 2 ROM with MD5 `1561c75d11cedf356a8d
 
 `STADIUM 2 MODELS` defaults to `ON`. Turning it `OFF` keeps the imported model cache intact but disables creation and use of Stadium 2 renderers. Turning it back `ON` restores Stadium 2 rendering without rebuilding the cache.
 
-`STADIUM 2 BATTLE` defaults to `ON`. On Gen 1 the battle integration is intentionally disabled and the engine keeps its normal battle presentation. Gen 2 uses the importer-owned Gold battle scene over `src.ui.gen2.BattleState`: a full-window time-of-day environment, solved perspective camera, footprint-sized 3D platforms, model shadows, frosted edge-aligned HUD, projected native move effects, normal/shiny DSM3 actors, callback runtime, materials, animated textures, additive FX, presented-frame timing, and send-out/attack/faint states. Turning it `OFF` leaves the engine's normal battle presentation in control.
+`STADIUM 2 BATTLE` defaults to `ON`. Gen 1 and Gen 2 now use the importer-owned Stadium presentation. The host battle engines remain authoritative for turn order, damage, move effects, capture odds, switching, faint results, text, menus, party state and RNG. Generation adapters read that state and replace presentation only: a full-window environment, solved perspective camera, footprint-sized 3D platforms, model shadows, frosted edge-aligned HUD, projected native battle effects, normal/shiny DSM3 actors, callback runtime, materials, animated textures, additive FX, presented-frame timing, and send-out/attack/faint states. Turning it `OFF` leaves the engine's normal battle presentation in control.
 
-`BATTLE AA` applies only to the owned Gen 2 arena. It defaults to `OFF`; `2X`
-and `4X` supersample the 3D scene before Gold's native pixel-art HUD and move
-objects are composited, and automatically clamp to the GPU texture limit.
+Gen 1 is implemented by `lib/gen1_battle.lua` as a draw-only adapter over the host `src.battle.BattleState`. Gen 2 is implemented by `lib/gen2_battle.lua` over `src.ui.gen2.BattleState`. Shared model and stage behavior lives in `lib/battle_actor.lua` and `lib/battle_scene.lua`; neither adapter owns battle simulation.
 
-In a Gold battle, ordinary mouse movement controls orbit and pitch, the mouse
-wheel or `Q`/`E` controls zoom, the controller right stick controls the camera,
-and `0` resets the shot. One free touch drags and two free touches pinch.
+`BATTLE AA` applies to the owned Stadium arena in either generation. It defaults to `OFF`; `2X` and `4X` supersample the 3D scene before the native pixel-art UI and battle objects are composited, and automatically clamp to the GPU texture limit.
+
+In a Stadium battle, ordinary mouse movement controls orbit and pitch, the mouse wheel or `Q`/`E` controls zoom, the controller right stick controls the camera, and `0` resets the shot. One free touch drags and two free touches pinch where that generation's input adapter supports them.
 
 
 At game ready the importer inspects the merged Pokemon data and expands its own cache target automatically. A normal Gen I game requests 151 models; Gold or a loaded 251-species overhaul requests all 251 without requiring a separate Stadium renderer adapter.
@@ -29,7 +27,7 @@ remains paused behind it. Completion closes the screen automatically; a failed
 import displays the failing stage and offers retry or close controls.
 
 On Android, **OPTIONS -> STADIUM 2 ROM** uses Gen1Recomp's native system
-document picker through the same no-argument `love.system.pickFile()` ROM path used by Gen1Recomp 0.1.36. The selected document is
+document picker through the native no-argument `love.system.pickFile()` ROM path. The selected document is
 handed back as `picked_rom.gb`, validated as the supported Stadium 2 US ROM,
 loaded into the normal importer, and the temporary handoff file is removed.
 Desktop Linux, Windows, and macOS keep their existing ROM discovery and file
@@ -59,7 +57,7 @@ splits primitives at callback boundaries, embeds callback textures, and
 includes the ROM-textured fire geometry constructed by fragment 26. Older
 caches are rebuilt automatically.
 
-Both the standalone renderer and the Gen 2 battle scene read those packs
+The standalone renderer and both generation battle adapters read those packs
 directly. They use rigid bone bindings, source 30 Hz animation frames,
 per-animation and callback texture streams, parsed material state, primitive
 culling, additive second-pass rendering, embedded RGBA textures, and the
@@ -79,6 +77,9 @@ modelsEnabled()
 battleEnabled()
 battleStatus(battle)
 configureGame(game)
+presentation
+newBattleActor(side, options)
+newBattleScene(options)
 autoImport()
 beginFrom(bytes, label)
 beginPath(path)
@@ -115,7 +116,11 @@ draw(x, y, width, height, options)
 release()
 ```
 
-The standalone model renderer is available in both generations. Gen 1 battle hooks are disabled; the native Gen 2 battle scene is implemented entirely by this mod.
+The standalone model renderer and battle presentation are available in both generations. The project contains no bundled third-party runtime tree: Gen 1 and Gen 2 presentation are implemented by this mod and share the same owned actor/scene renderer.
+
+## Battle presentation API
+
+`mod.exports.presentation` is the generation-neutral rendering layer used by the adapters. It exposes `newActor`, `newScene`, `setBattler`, `removeBattler`, `sendOut`, `useMove`, `hit`, `faint`, and `update`, plus the `Actor`, `Scene`, and `Camera` types. A separate battle mod can therefore use imported Stadium models without depending on either built-in generation adapter. The caller remains responsible for battle meaning; the presentation API never resolves gameplay.
 
 ## Interactive model viewer
 
