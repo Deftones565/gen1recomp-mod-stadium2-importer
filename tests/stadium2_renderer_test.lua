@@ -129,6 +129,62 @@ ok(rig.parts[1].rows[1][1] == 0 and rig.parts[1].rows[1][2] == 0, "hidden bone s
 ok(rig.handlerState.modelContext == rig, "model context registered")
 ok(Renderer.sourceFrame(model.anims[1], 2 / 30, true) == 0, "animation loop sampling")
 
+-- The renderer smooths the source's 30 Hz pose stream to the 60 Hz scene,
+-- but Euler triples can be re-expressed discontinuously between two adjacent
+-- source frames.  Interpolating such a pair creates a pose neither source
+-- frame contains: long articulated limbs visibly turn inside-out for one
+-- display frame.  Hold that bone's source rotation whenever any component
+-- moves more than a quarter turn in one 30 Hz step.
+local snapModel = {
+  rootScale = 1, height = 100,
+  bones = { { t = { 0, 0, 0 }, r = { 0, 0, 0 }, s = { 1, 1, 1 } } },
+  anims = { { frames = 2, loopStart = 0, tracks = {
+    [1] = {
+      t = { 0, 0, 0 },
+      r = { { 0, 0 }, { 20976, -19936 }, { 32736, -5904 } },
+      s = { 1, 1, 1 },
+    },
+  } } },
+}
+local snapSample = Renderer.samplePoseInterpolated(snapModel, 1, 0, 0.5, true)
+local _, snapR = snapSample(1)
+ok(snapR[1] == 0 and snapR[2] == 20976 and snapR[3] == 32736,
+  "equivalent-Euler snap holds the whole source rotation instead of flipping a limb")
+
+local smoothModel = {
+  rootScale = 1, height = 100,
+  bones = { { t = { 0, 0, 0 }, r = { 0, 0, 0 }, s = { 1, 1, 1 } } },
+  anims = { { frames = 2, loopStart = 0, tracks = {
+    [1] = {
+      t = { { 0, 40 }, 0, 0 },
+      r = { { 1000, 2000 }, { 32700, -32700 }, 0 },
+      s = { { 1, 1.2 }, 1, 1 },
+    },
+  } } },
+}
+local smoothSample = Renderer.samplePoseInterpolated(smoothModel, 1, 0, 0.5, true)
+local smoothT, smoothR, smoothS = smoothSample(1)
+ok(math.abs(smoothT[1] - 20) < 0.000001,
+  "ordinary limb translation still receives the 60 Hz halfway pose")
+ok(math.abs(smoothR[1] - 1500) < 0.000001,
+  "ordinary Euler motion still interpolates")
+ok(math.abs(smoothR[2] - 32768) < 0.000001,
+  "binary-angle seam uses the short arc instead of spinning around")
+ok(math.abs(smoothS[1] - 1.1) < 0.000001,
+  "scale still interpolates linearly")
+
+local teleportModel = {
+  rootScale = 1, height = 100,
+  bones = smoothModel.bones,
+  anims = { { frames = 2, loopStart = 0, tracks = {
+    [1] = { t = { { 0, 60 }, 0, 0 }, r = { 0, 0, 0 }, s = { 1, 1, 1 } },
+  } } },
+}
+local teleportSample = Renderer.samplePoseInterpolated(teleportModel, 1, 0, 0.5, true)
+local teleportT = teleportSample(1)
+ok(teleportT[1] == 0,
+  "one-frame translation teleport holds the source pose rather than inventing a halfway limb")
+
 local bad, badErr = Pack.parse("DSM3bad")
 ok(bad == nil and type(badErr) == "string", "truncated pack rejected")
 

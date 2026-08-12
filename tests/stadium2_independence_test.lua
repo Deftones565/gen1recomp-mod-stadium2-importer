@@ -22,7 +22,7 @@ local scene = read(root .. "lib/battle_scene.lua")
 local presentation = read(root .. "lib/battle_presentation.lua")
 
 ok(manifest:find('"dependencies": %[%]', 1) ~= nil, "importer has no required mod dependency")
-ok(manifest:find('"version": "0.10.0"', 1, true) ~= nil, "shared presentation release is 0.10.0")
+ok(manifest:find('"version": "0.10.2"', 1, true) ~= nil, "bone interpolation fix release is 0.10.2")
 ok(main:find('require("mods.STADIUM2_IMPORTER.lib.battle_router")', 1, true) ~= nil,
   "main dispatches battles through the generation router")
 ok(main:find('lib.battle_presentation',1,true)~=nil and main:find('mod.exports.presentation',1,true)~=nil,

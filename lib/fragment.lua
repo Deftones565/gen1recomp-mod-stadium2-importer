@@ -683,7 +683,17 @@ function Anim:scaleKey(c, frame)
                       floor(c.interp / 4) % 2 == 1) / 100.0
 end
 
+-- The animation player's frame counter is already in the channel streams' own
+-- coordinate system.  The header word at +4 is the counter's INITIAL value;
+-- it is not an offset added by the samplers.  The game initializes the counter
+-- from +4, then the packed/Hermite routines index their streams with that
+-- counter directly.  Likewise +6 is the loop target and +0xA is the end.
+--
+-- Keep extraction frame-for-frame with the source streams.  Adding startFrame
+-- here (the previous shifted-counter behavior) double-applies the initial counter and makes later
+-- bones clamp to unrelated tail values.
 function Anim:sampleTrs(chanIndex, frame, bt, br, bs)
+  frame = tonumber(frame) or 0
   local base = chanIndex * 3
   if base < 0 or base + 2 >= self.nChannels then return nil end
   local c1, c2, c3 = self:chan(base), self:chan(base + 1), self:chan(base + 2)
@@ -732,6 +742,10 @@ function Aux:sample(chan, frame)
   if chan < 0 or chan >= self.nChannels or self.chanTable == nil then
     return nil
   end
+  -- Same counter semantics as skeletal animation: the caller supplies the
+  -- actual stream frame.  startFrame initializes playback; it is not added by
+  -- the texture sampler.
+  frame = tonumber(frame) or 0
   local o = self.chanTable + chan * 4
   local count, base = self.f:u16(o), self.f:u16(o + 2)
   if count == 0 then return nil end
@@ -1176,7 +1190,8 @@ function StadiumFragment.extract(data, name)
       end
     end
     anims[i] = { index = i - 1, frames = nf, flags = a.flags,
-                 channels = a.nChannels, loopStart = a.loopStart,
+                 startFrame = a.startFrame, channels = a.nChannels,
+                 loopStart = a.loopStart,
                  tracks = tracks }
   end
 
@@ -1189,8 +1204,11 @@ function StadiumFragment.extract(data, name)
       tr.n = tn
       chans[c + 1] = tr
     end
-    auxOut[i] = { index = i - 1, frames = a.nFrames > 1 and a.nFrames or 1,
-                  flags = a.flags, loopStart = a.loopStart, channels = chans }
+    local nf = a.nFrames > 1 and a.nFrames or 1
+    auxOut[i] = { index = i - 1, frames = nf,
+                  flags = a.flags, startFrame = a.startFrame,
+                  loopStart = a.loopStart,
+                  channels = chans }
   end
 
   return {
@@ -1223,8 +1241,8 @@ local function crystal251LooksLikeAnim(frag, off, bones)
   local nFrames = frag:u16(off + 0xA)
   if flags > 0x0F or nChannels < 3 or nChannels > 0x600
       or nChannels % 3 ~= 0 or nFrames < 1 or nFrames > 0x1000
-      or startFrame > 0x4000
-      or (loopStart ~= 0xFFFF and loopStart > startFrame + nFrames) then
+      or startFrame >= nFrames
+      or (loopStart ~= 0xFFFF and loopStart >= nFrames) then
     return false
   end
 
@@ -1325,6 +1343,7 @@ local function crystal251DecodeOne(frag, off, bones)
     index = 0,
     frames = nf,
     flags = a.flags,
+    startFrame = a.startFrame,
     channels = a.nChannels,
     loopStart = a.loopStart,
     tracks = tracks,
@@ -1360,10 +1379,12 @@ local function crystal251DecodeModelAnimations(frag, model, bones)
         track.n = n
         channels[c + 1] = track
       end
+      local nf = a.nFrames > 1 and a.nFrames or 1
       aux[#aux + 1] = {
         index = #aux,
-        frames = a.nFrames > 1 and a.nFrames or 1,
+        frames = nf,
         flags = a.flags,
+        startFrame = a.startFrame,
         loopStart = a.loopStart,
         channels = channels,
       }

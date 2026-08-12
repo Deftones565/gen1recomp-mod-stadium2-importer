@@ -283,9 +283,22 @@ local function nextFrame(anim, frame, loop)
 end
 
 local function lerp(a, b, t) return a + (b - a) * t end
-local function lerpAngle(a, b, t)
-  local d = (b - a + 32768) % 65536 - 32768
-  return a + d * t
+
+-- Stadium stores rotations as Euler triples in signed binary-angle units.
+-- We render at 60 Hz while the source pose stream advances at 30 Hz, so the
+-- renderer invents one halfway pose between source frames.  A naive Euler
+-- lerp is unsafe: the game is free to re-express nearly the same orientation
+-- with a very different triple, and interpolating those components makes a
+-- limb flip inside-out for the invented half-frame.  The original game never
+-- draws that in-between pose because it steps the 30 Hz stream directly.
+local BREAK_ANGLE = 16384 -- pi/2 in one 30 Hz frame: treat as a snap/re-expression
+local BREAK_MOVE = 0.5    -- half a model height in one frame: treat as a teleport
+
+local function angleDelta(a, b)
+  local d = b - a
+  if d > 32768 then d = d - 65536
+  elseif d < -32768 then d = d + 65536 end
+  return d
 end
 
 local function samplePoseInterpolated(model, animIndex, frame, alpha, loop)
@@ -293,17 +306,46 @@ local function samplePoseInterpolated(model, animIndex, frame, alpha, loop)
   if not anim or alpha <= 0 then return samplePose(model, animIndex, frame) end
   local a = samplePose(model, animIndex, frame)
   local b = samplePose(model, animIndex, nextFrame(anim, frame, loop))
+
+  local moveBreak
+  local root = tonumber(model.rootScale) or 1
+  if root == 0 then root = 1 end
+  local rawHeight = (tonumber(model.height) or 0) / math.abs(root)
+  if rawHeight > 0 then moveBreak = rawHeight * BREAK_MOVE end
+
   return function(i)
     local at, ar, as = a(i)
     local bt, br, bs = b(i)
-    local travel = math.sqrt((bt[1]-at[1])^2 + (bt[2]-at[2])^2 + (bt[3]-at[3])^2)
-    local blend = travel > 4096 and 0 or alpha
+
+    -- Translation is one vector.  If any axis teleports farther than half the
+    -- Pokemon's raw height, hold the source frame instead of manufacturing a
+    -- halfway position the cartridge never had.
+    local tx, ty, tz = bt[1] - at[1], bt[2] - at[2], bt[3] - at[3]
+    local moveBlend = alpha
+    if moveBreak and (math.abs(tx) > moveBreak or math.abs(ty) > moveBreak
+        or math.abs(tz) > moveBreak) then
+      moveBlend = 0
+    end
+
+    -- Rotation is also one value conceptually: either all three Euler
+    -- components blend, or none do.  Shortest-arc wrapping handles the +/-pi
+    -- seam; the BREAK_ANGLE guard handles equivalent-Euler re-expression.
+    local rx, ry, rz = angleDelta(ar[1], br[1]), angleDelta(ar[2], br[2]),
+      angleDelta(ar[3], br[3])
+    local rotBlend = alpha
+    if math.abs(rx) > BREAK_ANGLE or math.abs(ry) > BREAK_ANGLE
+        or math.abs(rz) > BREAK_ANGLE then
+      rotBlend = 0
+    end
+
     return {
-      lerp(at[1],bt[1],blend), lerp(at[2],bt[2],blend), lerp(at[3],bt[3],blend),
+      lerp(at[1], bt[1], moveBlend), lerp(at[2], bt[2], moveBlend),
+      lerp(at[3], bt[3], moveBlend),
     }, {
-      lerpAngle(ar[1],br[1],blend), lerpAngle(ar[2],br[2],blend), lerpAngle(ar[3],br[3],blend),
+      ar[1] + rx * rotBlend, ar[2] + ry * rotBlend, ar[3] + rz * rotBlend,
     }, {
-      lerp(as[1],bs[1],blend), lerp(as[2],bs[2],blend), lerp(as[3],bs[3],blend),
+      lerp(as[1], bs[1], alpha), lerp(as[2], bs[2], alpha),
+      lerp(as[3], bs[3], alpha),
     }
   end
 end
@@ -978,6 +1020,9 @@ end
 Renderer.sourceFrame = sourceFrame
 Renderer.samplePose = samplePose
 Renderer.samplePoseInterpolated = samplePoseInterpolated
+Renderer.angleDelta = angleDelta
+Renderer.BREAK_ANGLE = BREAK_ANGLE
+Renderer.BREAK_MOVE = BREAK_MOVE
 Renderer.matMul = matMul
 Renderer.perspective = perspective
 Renderer.lookAt = lookAt

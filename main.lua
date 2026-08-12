@@ -46,7 +46,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.10.0"
+  mod.exports.version = "0.10.2"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.available = Importer.available
