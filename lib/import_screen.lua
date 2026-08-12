@@ -114,7 +114,7 @@ function Screen:draw()
 
   if status.state == "picking" then
     centre("CHOOSE STADIUM 2 ROM", 50)
-    centre("ANDROID FILE PICKER", 70)
+    centre("SYSTEM FILE PICKER", 70)
     centre("RETURN HERE WHEN DONE", 102)
     g.setColor(1, 1, 1, 1)
     return

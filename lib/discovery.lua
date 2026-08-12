@@ -99,12 +99,26 @@ function Discovery.read(candidate)
 end
 
 local function commandOutput(command)
-  if not (io and io.popen) then return nil end
-  local pipe = io.popen(command, "r")
+  local pipe, close
+  local okHost, HostShell = pcall(require, "src.core.HostShell")
+  if okHost and HostShell and type(HostShell.popen) == "function" then
+    pipe = HostShell.popen(command, "r")
+    close = function(p)
+      if type(HostShell.pclose) == "function" then
+        HostShell.pclose(p)
+      else
+        pcall(p.close, p)
+      end
+    end
+  elseif io and io.popen then
+    local ok, opened = pcall(io.popen, command, "r")
+    pipe = ok and opened or nil
+    close = function(p) pcall(p.close, p) end
+  end
   if not pipe then return nil end
-  local output = pipe:read("*a")
-  pipe:close()
-  if type(output) ~= "string" then return nil end
+  local okRead, output = pcall(pipe.read, pipe, "*a")
+  close(pipe)
+  if not okRead or type(output) ~= "string" then return nil end
   output = output:gsub("^%s+", ""):gsub("%s+$", "")
   return output ~= "" and output or nil
 end
