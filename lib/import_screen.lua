@@ -140,6 +140,7 @@ function Screen:draw()
   centre(("%3d%%"):format(math.floor(clamp(status.progress) * 100 + 0.5)), 91)
   centre(("%d/%d COMPLETE"):format(status.done or 0,
     status.total or 0), 105)
+  centre("DO NOT CLOSE THE GAME", 121)
   g.setColor(1, 1, 1, 1)
 end
 

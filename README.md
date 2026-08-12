@@ -16,7 +16,7 @@ Gen 1 is implemented by `lib/gen1_battle.lua` as a draw-only adapter over the ho
 
 `BATTLE AA` applies to the owned Stadium arena in either generation. It defaults to `OFF`; `2X` and `4X` supersample the 3D scene before the native pixel-art UI and battle objects are composited, and automatically clamp to the GPU texture limit.
 
-In a Stadium battle, ordinary mouse movement controls orbit and pitch, the mouse wheel or `Q`/`E` controls zoom, the controller right stick controls the camera, and `0` resets the shot. One free touch drags and two free touches pinch where that generation's input adapter supports them.
+In a Stadium battle, ordinary mouse movement controls orbit and pitch, the mouse wheel or `Q`/`E` controls zoom, the controller right stick controls the camera, and `0` resets the shot. One free touch drags and two free touches pinch on both Gen 1 and Gen 2; touches that begin on virtual controls remain owned by the touch pad.
 
 
 At game ready the importer inspects the merged Pokemon data and expands its own cache target automatically. A normal Gen I game requests 151 models; Gold or a loaded 251-species overhaul requests all 251 without requiring a separate Stadium renderer adapter.

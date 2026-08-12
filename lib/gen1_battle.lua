@@ -15,6 +15,10 @@ local Gen1={COUNT=251}
 local modRef,installed,session
 local configured=151
 local originals={}
+local gameRef
+local controlOriginals={}
+local pointerHookInstalled=false
+local freeTouches,pinch={},nil
 local unpack=table.unpack or unpack
 
 local SOURCE_ANCHOR={player={26,96},enemy={124,56}}
@@ -227,6 +231,8 @@ end
 function Scene:update(dt)
   self:sync()
   self:syncPresentationState()
+  Camera.stickOrbit(self.stickX,dt)
+  Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
   self.actors.player:update(dt)
   self.actors.enemy:update(dt)
@@ -478,6 +484,166 @@ local function installHooks()
   return true
 end
 
+-- Camera controls are presentation-only. Gen 1 and Gen 2 deliberately use
+-- the same interaction vocabulary: mouse hover steers, wheel/Q/E zoom, the
+-- controller right stick steers, stick clicks zoom, 0 recentres, one free
+-- touch drags, and two free touches pinch. None of these paths write GB input
+-- or battle state.
+local function resetControlState()
+  freeTouches,pinch={},nil
+  if session then session.stickX,session.stickY=0,0 end
+end
+
+local function mouseStep(value)
+  return clamp(tonumber(value) or 0,-40,40)
+end
+
+local function freeIds()
+  local ids={}
+  for id in pairs(freeTouches) do ids[#ids+1]=id end
+  return ids
+end
+
+local function touchGap(a,b)
+  local pa,pb=freeTouches[a],freeTouches[b]
+  if not (pa and pb) then return 0 end
+  local dx,dy=pa.x-pb.x,pa.y-pb.y
+  return math.sqrt(dx*dx+dy*dy)
+end
+
+local function startPinch()
+  if pinch then return end
+  local ids=freeIds()
+  if #ids<2 then return end
+  local distance=touchGap(ids[1],ids[2])
+  if distance>=16 then pinch={a=ids[1],b=ids[2],gap=distance} end
+end
+
+local function pointerControl(event)
+  if not (session and type(event)=="table") then return false end
+  local source,phase=event.source,event.phase
+  if source=="mouse" then
+    if phase=="moved" then
+      Camera.mouseOrbit(mouseStep(event.dx))
+      Camera.mousePitch(-mouseStep(event.dy))
+      return true
+    end
+    return false
+  end
+  if source~="touch" then return false end
+
+  local id=event.id
+  if phase=="pressed" then
+    freeTouches[id]={x=tonumber(event.x) or 0,y=tonumber(event.y) or 0}
+    startPinch()
+    return true
+  elseif phase=="moved" then
+    local point=freeTouches[id]
+    if not point then return false end
+    local x,y=tonumber(event.x) or point.x,tonumber(event.y) or point.y
+    local px,py=point.x,point.y
+    point.x,point.y=x,y
+    if pinch and (id==pinch.a or id==pinch.b) then
+      local distance=touchGap(pinch.a,pinch.b)
+      local factor=distance/math.max(1,pinch.gap)
+      if math.abs(factor-1)>.02 then
+        Camera.stepZoom(math.log(1/factor)/math.log(Camera.ZOOM_STEP))
+        pinch.gap=distance
+      end
+      return true
+    end
+    local width,height=1280,720
+    if love and love.graphics then
+      width=love.graphics.getWidth and love.graphics.getWidth() or width
+      height=love.graphics.getHeight and love.graphics.getHeight() or height
+    end
+    Camera.dragOrbit((x-px)/math.max(320,width))
+    Camera.dragPitch(-(y-py)/math.max(240,height))
+    return true
+  elseif phase=="released" or phase=="cancelled" then
+    if freeTouches[id] then freeTouches[id]=nil end
+    if pinch and (id==pinch.a or id==pinch.b) then pinch=nil end
+    return true
+  end
+  return false
+end
+
+local function installControls()
+  local game=gameRef or (modRef and modRef.game)
+  if type(game)~="table" then return false end
+  if game.stadium2ImporterGen1Controls then return true end
+  game.stadium2ImporterGen1Controls=true
+
+  controlOriginals.keypressed=game.keypressed
+  if type(game.keypressed)=="function" then
+    game.keypressed=function(self,name,...)
+      if session and (name=="0" or name=="kp0") then
+        Camera.recentre()
+        return
+      end
+      if session and (name=="q" or name=="e") then
+        Camera.stepZoom(name=="q" and 1 or -1)
+        return
+      end
+      return controlOriginals.keypressed(self,name,...)
+    end
+  end
+
+  controlOriginals.wheelmoved=game.wheelmoved
+  if type(game.wheelmoved)=="function" then
+    game.wheelmoved=function(self,x,y)
+      if session then
+        Camera.stepZoom(-(tonumber(y) or 0))
+        return
+      end
+      return controlOriginals.wheelmoved(self,x,y)
+    end
+  end
+
+  controlOriginals.gamepadpressed=game.gamepadpressed
+  if type(game.gamepadpressed)=="function" then
+    game.gamepadpressed=function(self,joystick,button)
+      if session and (button=="leftstick" or button=="rightstick") then
+        Camera.stepZoom(button=="leftstick" and 1 or -1)
+        return
+      end
+      return controlOriginals.gamepadpressed(self,joystick,button)
+    end
+  end
+
+  controlOriginals.gamepadaxis=game.gamepadaxis
+  if type(game.gamepadaxis)=="function" then
+    game.gamepadaxis=function(self,joystick,name,value)
+      if session and name=="rightx" then session.stickX=tonumber(value) or 0 end
+      if session and name=="righty" then session.stickY=tonumber(value) or 0 end
+      return controlOriginals.gamepadaxis(self,joystick,name,value)
+    end
+  end
+
+  controlOriginals.focus=game.focus
+  if type(game.focus)=="function" then
+    game.focus=function(self,value,...)
+      resetControlState()
+      return controlOriginals.focus(self,value,...)
+    end
+  end
+
+  -- Gen1Recomp's input.pointer seam is after TouchControls first refusal, so
+  -- touches on the virtual d-pad/buttons never become camera gestures. It also
+  -- gives ordinary desktop mouse hover deltas without stealing mouse input
+  -- from another mod: process the presentation gesture, then continue the hook
+  -- chain unchanged.
+  local hooks=modRef and modRef.hooks
+  if hooks and type(hooks.wrap)=="function" and not pointerHookInstalled then
+    local ok=pcall(hooks.wrap,hooks,"input.pointer",function(next,owner,event)
+      pointerControl(event)
+      return next(owner,event)
+    end,110)
+    pointerHookInstalled=ok
+  end
+  return true
+end
+
 local function installComposeHook()
   local hooks=modRef and modRef.hooks
   if not (hooks and type(hooks.wrap)=="function") then return false end
@@ -524,6 +690,7 @@ function Gen1.bind(mod)
 end
 
 function Gen1.configureGame(game)
+  gameRef=game
   local maxDex=151
   local pokemon=game and game.data and game.data.pokemon
   if type(pokemon)=="table" then
@@ -548,6 +715,8 @@ function Gen1.install()
     warn(composeOk and "render.compose hook unavailable" or composeErr)
     return false
   end
+  local controlsOk,controlsErr=pcall(installControls)
+  if not controlsOk then warn(controlsErr) end
   installed=true
   return true
 end
@@ -578,6 +747,7 @@ function Gen1.finish(battle)
     session:release()
     session=nil
   end
+  resetControlState()
   return true
 end
 
@@ -595,6 +765,7 @@ function Gen1.status()
     active=session~=nil,
     shot=session and (session.compositeCanvas or session.presentCanvas or session.canvas) or nil,
     defect=session and session.defect or nil,
+    cameraInput=session and {stickX=session.stickX or 0,stickY=session.stickY or 0} or nil,
     visual=session and {
       player=session:visualState("player"),enemy=session:visualState("enemy"),
     } or nil,
@@ -605,7 +776,9 @@ function Gen1.resetForTests()
   Gen1.finish()
   installed=false
   modRef=nil
+  gameRef=nil
   configured=151
+  resetControlState()
 end
 
 Gen1.Actor=Actor
