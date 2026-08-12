@@ -1,0 +1,993 @@
+local Build = require("mods.STADIUM2_IMPORTER.lib.build")
+local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
+local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
+
+local Renderer = {}
+Renderer.__index = Renderer
+
+Renderer.FORMAT = {
+  { "VertexPosition", "float", 3 },
+  { "VertexTexCoord", "float", 2 },
+  { "VertexNormal", "float", 3 },
+}
+
+local SHADER = [[
+varying vec3 vNormal;
+varying vec3 vSun;
+#ifdef VERTEX
+uniform mat4 mvp;
+uniform mat4 modelMatrix;
+uniform mat4 sunVP;
+uniform mat3 normalMatrix;
+attribute vec3 VertexNormal;
+vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  vNormal = normalize(normalMatrix * VertexNormal);
+  vSun = (sunVP * (modelMatrix * vertex_position)).xyz;
+  return mvp * vertex_position;
+}
+#endif
+#ifdef PIXEL
+uniform vec3 lightDir;
+uniform vec3 ambient;
+uniform vec3 diffuse;
+uniform vec4 primitiveColor;
+uniform vec4 environmentColor;
+uniform float environmentMix;
+uniform Image secondaryTexture;
+uniform float secondaryEnabled;
+uniform float secondaryMix;
+uniform vec4 textureScroll;
+uniform float alphaCutoff;
+uniform vec2 primarySize;
+uniform vec2 secondarySize;
+uniform vec4 sceneTint;
+uniform float flashAmount;
+uniform Image sunMap;
+uniform float sunEnabled;
+uniform float sunDark;
+uniform float sunBias;
+uniform vec2 sunTexel;
+varying vec3 vNormal;
+varying vec3 vSun;
+float shadowDepth(vec2 uv) {
+  vec4 c=Texel(sunMap,uv);
+  return c.r+c.g*(1.0/255.0);
+}
+float sunlight(vec3 p) {
+  if (sunEnabled<0.5 || p.x<0.0 || p.x>1.0 || p.y<0.0 || p.y>1.0 || p.z>1.0) return 1.0;
+  float z=p.z-sunBias;
+  float lit=step(z,shadowDepth(p.xy+sunTexel*vec2(-0.5,-0.5)))
+    +step(z,shadowDepth(p.xy+sunTexel*vec2(0.5,-0.5)))
+    +step(z,shadowDepth(p.xy+sunTexel*vec2(-0.5,0.5)))
+    +step(z,shadowDepth(p.xy+sunTexel*vec2(0.5,0.5)));
+  return 1.0-sunDark*(1.0-lit*0.25);
+}
+vec4 sample3(Image image, vec2 uv, vec2 size) {
+  vec2 p = uv * size - vec2(0.5);
+  vec2 base = floor(p);
+  vec2 f = fract(p);
+  vec2 texel = vec2(1.0) / size;
+  if (f.x + f.y < 1.0) {
+    vec2 o = (base + vec2(0.5)) * texel;
+    return Texel(image, o) * (1.0-f.x-f.y)
+      + Texel(image, o + vec2(texel.x,0.0)) * f.x
+      + Texel(image, o + vec2(0.0,texel.y)) * f.y;
+  }
+  vec2 o = (base + vec2(1.5)) * texel;
+  return Texel(image, o) * (f.x+f.y-1.0)
+    + Texel(image, o - vec2(texel.x,0.0)) * (1.0-f.y)
+    + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.x);
+}
+vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
+  vec4 texel = sample3(texture, texture_coords + textureScroll.xy, primarySize);
+  if (secondaryEnabled > 0.5) {
+    vec4 other = sample3(secondaryTexture, texture_coords + textureScroll.zw, secondarySize);
+    texel = mix(texel, other, secondaryMix);
+  }
+  texel *= color * primitiveColor;
+  if (texel.a <= alphaCutoff) discard;
+  vec3 n=normalize(vNormal);
+  float stadiumShade=clamp(0.7725+n.x*0.06+n.y*0.225+n.z*0.11,0.30,1.0);
+  vec3 lit=vec3(stadiumShade);
+  vec3 combined = mix(texel.rgb, texel.rgb * environmentColor.rgb, environmentMix);
+  vec3 shaded=combined * lit * sunlight(vSun) * sceneTint.rgb;
+  shaded=mix(shaded,vec3(1.0),flashAmount);
+  return vec4(shaded,
+    texel.a * mix(1.0, environmentColor.a, environmentMix) * sceneTint.a);
+}
+#endif
+]]
+
+local SHADOW_SHADER = [[
+varying float vDepth;
+#ifdef VERTEX
+uniform mat4 lightVP;
+uniform mat4 modelMatrix;
+vec4 position(mat4 transform_projection,vec4 vertex_position) {
+  vec4 c=lightVP*(modelMatrix*vertex_position);
+  vDepth=c.z*0.5+0.5;
+  return c;
+}
+#endif
+#ifdef PIXEL
+vec4 effect(vec4 color,Image tex,vec2 tc,vec2 sc) {
+  if (Texel(tex,tc).a<0.5) discard;
+  float d=clamp(vDepth,0.0,1.0)*255.0;
+  return vec4(floor(d)/255.0,fract(d),0.0,1.0);
+}
+#endif
+]]
+
+-- A deliberately small compatibility shader. Raw model coordinates must
+-- never reach LOVE's default 2D transform: Stadium units are then interpreted
+-- as screen pixels, putting the model at the canvas origin and making every
+-- camera control appear broken. Drivers that reject the lit shader still get
+-- the same projection and texture path through this one.
+local CAMERA_SHADER = [[
+#ifdef VERTEX
+uniform mat4 mvp;
+vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  return mvp * vertex_position;
+}
+#endif
+#ifdef PIXEL
+vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords) {
+  vec4 texel = Texel(image, texture_coords) * color;
+  if (texel.a <= 0.001) discard;
+  return texel;
+}
+#endif
+]]
+
+local floor = math.floor
+local unpack = table.unpack or unpack
+local sin, cos, sqrt = math.sin, math.cos, math.sqrt
+local pi = math.pi
+
+local function identity()
+  return {
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  }
+end
+
+local function matMul(a, b)
+  local o = {}
+  for r = 0, 3 do
+    for c = 0, 3 do
+      local v = 0
+      for k = 0, 3 do v = v + a[r * 4 + k + 1] * b[k * 4 + c + 1] end
+      o[r * 4 + c + 1] = v
+    end
+  end
+  return o
+end
+
+local function perspective(fovy, aspect, near, far, shiftX, shiftY)
+  local f = 1 / math.tan(fovy * 0.5)
+  shiftX, shiftY = tonumber(shiftX) or 0, tonumber(shiftY) or 0
+  return {
+    f / aspect, 0, -shiftX, 0,
+    0, f, -shiftY, 0,
+    0, 0, (far + near) / (near - far), (2 * far * near) / (near - far),
+    0, 0, -1, 0,
+  }
+end
+
+local function lookAt(ex, ey, ez, tx, ty, tz)
+  local fx, fy, fz = tx - ex, ty - ey, tz - ez
+  local fl = sqrt(fx * fx + fy * fy + fz * fz)
+  if fl == 0 then fl = 1 end
+  fx, fy, fz = fx / fl, fy / fl, fz / fl
+  local ux, uy, uz = 0, 1, 0
+  local sx, sy, sz = fy * uz - fz * uy, fz * ux - fx * uz, fx * uy - fy * ux
+  local sl = sqrt(sx * sx + sy * sy + sz * sz)
+  if sl == 0 then sx, sy, sz, sl = 1, 0, 0, 1 end
+  sx, sy, sz = sx / sl, sy / sl, sz / sl
+  ux, uy, uz = sy * fz - sz * fy, sz * fx - sx * fz, sx * fy - sy * fx
+  return {
+    sx, sy, sz, -(sx * ex + sy * ey + sz * ez),
+    ux, uy, uz, -(ux * ex + uy * ey + uz * ez),
+    -fx, -fy, -fz, fx * ex + fy * ey + fz * ez,
+    0, 0, 0, 1,
+  }
+end
+
+local function modelMatrix(yaw, pitch, scale, cx, cy, cz, flipY)
+  local y = yaw or 0
+  local p = pitch or 0
+  local sy, cyaw = sin(y), cos(y)
+  local sp, cp = sin(p), cos(p)
+  local s = scale or 1
+  local fy = flipY == false and 1 or -1
+  local ry = {
+    cyaw, 0, sy, 0,
+    0, 1, 0, 0,
+    -sy, 0, cyaw, 0,
+    0, 0, 0, 1,
+  }
+  local rx = {
+    1, 0, 0, 0,
+    0, cp, -sp, 0,
+    0, sp, cp, 0,
+    0, 0, 0, 1,
+  }
+  local sc = {
+    s, 0, 0, -cx * s,
+    0, s * fy, 0, -cy * s * fy,
+    0, 0, s, -cz * s,
+    0, 0, 0, 1,
+  }
+  return matMul(ry, matMul(rx, sc))
+end
+
+local function normalMatrix(yaw, pitch, flipY)
+  local y = yaw or 0
+  local p = pitch or 0
+  local sy, cyaw = sin(y), cos(y)
+  local sp, cp = sin(p), cos(p)
+  local fy = flipY == false and 1 or -1
+  return {
+    cyaw, sy * sp * fy, sy * cp,
+    0, cp * fy, -sp,
+    -sy, cyaw * sp * fy, cyaw * cp,
+  }
+end
+
+local function normalize3(x, y, z)
+  local n = sqrt(x * x + y * y + z * z)
+  if n <= 0 then return 0, 1, 0 end
+  return x / n, y / n, z / n
+end
+
+local function sampleComponent(c, frame, fallback)
+  if c == nil then return fallback end
+  if type(c) ~= "table" then return c end
+  if #c == 0 then return fallback end
+  local at = frame + 1
+  if at < 1 then at = 1 end
+  if at > #c then at = #c end
+  return c[at]
+end
+
+local function samplePose(model, animIndex, frame)
+  local anim = animIndex and model.anims and model.anims[animIndex] or nil
+  return function(i)
+    local bone = model.bones[i]
+    if not anim then return bone.t, bone.r, bone.s end
+    local tr = anim.tracks[i]
+    if not tr then return bone.t, bone.r, bone.s end
+    return {
+      sampleComponent(tr.t[1], frame, bone.t[1]),
+      sampleComponent(tr.t[2], frame, bone.t[2]),
+      sampleComponent(tr.t[3], frame, bone.t[3]),
+    }, {
+      sampleComponent(tr.r[1], frame, bone.r[1]),
+      sampleComponent(tr.r[2], frame, bone.r[2]),
+      sampleComponent(tr.r[3], frame, bone.r[3]),
+    }, {
+      sampleComponent(tr.s[1], frame, bone.s[1]),
+      sampleComponent(tr.s[2], frame, bone.s[2]),
+      sampleComponent(tr.s[3], frame, bone.s[3]),
+    }
+  end
+end
+
+local function nextFrame(anim, frame, loop)
+  if not anim or anim.frames <= 1 then return frame end
+  if frame + 1 < anim.frames then return frame + 1 end
+  if loop == false then return frame end
+  return math.max(0, math.min(anim.frames - 1, anim.loopStart or 0))
+end
+
+local function lerp(a, b, t) return a + (b - a) * t end
+local function lerpAngle(a, b, t)
+  local d = (b - a + 32768) % 65536 - 32768
+  return a + d * t
+end
+
+local function samplePoseInterpolated(model, animIndex, frame, alpha, loop)
+  local anim = animIndex and model.anims and model.anims[animIndex] or nil
+  if not anim or alpha <= 0 then return samplePose(model, animIndex, frame) end
+  local a = samplePose(model, animIndex, frame)
+  local b = samplePose(model, animIndex, nextFrame(anim, frame, loop))
+  return function(i)
+    local at, ar, as = a(i)
+    local bt, br, bs = b(i)
+    local travel = math.sqrt((bt[1]-at[1])^2 + (bt[2]-at[2])^2 + (bt[3]-at[3])^2)
+    local blend = travel > 4096 and 0 or alpha
+    return {
+      lerp(at[1],bt[1],blend), lerp(at[2],bt[2],blend), lerp(at[3],bt[3],blend),
+    }, {
+      lerpAngle(ar[1],br[1],blend), lerpAngle(ar[2],br[2],blend), lerpAngle(ar[3],br[3],blend),
+    }, {
+      lerp(as[1],bs[1],blend), lerp(as[2],bs[2],blend), lerp(as[3],bs[3],blend),
+    }
+  end
+end
+
+local function sourceFrame(anim, time, loop)
+  if not anim or anim.frames <= 0 then return 0, true end
+  local raw = floor(math.max(0, tonumber(time) or 0) * Pack.FPS)
+  if raw < anim.frames then return raw, false end
+  if loop == false then return anim.frames - 1, true end
+  local start = math.max(0, math.min(anim.frames - 1, anim.loopStart or 0))
+  local span = anim.frames - start
+  if span <= 0 then return anim.frames - 1, false end
+  return start + ((raw - start) % span), false
+end
+
+local function makeMesh(prim)
+  local rows = {}
+  for i = 1, prim.nverts do
+    rows[i] = { 0, 0, 0, prim.uv[i * 2 - 1], prim.uv[i * 2], 0, 1, 0 }
+  end
+  if not (love and love.graphics and love.graphics.newMesh) then return nil, rows end
+  local ok, mesh = pcall(love.graphics.newMesh, Renderer.FORMAT, rows, "triangles", "dynamic")
+  if not ok then return nil, rows end
+  if mesh.setVertexMap then pcall(mesh.setVertexMap, mesh, prim.idx) end
+  return mesh, rows
+end
+
+local function makeCanvas(w, h, msaa)
+  if not (love and love.graphics and love.graphics.newCanvas) then return nil end
+  msaa = math.max(0, floor(tonumber(msaa) or 0))
+  local okColor, color = pcall(love.graphics.newCanvas, w, h, { format = "rgba8", readable = true, dpiscale = 1, msaa = msaa })
+  if not okColor then
+    okColor, color = pcall(love.graphics.newCanvas, w, h)
+  end
+  if not okColor then return nil end
+  local depth
+  local okDepth, d = pcall(love.graphics.newCanvas, w, h, { format = "depth24stencil8", readable = false, dpiscale = 1, msaa = msaa })
+  if okDepth then depth = d end
+  if color.setFilter then pcall(color.setFilter, color, "linear", "linear") end
+  return color, depth
+end
+
+local function imageDimensions(image, fallback)
+  if image and image.getDimensions then
+    local ok,w,h=pcall(image.getDimensions,image)
+    if ok and w and h then return w,h end
+  end
+  return (fallback and fallback.w) or 1,(fallback and fallback.h) or 1
+end
+
+function Renderer.new(model, options)
+  if type(model) ~= "table" or not model.prims then return nil, "model required" end
+  options = type(options) == "table" and options or {}
+  local idleIndex = Pack.contextIndex(model, "idle") or (model.anims[1] and 1 or nil)
+  local self = setmetatable({
+    model = model,
+    parts = {},
+    time = 0,
+    animIndex = nil,
+    loop = true,
+    frame = 0,
+    finished = false,
+    yaw = tonumber(options.yaw) or 0,
+    pitch = tonumber(options.pitch) or 0,
+    fov = tonumber(options.fov) or (35 * pi / 180),
+    lightDir = options.lightDir or { 0.35, 0.7, 0.62 },
+    ambient = options.ambient or { 0.46, 0.46, 0.46 },
+    diffuse = options.diffuse or { 0.72, 0.72, 0.72 },
+    flipY = options.flipY ~= false,
+    textureFilter = options.textureFilter == "linear" and "linear" or "nearest",
+    anisotropy = math.max(1, tonumber(options.anisotropy) or 4),
+    handlerRuntime = {},
+    randomSeed = math.floor(tonumber(options.randomSeed) or 1),
+    handlerState = {},
+    deferred = {},
+    anchorEnabled = options.anchorTravel == true,
+  }, Renderer)
+  for i, prim in ipairs(model.prims) do
+    local mesh, rows = makeMesh(prim)
+    local used = {}
+    for _, vi in ipairs(prim.idx or {}) do used[vi] = true end
+    self.parts[i] = { prim = prim, mesh = mesh, rows = rows, visible = {}, used = used }
+  end
+  if love and love.graphics and love.graphics.newShader then
+    local ok, shader = pcall(love.graphics.newShader, SHADER)
+    if ok and shader then
+      self.shader, self.shaderTier = shader, "lit"
+    else
+      self.shaderError = tostring(shader)
+      local fallbackOK, fallback = pcall(love.graphics.newShader, CAMERA_SHADER)
+      if fallbackOK and fallback then
+        self.shader, self.shaderTier = fallback, "camera"
+      else
+        return nil, ("Stadium 2 model shader unavailable: %s; fallback: %s")
+          :format(self.shaderError, tostring(fallback))
+      end
+    end
+    local shadowOK,shadow=pcall(love.graphics.newShader,SHADOW_SHADER)
+    if shadowOK then self.shadowShader=shadow end
+  elseif love and love.graphics then
+    return nil, "Stadium 2 model shader support is unavailable"
+  end
+  if model.handlers then
+    self.handlerState, self.deferred = Handlers.runExtension(model.handlers, 0,
+      { modelContext = self, node = self }, self.handlerState)
+  end
+  self:updatePose(true)
+  self.bindAnchor=self:geometryAnchor()
+  self.bindBounds = self:poseBounds()
+  if not model.staticPose then self.animIndex = idleIndex end
+  self:updatePose(true)
+  return self
+end
+
+function Renderer:geometryAnchor()
+  local x,y,z,n=0,0,0,0
+  for _,part in ipairs(self.parts or {}) do
+    for i,row in ipairs(part.rows or {}) do
+      if part.used[i] and part.visible[i]~=false then
+        x,y,z,n=x+row[1],y+row[2],z+row[3],n+1
+      end
+    end
+  end
+  if n==0 then return {0,0,0} end
+  return {x/n,y/n,z/n}
+end
+
+function Renderer:setAnimation(value, loop, auxIndex)
+  if self.model.staticPose then return false end
+  local index
+  if type(value) == "number" then
+    index = floor(value)
+  elseif type(value) == "string" then
+    index = self.model.animByName[value] or Pack.contextIndex(self.model, value)
+  end
+  if not (index and self.model.anims[index]) then return false end
+  self.animIndex = index
+  self.loop = loop ~= false
+  self.auxIndex = auxIndex
+  self.time = 0
+  self.frame = 0
+  self.finished = false
+  self:updatePose(true)
+  return true
+end
+
+function Renderer:setMove(move, loop)
+  local index = Pack.moveIndex(self.model, move)
+  if not index then return false end
+  local aux=self.model.moveAux and self.model.moveAux[move]
+  if aux and aux>=0 then aux=aux+1 else aux=nil end
+  return self:setAnimation(index, loop, aux)
+end
+
+function Renderer:setContext(name, loop)
+  local index = Pack.contextIndex(self.model, name)
+  if not index then return false end
+  return self:setAnimation(index, loop)
+end
+
+function Renderer:setHandlerRuntime(runtime, defer)
+  self.handlerRuntime = type(runtime) == "table" and runtime or {}
+  if not defer then self:updateHandlers() end
+end
+
+function Renderer:handlerValues()
+  local values = {
+    sourceFrame = self.frame,
+    frame = self.frame,
+    textureFrame = self.frame,
+    time = self.time,
+    randomSeed = self.randomSeed,
+    modelContext = self,
+    node = self,
+  }
+  for key, value in pairs(self.handlerRuntime or {}) do values[key] = value end
+  return values
+end
+
+function Renderer:updateHandlers()
+  if not self.model.handlers then return end
+  self.handlerState, self.deferred = Handlers.runExtension(self.model.handlers, 2,
+    self:handlerValues(), self.handlerState)
+  -- The battle reference resolves render callbacks before skinning too: some
+  -- of them alter bones/visibility as well as materials.  Running phase 5 in
+  -- drawScene made Muk's posed geometry one frame late (or never applied on
+  -- a static frame), even though its textures appeared to update.
+  self.handlerState, self.deferred = Handlers.runExtension(self.model.handlers, 5,
+    self:handlerValues(), self.handlerState)
+end
+
+function Renderer:updatePose(force)
+  local anim = self.animIndex and self.model.anims[self.animIndex] or nil
+  local frame, finished = sourceFrame(anim, self.time, self.loop)
+  local alpha = anim and math.max(0, math.min(0.999999,
+    self.time * Pack.FPS - math.floor(self.time * Pack.FPS))) or 0
+  if finished then alpha = 0 end
+  local changed = force or frame ~= self.frame or finished ~= self.finished
+    or math.abs(alpha - (self.poseAlpha or -1)) > 0.000001
+  self.frame, self.finished = frame, finished
+  self.poseAlpha = alpha
+  self:updateHandlers()
+  if not changed then return false end
+  local mats,pivots = Build.bindMatrices(self.model.bones,
+    samplePoseInterpolated(self.model, self.animIndex, frame, alpha, self.loop))
+  for _, item in pairs(self.handlerState and self.handlerState.operations or {}) do
+    local transform = item.result and item.result.transform
+    local bone = item.record and item.record.bone
+    local matrix = bone and mats[bone + 1] or nil
+    if transform and matrix then
+      matrix[1][4] = matrix[1][4] + transform.x * 8
+      matrix[2][4] = matrix[2][4] + transform.y * 8
+      matrix[3][4] = matrix[3][4] + transform.z * 8
+      for row = 1, 3 do for col = 1, 3 do matrix[row][col] = matrix[row][col] * transform.scale end end
+    end
+  end
+  local root = self.model.rootScale or 1
+  local hidden = self.handlerState and self.handlerState.bit0ByBone or nil
+  for _, part in ipairs(self.parts) do
+    local prim, rows = part.prim, part.rows
+    for k = 1, prim.nverts do
+      local bi = prim.skin[k] + 1
+      local m = mats[bi]
+      local normalM=pivots and pivots[bi] or m
+      local row = rows[k]
+      local visible = not (hidden and hidden[prim.skin[k]] == false)
+      part.visible[k] = m ~= nil and visible
+      if m and visible then
+        local x, y, z = prim.pos[k * 3 - 2], prim.pos[k * 3 - 1], prim.pos[k * 3]
+        row[1] = (m[1][1] * x + m[1][2] * y + m[1][3] * z + m[1][4]) * root
+        row[2] = (m[2][1] * x + m[2][2] * y + m[2][3] * z + m[2][4]) * root
+        row[3] = (m[3][1] * x + m[3][2] * y + m[3][3] * z + m[3][4]) * root
+        local nx, ny, nz = prim.nrm[k * 3 - 2], prim.nrm[k * 3 - 1], prim.nrm[k * 3]
+        row[6], row[7], row[8] = normalize3(
+          normalM[1][1] * nx + normalM[1][2] * ny + normalM[1][3] * nz,
+          normalM[2][1] * nx + normalM[2][2] * ny + normalM[2][3] * nz,
+          normalM[3][1] * nx + normalM[3][2] * ny + normalM[3][3] * nz)
+      else
+        row[1], row[2], row[3] = 0, 0, 0
+        row[6], row[7], row[8] = 0, 1, 0
+      end
+    end
+    if part.mesh and part.mesh.setVertices then pcall(part.mesh.setVertices, part.mesh, rows) end
+    if part.mesh and part.mesh.setVertexMap then
+      local map = {}
+      for ii = 1, #prim.idx, 3 do
+        local a, b, c = prim.idx[ii], prim.idx[ii + 1], prim.idx[ii + 2]
+        if a and b and c then
+          local sa, sb, sc = prim.skin[a] or 0, prim.skin[b] or 0, prim.skin[c] or 0
+          if not hidden or (hidden[sa] ~= false and hidden[sb] ~= false and hidden[sc] ~= false) then
+            map[#map + 1], map[#map + 2], map[#map + 3] = a, b, c
+          end
+        end
+      end
+      pcall(part.mesh.setVertexMap, part.mesh, map)
+    end
+  end
+  if self.anchorEnabled and self.bindAnchor and anim then
+    local now=self:geometryAnchor()
+    local dx,dy,dz=now[1]-self.bindAnchor[1],now[2]-self.bindAnchor[2],now[3]-self.bindAnchor[3]
+    local dist=math.sqrt(dx*dx+dy*dy+dz*dz)
+    local allow=math.max(.001,(tonumber(self.model.height) or 1)*.75)
+    local tx,ty,tz=0,0,0
+    if dist>allow then
+      local k=(dist-allow)/dist;tx,ty,tz=dx*k,dy*k,dz*k
+    end
+    local dt=self.poseDT
+    local a=dt and dt>0 and (1-.5^(dt/.05)) or 1
+    self.anchorX=(self.anchorX or tx)+(tx-(self.anchorX or tx))*a
+    self.anchorY=(self.anchorY or ty)+(ty-(self.anchorY or ty))*a
+    self.anchorZ=(self.anchorZ or tz)+(tz-(self.anchorZ or tz))*a
+    if self.anchorX~=0 or self.anchorY~=0 or self.anchorZ~=0 then
+      for _,part in ipairs(self.parts) do
+        for i,row in ipairs(part.rows) do
+          if part.used[i] and part.visible[i]~=false then
+            row[1]=row[1]-self.anchorX;row[2]=row[2]-self.anchorY;row[3]=row[3]-self.anchorZ
+          end
+        end
+        if part.mesh and part.mesh.setVertices then pcall(part.mesh.setVertices,part.mesh,part.rows) end
+      end
+    end
+  end
+  return true
+end
+
+function Renderer:poseBounds()
+  local minX, minY, minZ = math.huge, math.huge, math.huge
+  local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+  local count = 0
+  for _, part in ipairs(self.parts) do
+    for i, row in ipairs(part.rows) do
+      if part.used[i] and part.visible[i] ~= false then
+        local x, y, z = row[1], row[2], row[3]
+        if x and y and z then
+          if x < minX then minX = x end
+          if y < minY then minY = y end
+          if z < minZ then minZ = z end
+          if x > maxX then maxX = x end
+          if y > maxY then maxY = y end
+          if z > maxZ then maxZ = z end
+          count = count + 1
+        end
+      end
+    end
+  end
+  if count == 0 then
+    return { minX = -0.5, minY = -0.5, minZ = -0.5, maxX = 0.5, maxY = 0.5, maxZ = 0.5, cx = 0, cy = 0, cz = 0, radius = 1 }
+  end
+  local cx, cy, cz = (minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5
+  local rx, ry, rz = (maxX - minX) * 0.5, (maxY - minY) * 0.5, (maxZ - minZ) * 0.5
+  local radius = math.max(sqrt(rx * rx + ry * ry + rz * rz), 0.001)
+  return { minX = minX, minY = minY, minZ = minZ, maxX = maxX, maxY = maxY, maxZ = maxZ, cx = cx, cy = cy, cz = cz, radius = radius }
+end
+
+function Renderer:fitCamera(width, height, options)
+  options = type(options) == "table" and options or {}
+  local bounds = options.dynamicFit and self:poseBounds() or self.bindBounds or self:poseBounds()
+  local scale = tonumber(options.scale) or 1
+  local aspect = math.max(0.001, width / math.max(1, height))
+  local verticalHalf = self.fov * 0.5
+  local horizontalHalf = math.atan(math.tan(verticalHalf) * aspect)
+  local limitingHalf = math.min(verticalHalf, horizontalHalf)
+  local padding = math.max(1.01, tonumber(options.fitPadding) or 1.12)
+  local radius = math.max(bounds.radius * math.abs(scale), 0.001)
+  local zoom = math.max(0.2, math.min(3.2, tonumber(options.zoom) or 1))
+  local baseDistance = radius / math.max(0.001, math.sin(limitingHalf)) * padding
+  local distance = baseDistance / zoom
+  local near = math.max(0.001, distance - radius * 1.15)
+  local far = math.max(near + 0.01, distance + radius * 3.0)
+  return {
+    bounds = bounds, scale = scale, aspect = aspect, zoom = zoom,
+    distance = distance, near = near, far = far,
+  }
+end
+
+function Renderer:step(dt)
+  self.poseDT=math.max(0,tonumber(dt) or 0)
+  self.time = self.time + math.max(0, tonumber(dt) or 0)
+  self:updatePose(false)
+  self.poseDT=nil
+  return not self.finished
+end
+
+-- Seek in source-authored 30 Hz frames. This is primarily useful to model
+-- inspection tools, but keeping it on the renderer means callback texture
+-- streams and handler phases are refreshed by the same path as playback.
+function Renderer:seekFrame(frame)
+  local anim = self.animIndex and self.model.anims[self.animIndex] or nil
+  if not anim or (anim.frames or 0) <= 0 then return false end
+  frame = floor(tonumber(frame) or 0) % anim.frames
+  self.time = frame / Pack.FPS
+  self.frame = -1
+  self.finished = false
+  self:updatePose(true)
+  return true
+end
+
+function Renderer:currentTexture(prim)
+  local dynamic = self.handlerState and self.handlerState.textureBySite
+  local site = prim and prim.callbackOffset
+  if dynamic and site and dynamic[site] then return dynamic[site] end
+  return Pack.textureIndex(self.model,prim,self.animIndex,self.frame,self.auxIndex,
+    self.handlerRuntime and self.handlerRuntime.callbackFrame)
+end
+
+function Renderer:worldMetrics()
+  local model = self.model or {}
+  local bounds = self.bindBounds or self:poseBounds()
+  return {
+    height = math.max(0.001, tonumber(model.height) or (bounds.maxY - bounds.minY)),
+    floor = tonumber(model.floor) or bounds.minY,
+    radius = math.max(0.001, tonumber(model.radius) or bounds.radius),
+    rootScale = tonumber(model.rootScale) or 1,
+    bounds = bounds,
+  }
+end
+
+-- Draw into the caller's currently-bound color/depth target. The battle scene
+-- uses this path so every actor shares the same camera and depth buffer.
+function Renderer:drawScene(pass, model, options)
+  options = type(options) == "table" and options or {}
+  local g = love and love.graphics
+  if not (g and self.shader) then return false, "graphics unavailable" end
+  local vp = options.viewProjection
+  if type(vp) ~= "table" or type(model) ~= "table" then
+    return false, "shared scene matrices required"
+  end
+  local additiveOnly = pass == "additive"
+  local opaqueOnly = pass == "opaque"
+  local ok, err = pcall(function()
+    g.setShader(self.shader)
+    pcall(self.shader.send, self.shader, "mvp", "row", matMul(vp, model))
+    pcall(self.shader.send, self.shader, "modelMatrix", "row", model)
+    pcall(self.shader.send, self.shader, "normalMatrix", "row",
+      options.normalMatrix or {1,0,0, 0,1,0, 0,0,1})
+    pcall(self.shader.send, self.shader, "lightDir", options.lightDir or self.lightDir)
+    pcall(self.shader.send, self.shader, "ambient", options.ambient or self.ambient)
+    pcall(self.shader.send, self.shader, "diffuse", options.diffuse or self.diffuse)
+    pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
+    pcall(self.shader.send, self.shader, "secondaryMix", 100/255)
+    pcall(self.shader.send, self.shader, "primarySize", {1,1})
+    pcall(self.shader.send, self.shader, "secondarySize", {1,1})
+    pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
+    pcall(self.shader.send, self.shader, "alphaCutoff", 0.01)
+    pcall(self.shader.send, self.shader, "sceneTint", options.tint or {1,1,1,1})
+    pcall(self.shader.send, self.shader, "flashAmount", options.flashAmount or 0)
+    pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
+    pcall(self.shader.send, self.shader, "sunEnabled", options.sunMap and 1 or 0)
+    if options.sunMap then pcall(self.shader.send,self.shader,"sunMap",options.sunMap) end
+    pcall(self.shader.send,self.shader,"sunDark",options.sunDark or 0.68)
+    pcall(self.shader.send,self.shader,"sunBias",options.sunBias or 0.002)
+    pcall(self.shader.send,self.shader,"sunTexel",options.sunTexel or {1/1024,1/1024})
+    if g.setDepthMode then g.setDepthMode("less", not additiveOnly) end
+    if g.setBlendMode then
+      g.setBlendMode(additiveOnly and "add" or "alpha", "alphamultiply")
+    end
+    for _, part in ipairs(self.parts) do
+      local additive = part.prim.additive == true
+      if part.mesh and ((additiveOnly and additive) or (opaqueOnly and not additive)
+          or (not additiveOnly and not opaqueOnly)) then
+        if g.setMeshCullMode then
+          local front = self.flipY ~= (options.flipWinding == true)
+          g.setMeshCullMode((not options.disableCulling and part.prim.cull)
+            and (front and "front" or "back") or "none")
+        end
+        local texture = Pack.image(self.model, self:currentTexture(part.prim))
+        local site = part.prim.callbackOffset
+        local dynamic = self.handlerState and self.handlerState.materialBySite
+        local material = site and dynamic and dynamic[site] or part.prim.material
+        local attributes = self.handlerState and self.handlerState.attributesBySite
+        local attribute = site and attributes and attributes[site]
+        local color = attribute and attribute.color or
+          (material and material.primitiveColor) or {1,1,1,1}
+        if part.prim.effect == "fire" and not (attribute and attribute.color) then
+          color = {1,0.42,0.12,1}
+        end
+        pcall(self.shader.send, self.shader, "primitiveColor", color)
+        pcall(self.shader.send, self.shader, "environmentColor",
+          material and material.environmentColor or {1,1,1,1})
+        pcall(self.shader.send, self.shader, "environmentMix",
+          material and material.combine and
+          (material.combine[1] ~= 0 or material.combine[2] ~= 0) and 1 or 0)
+        local sets = self.handlerState and self.handlerState.textureSetBySite
+        local set = site and sets and sets[site] or nil
+        local secondary = set and Pack.image(self.model, set[2]) or nil
+        if secondary then
+          pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
+          local sw, sh = imageDimensions(secondary,self.model.textures[set[2]])
+          pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
+          pcall(self.shader.send, self.shader, "secondaryMix", set.mix or 100/255)
+          local a, b = set.scroll and set.scroll[1], set.scroll and set.scroll[2]
+          pcall(self.shader.send, self.shader, "textureScroll", {
+            a and a[1] or 0, a and a[2] or 0, b and b[1] or 0, b and b[2] or 0})
+          pcall(self.shader.send, self.shader, "secondaryEnabled", 1)
+        else
+          pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
+          pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
+        end
+        pcall(self.shader.send, self.shader, "alphaCutoff", additive and 0.001 or 0.01)
+        if texture then
+          if texture.setFilter then pcall(texture.setFilter, texture, self.textureFilter,
+            self.textureFilter, self.anisotropy) end
+          if texture.setWrap and material then pcall(texture.setWrap, texture,
+            material.wrapS or "clamp", material.wrapT or "clamp") end
+          local tw, th = imageDimensions(texture,
+            self.model.textures[self:currentTexture(part.prim)])
+          pcall(self.shader.send, self.shader, "primarySize", {tw,th})
+          if part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
+        end
+        g.draw(part.mesh)
+      end
+    end
+  end)
+  if not ok then return false, tostring(err) end
+  return true
+end
+
+function Renderer:drawShadowMap(model,lightVP)
+  local g=love and love.graphics
+  if not (g and self.shadowShader and model and lightVP) then return false,"shadow shader unavailable" end
+  local ok,err=pcall(function()
+    g.setShader(self.shadowShader)
+    if g.setMeshCullMode then g.setMeshCullMode("none") end
+    if g.setDepthMode then g.setDepthMode("less",true) end
+    if g.setBlendMode then g.setBlendMode("replace","premultiplied") end
+    pcall(self.shadowShader.send,self.shadowShader,"lightVP","row",lightVP)
+    pcall(self.shadowShader.send,self.shadowShader,"modelMatrix","row",model)
+    for _,part in ipairs(self.parts) do
+      if part.mesh and not part.prim.additive then
+        local texture=Pack.image(self.model,self:currentTexture(part.prim))
+        if texture and part.mesh.setTexture then pcall(part.mesh.setTexture,part.mesh,texture) end
+        g.draw(part.mesh)
+      end
+    end
+  end)
+  return ok,ok and nil or tostring(err)
+end
+
+function Renderer:drawShadow(model, options)
+  options=type(options)=="table" and options or {}
+  options.tint=options.tint or {0.02,0.025,0.035,0.34}
+  options.ambient=options.ambient or {1,1,1}
+  options.diffuse=options.diffuse or {0,0,0}
+  return self:drawScene("opaque",model,options)
+end
+
+function Renderer:renderToCanvas(width, height, options)
+  options = type(options) == "table" and options or {}
+  width = math.max(1, floor(tonumber(width) or 96))
+  height = math.max(1, floor(tonumber(height) or 96))
+  if not (love and love.graphics) then return nil, "graphics unavailable" end
+  local msaa = math.max(0, floor(tonumber(options.msaa) or 4))
+  if not self.canvas or self.canvasW ~= width or self.canvasH ~= height or self.canvasMSAA ~= msaa then
+    if self.canvas and self.canvas.release then pcall(self.canvas.release, self.canvas) end
+    if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
+    self.canvas, self.depth = makeCanvas(width, height, msaa)
+    self.canvasW, self.canvasH, self.canvasMSAA = width, height, msaa
+  end
+  if not self.canvas then return nil, "canvas unavailable" end
+
+  local g = love.graphics
+  local oldCanvas = g.getCanvas and { g.getCanvas() } or nil
+  local oldShader = g.getShader and g.getShader() or nil
+  local oldBlend, oldAlpha
+  if g.getBlendMode then oldBlend, oldAlpha = g.getBlendMode() end
+  local oldDepthCompare, oldDepthWrite
+  if g.getDepthMode then oldDepthCompare, oldDepthWrite = g.getDepthMode() end
+  local oldCull = g.getMeshCullMode and g.getMeshCullMode() or nil
+  local ok, err = pcall(function()
+    if self.depth then
+      g.setCanvas({ self.canvas, depthstencil = self.depth })
+    else
+      g.setCanvas(self.canvas)
+    end
+    g.clear(0, 0, 0, 0, true, true)
+    if g.setDepthMode then g.setDepthMode("less", true) end
+    if self.shader then g.setShader(self.shader) end
+
+    local model = self.model
+    local camera = self:fitCamera(width, height, options)
+    local bounds = camera.bounds
+    local view = lookAt(0, 0, camera.distance, 0, 0, 0)
+    local proj = perspective(self.fov, camera.aspect, camera.near, camera.far,
+      tonumber(options.panX) or 0, tonumber(options.panY) or 0)
+    local mm = modelMatrix(options.yaw or self.yaw, options.pitch or self.pitch,
+      camera.scale, bounds.cx, bounds.cy, bounds.cz, self.flipY)
+    local mvp = matMul(proj, matMul(view, mm))
+    if self.shader then
+      pcall(self.shader.send, self.shader, "mvp", "row", mvp)
+      pcall(self.shader.send, self.shader, "normalMatrix", "row", normalMatrix(options.yaw or self.yaw, options.pitch or self.pitch, self.flipY))
+      pcall(self.shader.send, self.shader, "lightDir", self.lightDir)
+      pcall(self.shader.send, self.shader, "ambient", self.ambient)
+      pcall(self.shader.send, self.shader, "diffuse", self.diffuse)
+      pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
+      pcall(self.shader.send, self.shader, "secondaryMix", 100 / 255)
+      pcall(self.shader.send, self.shader, "primarySize", {1,1})
+      pcall(self.shader.send, self.shader, "secondarySize", {1,1})
+      pcall(self.shader.send, self.shader, "textureScroll", { 0, 0, 0, 0 })
+      pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
+      pcall(self.shader.send, self.shader, "sceneTint", {1,1,1,1})
+      pcall(self.shader.send, self.shader, "flashAmount", 0)
+    end
+
+    local function drawPass(additive)
+      if g.setBlendMode then
+        if additive then g.setBlendMode("add", "alphamultiply") else g.setBlendMode("alpha", "alphamultiply") end
+      end
+      for _, part in ipairs(self.parts) do
+        if part.mesh and part.prim.additive == additive then
+          if g.setMeshCullMode then
+            g.setMeshCullMode(part.prim.cull and (self.flipY and "front" or "back") or "none")
+          end
+          local texture = Pack.image(model, self:currentTexture(part.prim))
+          local site = part.prim.callbackOffset
+          local dynamic = self.handlerState and self.handlerState.materialBySite
+          local material = site and dynamic and dynamic[site] or part.prim.material
+          local attributes = self.handlerState and self.handlerState.attributesBySite
+          local attribute = site and attributes and attributes[site]
+          local primitiveColor = attribute and attribute.color
+            or (material and material.primitiveColor) or { 1, 1, 1, 1 }
+          if part.prim.effect == "fire" and not (attribute and attribute.color) then
+            primitiveColor = { 1, 0.42, 0.12, 1 }
+          end
+          if self.shader then
+            pcall(self.shader.send, self.shader, "primitiveColor",
+              primitiveColor)
+            pcall(self.shader.send, self.shader, "environmentColor",
+              material and material.environmentColor or { 1, 1, 1, 1 })
+            pcall(self.shader.send, self.shader, "environmentMix",
+              material and material.combine and (material.combine[1] ~= 0 or material.combine[2] ~= 0) and 1 or 0)
+            local sets = self.handlerState and self.handlerState.textureSetBySite
+            local set = site and sets and sets[site] or nil
+            local secondary = set and Pack.image(model, set[2]) or nil
+            if secondary then
+              pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
+              local sw,sh=imageDimensions(secondary,model.textures[set[2]])
+              pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
+              pcall(self.shader.send, self.shader, "secondaryMix", set.mix or (100 / 255))
+              local a, b = set.scroll and set.scroll[1], set.scroll and set.scroll[2]
+              pcall(self.shader.send, self.shader, "textureScroll", {
+                a and a[1] or 0, a and a[2] or 0,
+                b and b[1] or 0, b and b[2] or 0,
+              })
+              pcall(self.shader.send, self.shader, "secondaryEnabled", 1)
+            else
+              pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
+              pcall(self.shader.send, self.shader, "textureScroll", { 0, 0, 0, 0 })
+            end
+            pcall(self.shader.send, self.shader, "alphaCutoff", additive and 0.001 or 0.01)
+          end
+          if texture and texture.setFilter then
+            pcall(texture.setFilter, texture, self.textureFilter, self.textureFilter, self.anisotropy)
+          end
+          if texture then
+            local tw,th=imageDimensions(texture,
+              model.textures[self:currentTexture(part.prim)])
+            pcall(self.shader.send, self.shader, "primarySize", {tw,th})
+          end
+          if texture and texture.setWrap and material then
+            pcall(texture.setWrap, texture, material.wrapS or "clamp", material.wrapT or "clamp")
+          end
+          if texture and part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
+          g.draw(part.mesh)
+        end
+      end
+    end
+    drawPass(false)
+    drawPass(true)
+
+  end)
+  if oldCull and g.setMeshCullMode then pcall(g.setMeshCullMode, oldCull) end
+  if oldDepthCompare and g.setDepthMode then pcall(g.setDepthMode, oldDepthCompare, oldDepthWrite) end
+  if g.setBlendMode then pcall(g.setBlendMode, oldBlend or "alpha", oldAlpha or "alphamultiply") end
+  if g.setShader then pcall(g.setShader, oldShader) end
+  if oldCanvas and #oldCanvas > 0 then
+    pcall(g.setCanvas, unpack(oldCanvas))
+  elseif g.setCanvas then
+    pcall(g.setCanvas)
+  end
+  if not ok then return nil, tostring(err) end
+  return self.canvas
+end
+
+function Renderer:draw(x, y, width, height, options)
+  options = type(options) == "table" and options or {}
+  width = math.max(1, tonumber(width) or 96)
+  height = math.max(1, tonumber(height) or 96)
+  local supersample = math.max(1, math.min(3, tonumber(options.supersample) or 1))
+  local rw = math.max(1, floor(width * supersample + 0.5))
+  local rh = math.max(1, floor(height * supersample + 0.5))
+  local canvas, err = self:renderToCanvas(rw, rh, options)
+  if not canvas then return false, err end
+  if not (love and love.graphics and love.graphics.draw) then return false, "graphics unavailable" end
+  local g = love.graphics
+  if g.setColor then g.setColor(1, 1, 1, 1) end
+  g.draw(canvas, tonumber(x) or 0, tonumber(y) or 0, 0, width / rw, height / rh)
+  return true
+end
+
+function Renderer:release()
+  for _, part in ipairs(self.parts or {}) do
+    if part.mesh and part.mesh.release then pcall(part.mesh.release, part.mesh) end
+    part.mesh = nil
+  end
+  if self.canvas and self.canvas.release then pcall(self.canvas.release, self.canvas) end
+  if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
+  if self.shader and self.shader.release then pcall(self.shader.release, self.shader) end
+  if self.shadowShader and self.shadowShader.release then pcall(self.shadowShader.release,self.shadowShader) end
+  self.canvas, self.depth, self.shader, self.shadowShader = nil, nil, nil, nil
+end
+
+Renderer.sourceFrame = sourceFrame
+Renderer.samplePose = samplePose
+Renderer.samplePoseInterpolated = samplePoseInterpolated
+Renderer.matMul = matMul
+Renderer.perspective = perspective
+Renderer.lookAt = lookAt
+Renderer.modelMatrix = modelMatrix
+Renderer.normalMatrix = normalMatrix
+Renderer.identity = identity
+
+function Renderer.ortho(l,r,b,t,n,f)
+  return {2/(r-l),0,0,-(r+l)/(r-l), 0,2/(t-b),0,-(t+b)/(t-b),
+    0,0,-2/(f-n),-(f+n)/(f-n), 0,0,0,1}
+end
+
+return Renderer

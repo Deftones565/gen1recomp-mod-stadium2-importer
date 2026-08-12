@@ -1,0 +1,254 @@
+package.path = "./?.lua;./?/init.lua;" .. package.path
+
+local Build = require("mods.STADIUM2_IMPORTER.lib.build")
+local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
+local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
+local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
+
+local checks = 0
+local function ok(value, message)
+  checks = checks + 1
+  if not value then error("FAIL " .. message, 0) end
+end
+
+local function be16(value)
+  return string.char(math.floor(value / 256) % 256, value % 256)
+end
+
+local fragment = string.rep("\0", 0x40) .. be16(4) .. be16(41) .. be16(2000) .. string.rep("\0", 0x80)
+local handlers = Handlers.compile({
+  { handler = 0x81000058, bone = 1, arg = 0x40, commandOffset = 0x80 },
+  { handler = 0x81000080, bone = 0, arg = nil, commandOffset = 0x90 },
+}, fragment, 0x8FF00000)
+
+local moveRows = {}
+for i = 1, 165 do moveRows[i] = { 0, 0 } end
+local contexts = {}
+for i = 1, #Build.CONTEXTS do contexts[i] = 0xFFFF end
+contexts[1] = 0
+
+local bytes = Build.pack({
+  rootScale = { 1, 1, 1 },
+  bones = {
+    { parent = -1, t = { 0, 0, 0 }, r = { 0, 0, 0 }, s = { 1, 1, 1 } },
+    { parent = 0, t = { 10, 0, 0 }, r = { 0, 0, 0 }, s = { 1, 1, 1 } },
+  },
+  prims = {
+    {
+      tex = 0, cull = 1, blend = "add", texAnim = 0, texMap = { [5] = 1 },
+      pos = { 0, 0, 0, 10, 0, 0, 0, 10, 0, 1000, 1000, 1000 },
+      uv = { 0, 0, 1, 0, 0, 1, 1, 1 },
+      nrm = { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0 },
+      skin = { 1, 1, 1, 1 }, nverts = 4, idx = { 0, 1, 2 }, nidx = 3,
+    },
+  },
+  textures = {
+    { w = 1, h = 1, rgba = "\255\0\0\255" },
+    { w = 1, h = 1, rgba = "\0\255\0\255" },
+  },
+  anims = {
+    {
+      name = "idle", frames = 2, loopStart = 0, aux = 0,
+      tracks = {
+        [2] = {
+          t = { { 10, 20 }, 0, 0 },
+          r = { 0, 0, 0 },
+          s = { 1, 1, 1 },
+        },
+      },
+    },
+  },
+  auxAnims = {
+    { frames = 1, loopStart = 0, channels = { { n = 1, 5 } } },
+  },
+  handlerOps = handlers,
+  handlerSourceBase = 0x8FF00000,
+  handlerFragment = fragment,
+}, 25, moveRows, contexts)
+
+local model, err = Pack.parse(bytes)
+ok(model ~= nil, err or "pack parse")
+ok(model.species == 25, "species")
+ok(model.boneCount == 2 and #model.bones == 2, "bones")
+ok(model.primCount == 1 and #model.prims == 1, "primitives")
+ok(model.texCount == 2 and #model.textures == 2, "textures")
+ok(model.animCount == 1 and #model.anims == 1, "animations")
+ok(model.handlers and #model.handlers.records == 2, "handler extension")
+ok(Pack.contextIndex(model, "idle") == 1, "idle context")
+ok(Pack.moveIndex(model, 1) == 1, "move mapping")
+ok(Pack.textureIndex(model, model.prims[1], 1, 0) == 2, "texture animation mapping")
+ok(model.prims[1].cull == true and model.prims[1].additive == true, "render state")
+
+local rig, rigErr = Renderer.new(model)
+ok(rig ~= nil, rigErr or "renderer")
+ok(rig.animIndex == 1, "renderer idle")
+ok(rig.parts[1].rows[1][1] == 10, "bind animation frame zero skinning")
+rig:step(1/60)
+ok(rig.frame==0 and math.abs(rig.parts[1].rows[1][1]-15)<0.000001,
+  "geometry interpolates while callback and texture state stay on the source frame")
+rig:setAnimation("idle",true)
+rig:step(1 / 30)
+ok(rig.frame == 1, "30Hz source frame")
+ok(rig.parts[1].rows[1][1] == 20, "animated skinning")
+rig:step(1 / 30)
+ok(rig.frame == 0, "loop start")
+ok(rig:seekFrame(1) and rig.frame == 1 and rig.parts[1].rows[1][1] == 20,
+  "renderer seeks an exact source frame and refreshes its pose")
+rig:seekFrame(0)
+ok(rig:currentTexture(model.prims[1]) == 2, "renderer texture selection")
+rig:setHandlerRuntime({ selector = 4, rangeValue = 100 })
+rig:updatePose(true)
+ok(rig.handlerState.bit0ByBone[1] == true, "visibility gate enabled")
+local bounds = rig:poseBounds()
+ok(math.abs(bounds.cx - 15) < 0.000001 and math.abs(bounds.cy - 5) < 0.000001, "posed bounds center uses drawn geometry")
+ok(bounds.maxX < 30 and bounds.maxY < 30 and bounds.maxZ < 30, "unused decoded vertex cannot drag camera bounds")
+ok(bounds.radius > 7 and bounds.radius < 7.2, "posed bounds radius")
+local cameraSquare = rig:fitCamera(320, 320, { fitPadding = 1.12 })
+local cameraNarrow = rig:fitCamera(160, 320, { fitPadding = 1.12 })
+ok(cameraSquare.bounds.cx == bounds.cx and cameraSquare.bounds.cy == bounds.cy, "camera targets posed bounds")
+ok(cameraNarrow.distance > cameraSquare.distance, "camera backs up for narrow aspect")
+local cameraZoom = rig:fitCamera(320, 320, { fitPadding = 1.12, zoom = 2 })
+ok(cameraZoom.distance < cameraSquare.distance, "viewer zoom moves camera closer")
+rig:step(1 / 30)
+local movedBounds = rig:poseBounds()
+local stableCamera = rig:fitCamera(320, 320, { fitPadding = 1.12 })
+ok(movedBounds.cx ~= stableCamera.bounds.cx, "animated pose can move independently of framing bounds")
+ok(math.abs(stableCamera.bounds.cx - cameraSquare.bounds.cx) < 0.000001,
+  "camera framing stays locked to bind pose instead of chasing animation")
+rig:setAnimation("idle", true)
+ok(cameraSquare.near > 0 and cameraSquare.far > cameraSquare.near, "camera clip range valid")
+local orient = Renderer.modelMatrix(0, 0, 1, 0, 5, 0, true)
+ok(math.abs(orient[6] + 1) < 0.000001 and math.abs(orient[8] - 5) < 0.000001, "Stadium model matrix flips vertical axis around model center")
+local shiftedProjection = Renderer.perspective(math.pi / 4, 1, 0.1, 100, 0.25, -0.5)
+ok(math.abs(shiftedProjection[3] + 0.25) < 0.000001 and math.abs(shiftedProjection[7] - 0.5) < 0.000001, "projection supports screen-space model panning")
+
+rig:setHandlerRuntime({ selector = 4, rangeValue = 3000 })
+rig:updatePose(true)
+ok(rig.handlerState.bit0ByBone[1] == false, "visibility gate disabled")
+ok(rig.parts[1].rows[1][1] == 0 and rig.parts[1].rows[1][2] == 0, "hidden bone suppressed")
+ok(rig.handlerState.modelContext == rig, "model context registered")
+ok(Renderer.sourceFrame(model.anims[1], 2 / 30, true) == 0, "animation loop sampling")
+
+local bad, badErr = Pack.parse("DSM3bad")
+ok(bad == nil and type(badErr) == "string", "truncated pack rejected")
+
+print(("%d checks passed (Stadium 2 standalone renderer)"):format(checks))
+
+
+local calls = {}
+local meshId = 0
+_G.love = {
+  image = {
+    newImageData = function(w, h, format, rgba)
+      return { w = w, h = h, format = format, rgba = rgba }
+    end,
+  },
+  graphics = {},
+}
+local g = love.graphics
+function g.newMesh(format, rows, mode, usage)
+  meshId = meshId + 1
+  local m = { id = meshId, rows = rows }
+  function m:setVertexMap(map) self.map = map end
+  function m:setVertices(rows2) self.rows = rows2 end
+  function m:setTexture(tex) self.texture = tex end
+  function m:release() self.released = true end
+  return m
+end
+function g.newShader(code)
+  local sh = { code = code }
+  function sh:send(...) end
+  function sh:release() end
+  return sh
+end
+function g.newCanvas(w, h, options)
+  local c = { w = w, h = h, options = options }
+  function c:setFilter(min, mag) self.filter = min .. ":" .. mag end
+  function c:release() end
+  return c
+end
+function g.newImage(data)
+  local img = { data = data }
+  function img:setFilter(min, mag, anisotropy) self.filter, self.anisotropy = min, anisotropy end
+  function img:setWrap() end
+  function img:release() end
+  return img
+end
+function g.getCanvas() return nil end
+function g.getShader() return nil end
+function g.getBlendMode() return "alpha", "alphamultiply" end
+function g.getDepthMode() return nil, false end
+function g.getMeshCullMode() return "none" end
+function g.setCanvas(v) calls[#calls + 1] = { "canvas", v } end
+function g.clear(...) calls[#calls + 1] = { "clear" } end
+function g.setDepthMode(...) calls[#calls + 1] = { "depth", ... } end
+function g.setShader(v) calls[#calls + 1] = { "shader", v } end
+function g.setBlendMode(a, b) calls[#calls + 1] = { "blend", a, b } end
+function g.setMeshCullMode(v) calls[#calls + 1] = { "cull", v } end
+function g.draw(v, ...) calls[#calls + 1] = { "draw", v and v.id or "canvas", ... } end
+function g.setColor(...) end
+
+local gpuModel = assert(Pack.parse(bytes))
+local p1 = gpuModel.prims[1]
+local p2 = {}
+for k, v in pairs(p1) do p2[k] = v end
+p1.additive = false
+p2.additive = true
+gpuModel.prims = { p1, p2 }
+local gpuRig = assert(Renderer.new(gpuModel))
+local canvas, renderErr = gpuRig:renderToCanvas(64, 64)
+ok(canvas ~= nil, renderErr or "GPU canvas")
+local drawOrder, blendBeforeDraw = {}, {}
+local currentBlend
+for _, call in ipairs(calls) do
+  if call[1] == "blend" then currentBlend = call[2] end
+  if call[1] == "draw" and type(call[2]) == "number" then
+    drawOrder[#drawOrder + 1] = call[2]
+    blendBeforeDraw[#blendBeforeDraw + 1] = currentBlend
+  end
+end
+ok(#drawOrder == 2, "two primitive draw calls")
+ok(blendBeforeDraw[1] == "alpha", "opaque pass first")
+ok(blendBeforeDraw[2] == "add", "additive pass second")
+ok(gpuRig.parts[1].mesh.texture ~= nil, "texture uploaded")
+ok(gpuRig.parts[1].mesh.texture.filter == "nearest", "renderer preserves sharp source texels")
+ok(canvas.filter == "linear:linear", "render target uses linear filtering")
+ok(gpuRig.parts[1].mesh.map and #gpuRig.parts[1].mesh.map == 3, "index map uploaded")
+calls = {}
+local ident={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}
+local sceneOK,sceneErr=gpuRig:drawScene("opaque",ident,{viewProjection=ident})
+ok(sceneOK,sceneErr or "shared scene draw")
+local sceneCanvas,sceneDraws=false,0
+for _,call in ipairs(calls) do
+  if call[1]=="canvas" then sceneCanvas=true end
+  if call[1]=="draw" and type(call[2])=="number" then sceneDraws=sceneDraws+1 end
+end
+ok(not sceneCanvas,"shared scene draw never binds a private actor canvas")
+ok(sceneDraws==1,"shared opaque pass excludes additive attached effects")
+calls = {}
+local drawOk, drawErr = gpuRig:draw(4, 8, 64, 64, { supersample = 2, msaa = 4, zoom = 1.5, panX = 0.2, panY = -0.1 })
+ok(drawOk, drawErr or "supersampled draw")
+ok(gpuRig.canvasW == 128 and gpuRig.canvasH == 128, "viewer supersampling renders above presentation resolution")
+ok(gpuRig.canvasMSAA == 4, "viewer requests multisample render target")
+local sawFrontCull = false
+for _, call in ipairs(calls) do if call[1] == "cull" and call[2] == "front" then sawFrontCull = true end end
+ok(sawFrontCull, "vertical coordinate correction compensates triangle culling")
+gpuRig:release()
+
+local shaderAttempts = 0
+function g.newShader(code)
+  shaderAttempts = shaderAttempts + 1
+  if shaderAttempts == 1 then error("lit shader rejected") end
+  local sh = { code = code }
+  function sh:send(...) end
+  function sh:release() end
+  return sh
+end
+local fallbackRig, fallbackErr = Renderer.new(assert(Pack.parse(bytes)))
+ok(fallbackRig ~= nil, fallbackErr or "camera shader fallback")
+ok(fallbackRig.shaderTier == "camera" and fallbackRig.shaderError:find("lit shader rejected", 1, true),
+  "shader failure keeps projected camera rendering instead of raw top-left geometry")
+fallbackRig:release()
+_G.love = nil
+
+print(("%d checks passed (Stadium 2 standalone renderer GPU path)"):format(checks))
