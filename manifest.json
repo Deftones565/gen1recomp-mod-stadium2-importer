@@ -1,7 +1,7 @@
 {
   "id": "STADIUM2_IMPORTER",
   "name": "Pokemon Stadium 2 Importer",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "api": 2,
   "games": [
     "gen1",
