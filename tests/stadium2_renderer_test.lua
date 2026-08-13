@@ -3,6 +3,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 local Build = require("mods.STADIUM2_IMPORTER.lib.build")
 local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
 local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
+local RenderContract = require("mods.STADIUM2_IMPORTER.lib.render_contract")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 
 local checks = 0
@@ -10,6 +11,16 @@ local function ok(value, message)
   checks = checks + 1
   if not value then error("FAIL " .. message, 0) end
 end
+
+ok(RenderContract.supportsCoplanarDecals(),
+  "model depth contract preserves later coplanar eye and face layers")
+local decalCompare, decalWrite = RenderContract.depthState({
+  sourceTextureMissing = false, decal = true }, true)
+local bodyCompare, bodyWrite = RenderContract.depthState({
+  sourceTextureMissing = false, decal = false }, true)
+ok(decalCompare == "lequal" and not decalWrite
+  and bodyCompare == "less" and bodyWrite,
+  "alpha decals compare equal without writing over ordinary body depth")
 
 local function be16(value)
   return string.char(math.floor(value / 256) % 256, value % 256)
@@ -91,6 +102,24 @@ ok(not carrierState.lightingEnabled,
   "dynamic-object carrier preserves unlit vertex-color interpretation")
 ok(not carrierState.castsShadow,
   "dynamic-object carrier cannot enlarge the model shadow silhouette")
+local colorState = Renderer.primitiveRenderState({}, { lighting = false, cull = true })
+ok(not colorState.lightingEnabled and colorState.cullEnabled,
+  "source vertex-colour geometry disables lighting without disabling culling")
+ok(Renderer.FORMAT[4] and Renderer.FORMAT[4][1] == "VertexColor",
+  "DSM4 mesh format carries source vertex RGBA")
+local _, normalDecls = Renderer.SHADER_SOURCE:gsub("varying vec3 vNormal;", "")
+local _, sunDecls = Renderer.SHADER_SOURCE:gsub("varying vec3 vSun;", "")
+ok(normalDecls == 1 and sunDecls == 1,
+  "shared shader varyings are declared once across LÖVE's combined stages")
+local _, shadowReads = Renderer.SHADER_SOURCE:gsub("shadowDepth%(p%.xy", "")
+ok(shadowReads == 4,
+  "softened Pokemon shadows retain the four-fetch PCF cost")
+ok(Renderer.SHADER_SOURCE:find("0.30+(stadiumShade-0.30)*shadowVisibility", 1, true) ~= nil,
+  "Pokemon self-shadow preserves the authored ambient lighting floor")
+ok(Renderer.SHADER_SOURCE:find("vGeneratedUV", 1, true) ~= nil,
+  "shared shader implements normal-driven Stadium reflection coordinates")
+ok(Renderer.primitiveRenderState({}, { geometryMode = 0x40000 }).textureGenEnabled,
+  "G_TEXTURE_GEN enables the shared reflection path")
 
 local emitterModel = { species = 109, rootScale = 0.1,
   handlers = { records = {{ commandOffset = 0x1118, family = "dynamic-object-renderer" }} },
@@ -128,6 +157,15 @@ ok(rig:seekFrame(1) and rig.frame == 1 and rig.parts[1].rows[1][1] == 20,
   "renderer seeks an exact source frame and refreshes its pose")
 rig:seekFrame(0)
 ok(rig:currentTexture(model.prims[1]) == 2, "renderer texture selection")
+rig.handlerState.textureBySite = { [0x44] = 3 }
+model.prims[1].callbackOffset = 0x44
+model.prims[1].callbackTextureRequired = false
+ok(rig:currentTexture(model.prims[1]) == 2, "authored texture survives site callback")
+model.prims[1].callbackTextureRequired = true
+ok(rig:currentTexture(model.prims[1]) == 3, "callback texture targets eligible primitive")
+model.prims[1].callbackOffset = nil
+model.prims[1].callbackTextureRequired = nil
+rig.handlerState.textureBySite = nil
 rig:setHandlerRuntime({ selector = 4, rangeValue = 100 })
 rig:updatePose(true)
 ok(rig.handlerState.bit0ByBone[1] == true, "visibility gate enabled")
@@ -284,6 +322,12 @@ p1.additive = false
 p2.additive = true
 gpuModel.prims = { p1, p2 }
 local gpuRig = assert(Renderer.new(gpuModel))
+ok(gpuRig.shaderTier == "lit" and gpuRig.shaderError == nil,
+  "primary Stadium shader compiles instead of silently using compatibility rendering")
+local normalColor = gpuRig.parts[1].mesh.rows[1]
+ok(normalColor[9] == 1 and normalColor[10] == 1
+  and normalColor[11] == 1 and normalColor[12] == 1,
+  "lit normal geometry reaches the shader with neutral vertex colour")
 local canvas, renderErr = gpuRig:renderToCanvas(64, 64)
 ok(canvas ~= nil, renderErr or "GPU canvas")
 local drawOrder, blendBeforeDraw = {}, {}
@@ -298,6 +342,13 @@ end
 ok(#drawOrder == 2, "two primitive draw calls")
 ok(blendBeforeDraw[1] == "alpha", "opaque pass first")
 ok(blendBeforeDraw[2] == "add", "additive pass second")
+local viewerDepthContract = false
+for _, call in ipairs(calls) do
+  if call[1] == "depth" and call[2] == RenderContract.MODEL_DEPTH_COMPARE then
+    viewerDepthContract = true
+  end
+end
+ok(viewerDepthContract, "viewer uses the shared authored eye and face depth contract")
 ok(gpuRig.parts[1].mesh.texture ~= nil, "texture uploaded")
 ok(gpuRig.parts[1].mesh.texture.filter == "nearest", "renderer preserves sharp source texels")
 ok(canvas.filter == "linear:linear", "render target uses linear filtering")
@@ -306,13 +357,17 @@ calls = {}
 local ident={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}
 local sceneOK,sceneErr=gpuRig:drawScene("opaque",ident,{viewProjection=ident})
 ok(sceneOK,sceneErr or "shared scene draw")
-local sceneCanvas,sceneDraws=false,0
+local sceneCanvas,sceneDraws,sceneDepthContract=false,0,false
 for _,call in ipairs(calls) do
   if call[1]=="canvas" then sceneCanvas=true end
   if call[1]=="draw" and type(call[2])=="number" then sceneDraws=sceneDraws+1 end
+  if call[1]=="depth" and call[2]==RenderContract.MODEL_DEPTH_COMPARE then
+    sceneDepthContract=true
+  end
 end
 ok(not sceneCanvas,"shared scene draw never binds a private actor canvas")
 ok(sceneDraws==1,"shared opaque pass excludes additive attached effects")
+ok(sceneDepthContract,"battle scene uses the shared authored eye and face depth contract")
 calls = {}
 local drawOk, drawErr = gpuRig:draw(4, 8, 64, 64, { supersample = 2, msaa = 4, zoom = 1.5, panX = 0.2, panY = -0.1 })
 ok(drawOk, drawErr or "supersampled draw")
@@ -322,6 +377,16 @@ local sawFrontCull = false
 for _, call in ipairs(calls) do if call[1] == "cull" and call[2] == "front" then sawFrontCull = true end end
 ok(sawFrontCull, "vertical coordinate correction compensates triangle culling")
 gpuRig:release()
+
+p1.vertexSemantics, p1.lighting = "color", false
+p1.color = {64,128,192,32, 64,128,192,32, 64,128,192,32, 64,128,192,32}
+gpuModel.prims = { p1 }
+local colorRig = assert(Renderer.new(gpuModel))
+local colorRow = colorRig.parts[1].mesh.rows[1]
+ok(math.abs(colorRow[9] - 64/255) < 0.0001
+  and math.abs(colorRow[12] - 32/255) < 0.0001,
+  "source RGBA including alpha reaches the VertexColor mesh attribute")
+colorRig:release()
 
 local shaderAttempts = 0
 function g.newShader(code)

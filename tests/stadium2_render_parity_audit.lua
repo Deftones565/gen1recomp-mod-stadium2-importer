@@ -6,6 +6,7 @@ local Extract = require("mods.STADIUM2_IMPORTER.lib.extract")
 local Fragment = require("mods.STADIUM2_IMPORTER.lib.fragment")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Materials = require("mods.STADIUM2_IMPORTER.lib.materials")
+local RenderContract = require("mods.STADIUM2_IMPORTER.lib.render_contract")
 
 local path = os.getenv("STADIUM2_ROM") or arg[1]
 if not path or path == "" then
@@ -20,10 +21,17 @@ local data = assert(Rom.normalise(raw))
 local archive = assert(Rom.archiveAt(data, Layout.MODEL_TABLE_START))
 
 local descriptors, callbacks, models, materials, callbackTextures = {}, 0, 0, 0, 0
+local phase5Callbacks, phase5Resolved = 0, 0
+local targetPhase5 = { [159] = { total = 0, textures = 0, materials = 0, nonWhite = 0 },
+  [200] = { total = 0, textures = 0, materials = 0, nonWhite = 0 } }
 local textureHandlers = { [0x81000038] = true, [0x81000048] = true, [0x81000050] = true,
   [0x81000068] = true, [0x81000070] = true }
 local failures = {}
 local function fail(text) failures[#failures + 1] = text end
+
+if not RenderContract.supportsCoplanarDecals() then
+  fail("model depth contract lacks strict body occlusion plus non-writing eye/face decals")
+end
 
 for dex = 1, 251 do
   local record = archive.records[dex + 1]
@@ -49,12 +57,15 @@ for dex = 1, 251 do
         local records = Handlers.compile(model.fx, decoded, info.sourceBase)
         callbacks = callbacks + #records
         for _, row in ipairs(records) do descriptors[row.descriptor] = true end
-        local extension = Handlers.readExtension("DSM3audit"
+        local extension = Handlers.readExtension("DSM4audit"
           .. Handlers.packExtension(records, info.sourceBase, decoded,
             { prims = model.prims, handlerTextures = model.handlerTextures }))
         if not extension or extension.version ~= 4 then
           fail(("dex %03d S2HX v4 roundtrip"):format(dex))
         else
+          local phase5State = select(1, Handlers.runExtension(extension, 5, {
+            species = dex, sourceFrame = 0, geometryIndex = 0,
+          }, {})) or {}
           for _, row in ipairs(extension.records) do
             if not row.program or not row.program.complete then
               fail(("dex %03d callback %08X incomplete"):format(dex, row.descriptor or 0))
@@ -78,6 +89,30 @@ for dex = 1, 251 do
               end
               if not sibling then
                 fail(("dex %03d callback %08X has no consuming primitive"):format(dex, row.descriptor or 0))
+              end
+            end
+            if row.family == "render-time-geometry-pipeline" then
+              phase5Callbacks = phase5Callbacks + 1
+              local resolved = phase5State.renderTimeResolvedBySite
+                and phase5State.renderTimeResolvedBySite[row.commandOffset]
+              if resolved then
+                phase5Resolved = phase5Resolved + 1
+              else
+                fail(("dex %03d phase-5 callback %08X has no runtime texture/material consumer")
+                  :format(dex, row.descriptor or 0))
+              end
+              local target = targetPhase5[dex]
+              if target then
+                target.total = target.total + 1
+                if resolved and resolved.texture then
+                  target.textures = target.textures + 1
+                  local texture = model.textures and model.textures[resolved.texture]
+                  local rgba = texture and texture.rgba
+                  if type(rgba) == "string" and rgba:find("[^\255]", 1) then
+                    target.nonWhite = target.nonWhite + 1
+                  end
+                end
+                if resolved and resolved.material then target.materials = target.materials + 1 end
               end
             end
           end
@@ -109,10 +144,21 @@ local descriptorCount = 0
 for _ in pairs(descriptors) do descriptorCount = descriptorCount + 1 end
 if models ~= 251 then fail(("decoded models: %d, expected 251"):format(models)) end
 if descriptorCount ~= 13 then fail(("descriptors: %d, expected 13"):format(descriptorCount)) end
-if callbacks ~= 551 then fail(("callbacks: %d, expected 551"):format(callbacks)) end
+if callbacks ~= 559 then fail(("callbacks: %d, expected 559"):format(callbacks)) end
+if targetPhase5[159].total ~= 0 then
+  fail(("dex 159 phase-5 callbacks: %d, expected 0"):format(targetPhase5[159].total))
+end
+local misdreavus = targetPhase5[200]
+if misdreavus.total ~= 6 or misdreavus.textures ~= 4 or misdreavus.materials ~= 2
+    or misdreavus.nonWhite ~= 4 then
+  fail(("dex 200 phase-5 routes: total=%d textures=%d materials=%d nonWhite=%d expected 6/4/2/4")
+    :format(misdreavus.total, misdreavus.textures, misdreavus.materials,
+      misdreavus.nonWhite))
+end
 
-print(("render parity audit: models=%d descriptors=%d callbacks=%d materials=%d callbackTextures=%d failures=%d")
-  :format(models, descriptorCount, callbacks, materials, callbackTextures, #failures))
+print(("render parity audit: models=%d descriptors=%d callbacks=%d materials=%d callbackTextures=%d phase5=%d/%d failures=%d")
+  :format(models, descriptorCount, callbacks, materials, callbackTextures,
+    phase5Resolved, phase5Callbacks, #failures))
 for i = 1, math.min(#failures, 80) do print("FAIL " .. failures[i]) end
 if #failures > 80 then print(("... %d more"):format(#failures - 80)) end
 if #failures > 0 then os.exit(1) end

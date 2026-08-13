@@ -318,8 +318,8 @@ end
 
 out("cache=%s", root)
 local marker = readFile(root .. "/pack.info") or ""
-if not marker:find("format=S2IMP18", 1, true) then
-  fail("cache format is stale; expected S2IMP18")
+if not marker:find("format=S2IMP27", 1, true) then
+  fail("cache format is stale; expected S2IMP27")
 end
 for _, target in ipairs(TARGETS) do
   local path = ("%s/normal/%03d.dsm"):format(root, target.species)

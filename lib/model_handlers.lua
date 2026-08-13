@@ -1,52 +1,15 @@
+local Registry = require("mods.STADIUM2_IMPORTER.lib.handler_registry")
+local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
+local Phase5Geometry = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.phase5_geometry")
 local Handlers = {}
 
-Handlers.BY_DESCRIPTOR = {
-  [0x81000030] = { target = 0x810039CC, phases = { 2 }, family = "display-list-wrapper", confidence = "verified-structure" },
-  [0x81000038] = { target = 0x81005AC0, phases = { 2 }, family = "dynamic-material-builder", confidence = "verified-structure" },
-  [0x81000040] = { target = 0x81003A74, phases = { 2 }, family = "display-list-wrapper", confidence = "verified-structure" },
-  [0x81000048] = { target = 0x81005DB4, phases = { 2 }, family = "dynamic-material-builder", confidence = "verified-structure" },
-  [0x81000050] = { target = 0x81003B78, phases = { 2 }, family = "texture-material-builder", confidence = "verified-structure" },
-  [0x81000058] = { target = 0x81003C30, phases = { 2 }, family = "visibility-range-enable", confidence = "verified-behavior" },
-  [0x81000060] = { target = 0x81003CC0, phases = { 2 }, family = "visibility-range-disable", confidence = "verified-behavior" },
-  [0x81000068] = { target = 0x81005F38, phases = { 2 }, family = "dynamic-material-builder", confidence = "verified-structure" },
-  [0x81000070] = { target = 0x81005524, phases = { 2 }, family = "dynamic-object-renderer", confidence = "verified-structure" },
-  [0x81000078] = { target = 0x81003680, phases = { 2 }, family = "attribute-transform", confidence = "partial" },
-  [0x81000080] = { target = 0x81005F80, phases = { 0 }, family = "model-context-register", confidence = "verified-behavior" },
-  [0x81000088] = { target = 0x81003DAC, phases = { 0, 2 }, family = "runtime-dispatch-bridge", confidence = "partial" },
-  [0x81000140] = { target = 0x810033DC, phases = { 5 }, family = "render-time-geometry-pipeline", confidence = "verified-structure" },
-}
-
-Handlers.FAMILY_IDS = {
-  ["display-list-wrapper"] = 1,
-  ["dynamic-material-builder"] = 2,
-  ["texture-material-builder"] = 3,
-  ["visibility-range-enable"] = 4,
-  ["visibility-range-disable"] = 5,
-  ["dynamic-object-renderer"] = 6,
-  ["attribute-transform"] = 7,
-  ["model-context-register"] = 8,
-  ["runtime-dispatch-bridge"] = 9,
-  ["render-time-geometry-pipeline"] = 10,
-}
-
-Handlers.FAMILY_NAMES = {}
-for name, id in pairs(Handlers.FAMILY_IDS) do Handlers.FAMILY_NAMES[id] = name end
-
-Handlers.CONFIDENCE_IDS = {
-  partial = 0,
-  strong = 1,
-  ["verified-structure"] = 2,
-  ["verified-behavior"] = 3,
-}
-
-Handlers.CONFIDENCE_NAMES = {}
-for name, id in pairs(Handlers.CONFIDENCE_IDS) do Handlers.CONFIDENCE_NAMES[id] = name end
-
-Handlers.BY_TARGET = {}
-for descriptor, row in pairs(Handlers.BY_DESCRIPTOR) do
-  row.descriptor = descriptor
-  Handlers.BY_TARGET[row.target] = row
-end
+-- Compatibility exports.  New code should require handler_registry directly.
+Handlers.BY_DESCRIPTOR = Registry.BY_DESCRIPTOR
+Handlers.BY_TARGET = Registry.BY_TARGET
+Handlers.FAMILY_IDS = Registry.FAMILY_IDS
+Handlers.FAMILY_NAMES = Registry.FAMILY_NAMES
+Handlers.CONFIDENCE_IDS = Registry.CONFIDENCE_IDS
+Handlers.CONFIDENCE_NAMES = Registry.CONFIDENCE_NAMES
 
 local function byte(data, offset)
   return string.byte(data, offset + 1)
@@ -219,14 +182,11 @@ local function decodeSemantic(record, semantic)
 end
 
 function Handlers.info(address)
-  address = tonumber(address)
-  if not address then return nil end
-  return Handlers.BY_DESCRIPTOR[address] or Handlers.BY_TARGET[address]
+  return Registry.info(address)
 end
 
 function Handlers.family(address)
-  local row = Handlers.info(address)
-  return row and row.family or nil
+  return Registry.family(address)
 end
 
 function Handlers.compile(nodes, fragmentData, sourceBase, maxArgumentBytes)
@@ -417,6 +377,9 @@ function Handlers.prepare(extension)
     local program = { family = record.family, assets = assets, textures = {}, complete = true }
     if record.family == "dynamic-object-renderer" then
       program.geometry = dynamicObjectGeometry(extension, record)
+    elseif record.family == "render-time-geometry-pipeline" then
+      program.phase5Material = Phase5Geometry.materialSpec(extension.fragment,
+        extension.sourceBase, record.argOffset)
     end
     for _, texture in ipairs(extension.render and extension.render.handlerTextures or {}) do
       if texture.commandOffset == record.commandOffset then program.textures[#program.textures + 1] = texture end
@@ -447,183 +410,16 @@ function Handlers.runExtension(extension, phase, runtime, state)
   return Handlers.run(extension.records, phase, values, state)
 end
 
-local KOFFING_SPAWN_SCHEDULE = {
-  {36,65,8,38,96,115}, {32,65,8,38,96,115}, {36,65,8,38,96,115},
-  {44,65,8,38,96,115}, {32,65,8,38,96,115}, {44,65,8,38,96,115},
-  {36,65,8,38,96,115}, {32,65,8,38,96,115}, {44,65,8,38,96,115},
-  {44,65,8,38,96,115}, {36,65,8,38,96,115}, {44,65,8,38,96,115},
-  {32,65,8,38,96,115}, {44,65,8,38,96,115}, {32,65,8,38,96,115},
-  {44,65,8,38,96,115}, {36,65,8,38,96,115}, {32,65,8,38,96,115},
-}
-
-local function koffingSpawnExpected(runtime)
-  if runtime.dynamicObjectEnabled == false then return false end
-  local index = math.floor(tonumber(runtime.dynamicObjectIndex) or -1)
-  if index < 0 or index >= #KOFFING_SPAWN_SCHEDULE then return false end
-  local state = math.floor(tonumber(runtime.animationState) or -1)
-  local frame = math.floor(tonumber(runtime.animationFrame) or -1)
-  local row = KOFFING_SPAWN_SCHEDULE[index + 1]
-  if state == 2 then return frame == row[6] end
-  if state == 3 then return frame == row[3] or frame == row[4] or frame == row[5] end
-  if state == 4 then return frame == row[2] end
-  return frame == row[1]
-end
-
-local function vector3(value, fallbackX, fallbackY, fallbackZ)
-  if type(value) ~= "table" then return fallbackX or 0, fallbackY or 0, fallbackZ or 0 end
-  return tonumber(value[1] or value.x) or fallbackX or 0,
-    tonumber(value[2] or value.y) or fallbackY or 0,
-    tonumber(value[3] or value.z) or fallbackZ or 0
-end
-
-local function spawnKoffingGas(emitter, runtime)
-  emitter.particles = type(emitter.particles) == "table" and emitter.particles or {}
-  local slot
-  for i = 1, 10 do
-    local particle = emitter.particles[i]
-    if not (particle and particle.active) then slot = i break end
-  end
-  if not slot then return false end
-  local ox, oy, oz = vector3(runtime.dynamicObjectOrigin, 0, 0, 0)
-  local rx, ry, rz = vector3(runtime.dynamicObjectReference, ox, oy, oz)
-  local dx, dy, dz = ox - rx, oy - ry, oz - rz
-  local length = math.sqrt(dx * dx + dy * dy + dz * dz)
-  local speed = tonumber(runtime.dynamicObjectInitialSpeed) or 0.5
-  local vx, vy, vz = 0, 0, 0
-  if length > 0 then
-    vx, vy, vz = dx / length * speed, dy / length * speed, dz / length * speed
-  end
-  local particle = emitter.particles[slot] or {}
-  particle.active = true
-  particle.age = 0
-  particle.x, particle.y, particle.z = ox, oy, oz
-  particle.vx, particle.vy, particle.vz = vx, vy, vz
-  particle.absolute = type(runtime.dynamicObjectOrigin) == "table"
-  particle.sx, particle.sy, particle.sz = 1, 1, 1
-  particle.scale = 1
-  emitter.particles[slot] = particle
-  return true
-end
-
-local function stepKoffingGas(emitter, runtime)
-  if runtime.dynamicObjectUpdateEnabled == false then return end
-  local growth = tonumber(runtime.dynamicObjectGrowth) or 0.10000000149011612
-  local damping = tonumber(runtime.dynamicObjectDamping) or 0.8999999761581421
-  local modelScaleY = tonumber(runtime.modelScaleY) or 1
-  for i = 1, 10 do
-    local particle = emitter.particles and emitter.particles[i]
-    if particle and particle.active then
-      local x, y, z = tonumber(particle.x) or 0, tonumber(particle.y) or 0, tonumber(particle.z) or 0
-      local vx, vy, vz = tonumber(particle.vx) or 0, tonumber(particle.vy) or 0, tonumber(particle.vz) or 0
-      local sx = tonumber(particle.sx) or tonumber(particle.scale) or 1
-      local sy = tonumber(particle.sy) or tonumber(particle.scale) or 1
-      local sz = tonumber(particle.sz) or tonumber(particle.scale) or 1
-      particle.age = (math.floor(tonumber(particle.age) or 0) + 1)
-      particle.sx, particle.sy, particle.sz = sx + growth, sy + growth, sz + growth
-      particle.y = y + 0.5 * modelScaleY
-      if particle.age >= 16 then particle.active = false end
-      particle.x = x + vx
-      particle.y = particle.y + vy
-      particle.z = z + vz
-      particle.vx, particle.vy, particle.vz = vx * damping, vy * damping, vz * damping
-      particle.scale = particle.sx
-    end
-  end
-end
-
 function Handlers.koffingGasSpawnExpected(runtime)
-  return koffingSpawnExpected(type(runtime) == "table" and runtime or {})
+  return DynamicObject.koffingSpawnExpected(type(runtime) == "table" and runtime or {})
 end
 
 function Handlers.koffingGasRenderState(age)
-  age = math.floor(tonumber(age) or 0)
-  local frame = math.max(1, math.min(8, math.floor(age / 2) + 1))
-  local alphaByte = (200 - 13 * age) % 256
-  return frame, alphaByte, alphaByte / 255
+  return DynamicObject.koffingRenderState(age)
 end
 
 function Handlers.koffingGasInitialize(origin, reference, speed)
-  local runtime = {
-    dynamicObjectOrigin = origin,
-    dynamicObjectReference = reference,
-    dynamicObjectInitialSpeed = speed,
-  }
-  local effect = { particles = {} }
-  spawnKoffingGas(effect, runtime)
-  return effect.particles[1]
-end
-
-local function updateDynamicObjectState(state, key, result, runtime)
-  state.dynamicObjectsBySite = type(state.dynamicObjectsBySite) == "table"
-    and state.dynamicObjectsBySite or {}
-  local species = math.floor(tonumber(runtime.species) or -1)
-  if species ~= 109 and species ~= 110 then return end
-  local effect = state.dynamicObjectsBySite[key]
-  if type(effect) ~= "table" then
-    effect = {
-      family = "koffing-gas", species = species, particles = {}, emitters = {},
-      lastFrame = nil, textureSlots = {},
-    }
-    state.dynamicObjectsBySite[key] = effect
-  end
-  effect.species = species
-  effect.emitters = type(effect.emitters) == "table" and effect.emitters or {}
-  if #effect.emitters == 0 and type(effect.particles) == "table" and next(effect.particles) ~= nil then
-    effect.emitters[1] = { index = 0, particles = effect.particles }
-  end
-  effect.geometry = result.program and result.program.geometry or effect.geometry
-  effect.textureSlots = {}
-  for i, texture in ipairs(result.program and result.program.textures or {}) do
-    effect.textureSlots[i] = (tonumber(texture.slot) or -1) + 1
-  end
-  local frame = math.max(0, math.floor(tonumber(result.callbackFrame) or tonumber(runtime.callbackFrame) or 0))
-  local first = effect.lastFrame == nil or frame < effect.lastFrame
-  if first then
-    effect.emitters = {}
-    effect.particles = {}
-    effect.lastFrame = frame
-  elseif frame > effect.lastFrame then
-    for _, emitter in ipairs(effect.emitters or {}) do stepKoffingGas(emitter, runtime) end
-    effect.lastFrame = frame
-  end
-
-  local sources = runtime.dynamicObjectEmitters
-  if type(sources) ~= "table" or #sources == 0 then
-    sources = {{
-      index = math.floor(tonumber(runtime.dynamicObjectIndex) or -1),
-      bone = result.bone,
-      origin = runtime.dynamicObjectOrigin,
-      reference = runtime.dynamicObjectReference,
-    }}
-  end
-  for order, source in ipairs(sources) do
-    local index = math.floor(tonumber(source.index) or (order - 1))
-    local slot = index + 1
-    if slot >= 1 and slot <= #KOFFING_SPAWN_SCHEDULE then
-      local emitter = effect.emitters[slot]
-      if type(emitter) ~= "table" then
-        emitter = { index = index, particles = {} }
-        effect.emitters[slot] = emitter
-      end
-      emitter.index = index
-      emitter.bone = tonumber(source.bone) or emitter.bone
-      emitter.origin = source.origin or emitter.origin
-      emitter.reference = source.reference or emitter.reference
-      local spawnFrame = tonumber(emitter.spawnFrame) or -1
-      if first or frame > spawnFrame then
-        local emitterRuntime = {}
-        for name, value in pairs(runtime) do emitterRuntime[name] = value end
-        emitterRuntime.dynamicObjectIndex = index
-        emitterRuntime.dynamicObjectOrigin = emitter.origin
-        emitterRuntime.dynamicObjectReference = emitter.reference
-        if koffingSpawnExpected(emitterRuntime) then spawnKoffingGas(emitter, emitterRuntime) end
-        emitter.spawnFrame = frame
-      end
-    end
-  end
-  -- Keep the original single-emitter surface for callers and old caches that
-  -- do not yet provide an emitter list.
-  effect.particles = effect.emitters[1] and effect.emitters[1].particles or effect.particles
+  return DynamicObject.koffingInitialize(origin, reference, speed)
 end
 
 function Handlers.run(records, phase, runtime, state)
@@ -640,6 +436,8 @@ function Handlers.run(records, phase, runtime, state)
   state.textureBySite = type(state.textureBySite) == "table" and state.textureBySite or {}
   state.textureSetBySite = type(state.textureSetBySite) == "table" and state.textureSetBySite or {}
   state.dynamicObjectsBySite = type(state.dynamicObjectsBySite) == "table" and state.dynamicObjectsBySite or {}
+  state.renderTimeResolvedBySite = type(state.renderTimeResolvedBySite) == "table"
+    and state.renderTimeResolvedBySite or {}
   if tonumber(phase) == 5 then state.renderQueue = {} end
   local deferred = {}
   for _, record in ipairs(records or {}) do
@@ -675,9 +473,11 @@ function Handlers.run(records, phase, runtime, state)
         elseif result.operation == "dynamic-object-renderer" then
           state.textureBySite[key] = nil
           state.textureSetBySite[key] = nil
-          updateDynamicObjectState(state, key, result, runtime)
+          DynamicObject.updateState(state, key, result, runtime)
         elseif result.operation == "attribute-transform" then
           state.attributesBySite[key] = result
+        elseif result.operation == "render-time-geometry-pipeline" then
+          Phase5Geometry.apply(state, key, result)
         end
         if result.operation == "render-time-geometry-pipeline"
             or result.operation == "dynamic-object-renderer" then

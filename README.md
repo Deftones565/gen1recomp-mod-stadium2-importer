@@ -2,7 +2,7 @@
 
 `STADIUM2_IMPORTER` is a standalone Pokemon Stadium 2 model extractor and renderer for Gen 1 and Gen 2 games in gen1recomp, with owned 3D battle presentation on both generations.
 
-It does not depend on another model importer or renderer. The mod owns ROM discovery, ROM validation, Stadium 2 archive parsing, PERS-SZP/Yay0 decompression, FRAGMENT model parsing, model-handler decoding, DSM3 cache generation, DSM3 loading, skeletal animation, texture animation, texture upload, skinning, render state, and model drawing.
+It does not depend on another model importer or renderer. The mod owns ROM discovery, ROM validation, Stadium 2 archive parsing, PERS-SZP/Yay0 decompression, FRAGMENT model parsing, model-handler decoding, DSM4 cache generation and loading, skeletal animation, texture animation, texture upload, skinning, render state, and model drawing.
 
 The supported ROM is the US Pokemon Stadium 2 ROM with MD5 `1561c75d11cedf356a8ddb1a4a5f9d5d`.
 
@@ -10,7 +10,7 @@ The supported ROM is the US Pokemon Stadium 2 ROM with MD5 `1561c75d11cedf356a8d
 
 `STADIUM 2 MODELS` defaults to `ON`. Turning it `OFF` keeps the imported model cache intact but disables creation and use of Stadium 2 renderers. Turning it back `ON` restores Stadium 2 rendering without rebuilding the cache.
 
-`STADIUM 2 BATTLE` defaults to `ON`. Gen 1 and Gen 2 now use the importer-owned Stadium presentation. The host battle engines remain authoritative for turn order, damage, move effects, capture odds, switching, faint results, text, menus, party state and RNG. Generation adapters read that state and replace presentation only: a full-window environment, solved perspective camera, footprint-sized 3D platforms, model shadows, frosted edge-aligned HUD, projected native battle effects, normal/shiny DSM3 actors, callback runtime, materials, animated textures, additive FX, presented-frame timing, and send-out/attack/faint states. Turning it `OFF` leaves the engine's normal battle presentation in control.
+`STADIUM 2 BATTLE` defaults to `ON`. Gen 1 and Gen 2 now use the importer-owned Stadium presentation. The host battle engines remain authoritative for turn order, damage, move effects, capture odds, switching, faint results, text, menus, party state and RNG. Generation adapters read that state and replace presentation only: a full-window environment, solved perspective camera, footprint-sized 3D platforms, model shadows, frosted edge-aligned HUD, projected native battle effects, normal/shiny DSM4 actors, callback runtime, materials, animated textures, additive FX, presented-frame timing, and send-out/attack/faint states. Turning it `OFF` leaves the engine's normal battle presentation in control.
 
 Gen 1 is implemented by `lib/gen1_battle.lua` as a draw-only adapter over the host `src.battle.BattleState`. Gen 2 is implemented by `lib/gen2_battle.lua` over `src.ui.gen2.BattleState`. Shared model and stage behavior lives in `lib/battle_actor.lua` and `lib/battle_scene.lua`; neither adapter owns battle simulation.
 
@@ -47,15 +47,22 @@ Unown A is species 201 in the ordinary normal/shiny directories. Stadium 2
 model and pose records 254 through 278 supply Unown B through Z, so the cache
 contains all 26 forms in both normal and shiny variants.
 
-The cache marker format is `S2IMP18`. Shiny packs use Stadium 2's per-species
+The cache marker format is `S2IMP27`. Shiny packs use Stadium 2's per-species
 HSL metadata, while Clefairy, Clefable, Jigglypuff, Wigglytuff, Gyarados,
 Noctowl, Cleffa, and Igglybuff use the ROM's dedicated native-format rare-texture
-archive, preserving each source texture's N64 bit depth. Translucent model-local FX are kept out of the HSL pass. Model packs retain the `DSM3` magic and
+archive, preserving each source texture's N64 bit depth. Translucent model-local FX are kept out of the HSL pass. Model packs use the `DSM4` magic and
 carry the importer-owned `S2HX` v4 render extension. Version 4 associates
 materials and callbacks with the exact primitive-emitting command site,
 splits primitives at callback boundaries, embeds callback textures, and
 includes the ROM-textured fire geometry constructed by fragment 26. Older
 caches are rebuilt automatically.
+
+DSM4 preserves full per-primitive geometry mode, vertex normal versus RGBA
+interpretation, source alpha, callback texture eligibility, and N64 sampler
+and texture-scale state. It also distinguishes authored textures from the
+neutral sampler input used by source display lists that intentionally disable
+texturing. Callback programs remain modular in `S2HX`; core mesh
+meaning no longer depends on that extension.
 
 The standalone renderer and both generation battle adapters read those packs
 directly. They use rigid bone bindings, source 30 Hz animation frames,
@@ -71,8 +78,35 @@ love mods/STADIUM2_IMPORTER/tests/stadium2_model_viewer_visual
 
 `Tab` selects the enemy or player model, left/right cycle one species, and
 up/down jump ten species. `Q`/`E` cycle animations, number keys isolate a
-primitive, and the existing Koffing gas controls remain available whenever
-Koffing is loaded.
+primitive, and `G`, `[`/`]`, and `X` force, age, or suppress dynamic callback
+FX for the selected model.
+
+Fragment 26 handler metadata lives in `lib/handler_registry.lua`. Shared
+dynamic-object behavior is composed from audited ASM lifecycle routes under
+`lib/effects/`, while `lib/effect_renderer.lua` owns the generic billboard
+render description. Phase-5 model rendering callbacks live under
+`lib/render_callbacks/`; this keeps shared callback-owned texture and material
+logic out of species-specific code. `model_handlers.lua` and `renderer.lua`
+retain the public compatibility entry points used by packs, battles, and older
+audits.
+
+The semantic model-completeness audit is separate from the callback coverage
+audit. It compares source model meaning with what DSM and the renderer can
+represent, including topology, callback ownership and targeting, N64 geometry
+mode, vertex RGBA versus normals, texture sampler state, and pose/auxiliary
+alignment. It audits all 251 species by default or a focused shared-code list:
+
+```sh
+STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_model_parity_audit.lua --report
+STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_model_parity_audit.lua --species=181,200,238,245 --report
+STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_dsm4_roundtrip_audit.lua
+love tests/stadium2_shader_audit
+```
+
+Omit `--report` in CI to return a failing status while semantic losses remain.
+Misdreavus additionally locks its ASM-derived reference topology and six
+phase-5 routes so broad pointer scans or reversed callback ownership cannot
+silently return.
 
 Battle models advance from the real presentation clock rather than the
 speed-scaled game-logic clock. Fast-forward therefore does not change the

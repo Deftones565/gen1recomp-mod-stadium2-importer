@@ -2,6 +2,7 @@ local scene
 local Importer
 local Presentation
 local Camera
+local DynamicObject
 local root
 local loadError
 local paused = false
@@ -14,12 +15,14 @@ local help = true
 local screenshotMessage
 local screenshotTimer = 0
 local importing = false
-local forceGas = os.getenv("STADIUM2_VISUAL_FORCE_GAS") == "1"
+local forceGas = os.getenv("STADIUM2_VISUAL_FORCE_EFFECT") == "1"
+  or os.getenv("STADIUM2_VISUAL_FORCE_GAS") == "1"
 local forceGasAge = math.max(0, math.min(15,
   tonumber(os.getenv("STADIUM2_VISUAL_FORCE_GAS_AGE")) or 0))
 local debugPanel = true
 local suppressGasDraw = false
-local isolatePrimitive = 0
+local isolatePrimitive = math.max(0,
+  math.floor(tonumber(os.getenv("STADIUM2_VISUAL_ISOLATE")) or 0))
 local autoCapture = os.getenv("STADIUM2_VISUAL_AUTOCAPTURE")
 local autoCaptureFrames = 0
 local autoKeys = os.getenv("STADIUM2_VISUAL_AUTOKEYS")
@@ -90,18 +93,17 @@ local function selectedActor()
 end
 
 local function koffingActor()
-  if not scene or not scene.actors then return nil end
-  for _, actor in pairs(scene.actors) do
-    if actor and actor.dex == 109 and actor.renderer then return actor end
-  end
-  return nil
+  -- Compatibility name retained for the legacy visual entry point. FX
+  -- inspection follows the currently selected model.
+  local actor = selectedActor()
+  return actor and actor.renderer and actor or nil
 end
 
 local function applyDebugControls()
   for side, actor in pairs(scene and scene.actors or {}) do
     local renderer = actor and actor.renderer
     if renderer then
-      renderer.debugSuppressDynamicObjects = actor.dex == 109 and suppressGasDraw or false
+      renderer.debugSuppressDynamicObjects = side == selectedSide and suppressGasDraw or false
       renderer.debugOnlyPrimitive = side == selectedSide and isolatePrimitive > 0
         and isolatePrimitive or nil
     end
@@ -137,11 +139,16 @@ local function ensureForcedGas()
   if not site then return end
   local effect = renderer.handlerState.dynamicObjectsBySite[site]
   if type(effect) ~= "table" then
-    effect = { family = "koffing-gas", species = 109, particles = {}, textureSlots = {} }
+    local profile = DynamicObject and DynamicObject.profile(actor.dex)
+    if not profile then return end
+    effect = { family = (actor.dex == 109 or actor.dex == 110) and "koffing-gas" or "dynamic-object",
+      kind = profile.name:lower() .. "-fx", species = actor.dex, profile = profile,
+      particles = {}, textureSlots = {} }
     renderer.handlerState.dynamicObjectsBySite[site] = effect
   end
-  effect.family = "koffing-gas"
-  effect.species = 109
+  effect.family = (actor.dex == 109 or actor.dex == 110) and "koffing-gas" or "dynamic-object"
+  effect.species = actor.dex
+  effect.profile = DynamicObject and DynamicObject.profile(actor.dex) or effect.profile
   effect.geometry = record.program and record.program.geometry or effect.geometry
   effect.textureSlots = {}
   for i, texture in ipairs(record.program and record.program.textures or {}) do
@@ -158,10 +165,12 @@ local function ensureForcedGas()
     emitter.bone, emitter.origin, emitter.reference = source.bone, source.origin, source.reference
     emitter.particles = emitter.particles or {}
     local origin = emitter.origin or {0,0,0}
+    local init = effect.profile and DynamicObject.INITIALIZERS[effect.profile.routes.initialize]
+    local scale = init and init.initialScale or 1
     emitter.particles[10] = {
       active = true, age = forceGasAge,
       x = origin[1] or 0, y = origin[2] or 0, z = origin[3] or 0,
-      vx = 0, vy = 0, vz = 0, sx = 1, sy = 1, sz = 1, scale = 1, absolute = true,
+      vx = 0, vy = 0, vz = 0, sx = scale, sy = scale, sz = scale, scale = scale, absolute = true,
       _debugForced = true,
     }
   end
@@ -171,12 +180,12 @@ end
 local function gasSnapshot()
   local actor = koffingActor()
   local renderer = actor and actor.renderer
-  if not renderer then return { status = "Koffing renderer unavailable" } end
+  if not renderer then return { status = "selected renderer unavailable" } end
   local runtime = renderer.handlerRuntime or {}
   local dynamic = renderer.handlerState and renderer.handlerState.dynamicObjectsBySite or {}
   local active, site, ages, frames = 0, nil, {}, {}
   for key, effect in pairs(dynamic or {}) do
-    if effect.family == "koffing-gas" then
+    if effect.family == "koffing-gas" or effect.family == "dynamic-object" then
       site = key
       for _, emitter in ipairs(effect.emitters or {}) do
         for i = 1, 10 do
@@ -259,11 +268,25 @@ local function makeScene(resetView)
     loadError = ("could not load Stadium packs: enemy=%03d %s player=%03d %s\ncache=%s")
       :format(enemyDex, tostring(enemyOk), playerDex, tostring(playerOk),
         love.filesystem.getSaveDirectory() .. "/stadium2_importer")
+    warn(loadError)
     return false
   end
   scene = nextScene
   applyDebugControls()
   loadError = nil
+  local enemy = actorForSide("enemy")
+  local player = actorForSide("player")
+  warn(("READY enemy=%03d shader=%s player=%03d shader=%s cache=%s")
+    :format(enemyDex, tostring(enemy and enemy.renderer and enemy.renderer.shaderTier),
+      playerDex, tostring(player and player.renderer and player.renderer.shaderTier),
+      tostring(Importer and Importer.FORMAT)))
+  for side, actor in pairs(scene.actors or {}) do
+    local renderer = actor and actor.renderer
+    if renderer and renderer.shaderError then
+      warn(("SHADER_ERROR side=%s dex=%03d %s")
+        :format(tostring(side), tonumber(actor.dex) or 0, tostring(renderer.shaderError)))
+    end
+  end
   return true
 end
 
@@ -299,6 +322,7 @@ local function initialise()
     Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
     Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
     Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
+    DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
     Importer.configure({ count = 251 })
     if not Importer.available(251) then
       local started, err = Importer.autoImport()
@@ -308,7 +332,7 @@ local function initialise()
     end
     return makeScene()
   end)
-  if not ok then loadError = tostring(result) end
+  if not ok then loadError = tostring(result); warn(loadError) end
 end
 
 local function drawText(g)
@@ -317,6 +341,12 @@ local function drawText(g)
   local model = renderer and renderer.model or {}
   local animations = model.anims or {}
   local animation = animations[renderer and renderer.animIndex or 0]
+  local authoredTextures, neutralTextures, resolvedTextures = 0, 0, 0
+  for _, prim in ipairs(model.prims or {}) do
+    if prim.sourceTextureMissing then neutralTextures = neutralTextures + 1
+    else authoredTextures = authoredTextures + 1 end
+    if renderer and renderer:currentTexture(prim) then resolvedTextures = resolvedTextures + 1 end
+  end
   local enemyMark = selectedSide == "enemy" and "> " or "  "
   local playerMark = selectedSide == "player" and "> " or "  "
   g.setColor(0, 0, 0, .72)
@@ -329,7 +359,7 @@ local function drawText(g)
     g.print("TAB select side   LEFT/RIGHT species   UP/DOWN +/-10", 24, 62)
     g.print("Drag mouse orbit/pitch   Wheel zoom", 24, 80)
     g.print("Q/E animation   R recenter   SPACE pause", 24, 98)
-    g.print("G force gas   [ / ] age   X suppress gas draw", 24, 116)
+    g.print("G force selected FX   [ / ] age   X suppress FX draw", 24, 116)
     g.print("0 all primitives   1-9 isolate   S shot   H/D/P debug", 24, 134)
   end
   if debugPanel then
@@ -344,12 +374,15 @@ local function drawText(g)
       tostring(renderer and renderer.frame or 0), tostring(animation and animation.frames or 0)), 24, y + 18)
     g.print("Primitive: " .. (isolatePrimitive == 0 and "all" or tostring(isolatePrimitive))
       .. "  paused: " .. tostring(paused), 24, y + 36)
-    g.print("Koffing gas: " .. tostring(d.active or 0) .. "  emitters: "
+    g.print("Dynamic FX: " .. tostring(d.active or 0) .. "  emitters: "
       .. tostring(d.emitterCount or 0) .. "  age: " .. tostring(forceGasAge), 24, y + 54)
-    g.print("Gas forced: " .. tostring(forceGas) .. "  suppressed: "
+    g.print("FX forced: " .. tostring(forceGas) .. "  suppressed: "
       .. tostring(suppressGasDraw), 24, y + 72)
     g.print("Callback texture: " .. tostring(d.textureInfo or "none"), 24, y + 90)
-    g.print("Cache models: 251  filter: nearest presentation", 24, y + 108)
+    g.print(("Textures: %d authored + %d neutral; resolved %d/%d; shader %s; cache %s")
+      :format(authoredTextures, neutralTextures, resolvedTextures, #(model.prims or {}),
+        tostring(renderer and renderer.shaderTier or "none"),
+        tostring(Importer and Importer.FORMAT or "?")), 24, y + 108)
   end
   if screenshotMessage then
     local width = g.getWidth()

@@ -398,7 +398,7 @@ function StadiumBuild.pack(data, species, moveRows, ctx)
   local idle = (idleIndex ~= NONE16) and anims[idleIndex + 1] or nil
   local static = idleIsBroken(data, idle)
 
-  w:raw("DSM3")
+  w:raw("DSM4")
   w:u16(species)
   w:u16(#bones)
   w:u16(#prims)
@@ -432,8 +432,21 @@ function StadiumBuild.pack(data, species, moveRows, ctx)
   for i = 1, #prims do
     local p = prims[i]
     w:u16(p.tex)
-    w:u8((p.cull and p.cull ~= 0) and 1 or 0)
-    w:u8((p.blend == "add") and 1 or 0)
+    local flags = ((p.cull and p.cull ~= 0) and 1 or 0)
+      + ((p.blend == "add") and 2 or 0)
+      + (p.lighting and 4 or 0)
+      + (p.callbackTextureRequired and 8 or 0)
+      + (p.vertexSemantics == "color" and 16 or 0)
+      + (p.sourceTextureMissing and 32 or 0)
+      + (p.decal and 64 or 0)
+    w:u8(flags)
+    w:u32(p.geometryMode or 0)
+    local sampler = p.sampler or {}
+    w:u8(sampler.cms or 0); w:u8(sampler.cmt or 0)
+    w:u8(sampler.masks or 0); w:u8(sampler.maskt or 0)
+    w:u8(sampler.shifts or 0); w:u8(sampler.shiftt or 0)
+    local scale = p.textureScale or { 1, 1 }
+    w:f32(scale[1] or 1); w:f32(scale[2] or 1)
     w:i16(p.texAnim or -1)
     local keys = {}
     if p.texMap then
@@ -450,7 +463,7 @@ function StadiumBuild.pack(data, species, moveRows, ctx)
     if frames then
       for k = 1, #frames do w:u16(frames[k]) end
     end
-    local pos, uv, nrm, skin = p.pos, p.uv, p.nrm, p.skin
+    local pos, uv, nrm, color, skin = p.pos, p.uv, p.nrm, p.color, p.skin
     w:u16(p.nverts)
     w:u16(p.nidx)
     for k = 1, p.nverts do
@@ -459,9 +472,15 @@ function StadiumBuild.pack(data, species, moveRows, ctx)
       w:i16(pos[k * 3])
       w:i16(roundHalfEven(uv[k * 2 - 1] * 512))
       w:i16(roundHalfEven(uv[k * 2] * 512))
-      w:i8(roundHalfEven(nrm[k * 3 - 2] * 127))
-      w:i8(roundHalfEven(nrm[k * 3 - 1] * 127))
-      w:i8(roundHalfEven(nrm[k * 3] * 127))
+      if color then
+        w:u8(color[k * 4 - 3]); w:u8(color[k * 4 - 2])
+        w:u8(color[k * 4 - 1]); w:u8(color[k * 4])
+      else
+        w:u8(roundHalfEven(nrm[k * 3 - 2] * 127) % 256)
+        w:u8(roundHalfEven(nrm[k * 3 - 1] * 127) % 256)
+        w:u8(roundHalfEven(nrm[k * 3] * 127) % 256)
+        w:u8(255)
+      end
       w:u8(skin[k])
     end
     for k = 1, p.nidx do w:u16(p.idx[k]) end

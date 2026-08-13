@@ -1,6 +1,6 @@
 local Cache = {}
 
-Cache.FORMAT = "S2IMP18"
+Cache.FORMAT = "S2IMP27"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"

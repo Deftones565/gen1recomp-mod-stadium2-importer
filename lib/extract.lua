@@ -4,6 +4,7 @@ local Build = require("mods.STADIUM2_IMPORTER.lib.build")
 local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Layout = require("mods.STADIUM2_IMPORTER.lib.layout")
+local AnimationRouting = require("mods.STADIUM2_IMPORTER.lib.animation_routing")
 
 local Extract = {}
 Extract.BASE_COUNT = 151
@@ -378,6 +379,7 @@ local function genericAnimationTable(data, Build)
   data.stadium2FaintRejectReason = faintRejected and faintReason or nil
 
   local auxiliary = data.auxAnims or {}
+  AnimationRouting.apply(animations, auxiliary)
   for index, animation in ipairs(animations) do
     if index == 1 then
       animation.name = "idle"
@@ -390,7 +392,6 @@ local function genericAnimationTable(data, Build)
     else
       animation.name = "anim" .. tostring(index - 1)
     end
-    animation.aux = #auxiliary > 0 and math.min(index - 1, #auxiliary - 1) or -1
   end
 
   local rows = {}
@@ -1179,6 +1180,23 @@ end
 function Extract.newJob(data, writePack, writeSpecial)
   return newBuildJob(data, { StadiumRom = Rom, Build = Build, Fx = nil },
     writePack,writeSpecial or function() return true end)
+end
+
+-- Read the authored pose bundle without running the cache-writing build job.
+-- Audits and inspection tools need the same nested-archive traversal as the
+-- importer so model completeness includes skeletal/auxiliary animation data.
+function Extract.animationBankForSpecies(data, species, bones)
+  species = math.floor(tonumber(species) or 0)
+  local archive = archiveAt(data, POSE_TABLE_START)
+  local record = archive and archive.records and archive.records[species + 1]
+  if not record then return nil, nil, { "missing pose-table record" } end
+  local label = ("pose-table=0x%X species=%d file=%d")
+    :format(POSE_TABLE_START, species, species)
+  local dependencies = { StadiumRom = Rom }
+  local sources, errors, stats = poseSourcesForRecord(data, record, dependencies, label)
+  local anims, aux, decodeErrors = decodeAnimationSources(data, sources, bones or {}, dependencies)
+  for _, value in ipairs(decodeErrors or {}) do errors[#errors + 1] = value end
+  return anims, aux, errors, stats
 end
 
 Extract.fragmentInfo = fragmentInfo

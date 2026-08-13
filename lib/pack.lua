@@ -1,5 +1,6 @@
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Materials = require("mods.STADIUM2_IMPORTER.lib.materials")
+local TextureParity = require("mods.STADIUM2_IMPORTER.lib.texture_parity")
 
 local Pack = {}
 Pack.SUBSTITUTE_SPECIES = 253
@@ -23,7 +24,7 @@ local Reader = {}
 Reader.__index = Reader
 
 local function need(self, n)
-  if self.p + n - 1 > self.limit then error("truncated DSM3 pack", 0) end
+  if self.p + n - 1 > self.limit then error("truncated DSM4 pack", 0) end
 end
 
 function Reader:u8()
@@ -160,12 +161,23 @@ end
 local function readPrims(r, m)
   m.prims = {}
   for i = 1, m.primCount do
+    local flags
     local prim = {
       tex = r:u16() + 1,
-      cull = r:u8() ~= 0,
-      additive = r:u8() ~= 0,
-      texAnim = r:i16(),
     }
+    flags = r:u8()
+    prim.cull = flags % 2 == 1
+    prim.additive = math.floor(flags / 2) % 2 == 1
+    prim.lighting = math.floor(flags / 4) % 2 == 1
+    prim.callbackTextureRequired = math.floor(flags / 8) % 2 == 1
+    prim.vertexSemantics = math.floor(flags / 16) % 2 == 1 and "color" or "normal"
+    prim.sourceTextureMissing = math.floor(flags / 32) % 2 == 1
+    prim.decal = math.floor(flags / 64) % 2 == 1
+    prim.geometryMode = r:u32()
+    prim.sampler = { cms=r:u8(), cmt=r:u8(), masks=r:u8(), maskt=r:u8(),
+      shifts=r:u8(), shiftt=r:u8() }
+    prim.textureScale = { r:f32(), r:f32() }
+    prim.texAnim = r:i16()
     local mapCount = r:u8()
     if mapCount > 0 then
       prim.texMap = {}
@@ -178,16 +190,20 @@ local function readPrims(r, m)
     end
     prim.nverts = r:u16()
     prim.nidx = r:u16()
-    prim.pos, prim.uv, prim.nrm, prim.skin = {}, {}, {}, {}
+    prim.pos, prim.uv, prim.nrm, prim.color, prim.skin = {}, {}, {}, {}, {}
     for k = 1, prim.nverts do
       prim.pos[k * 3 - 2] = r:i16()
       prim.pos[k * 3 - 1] = r:i16()
       prim.pos[k * 3] = r:i16()
       prim.uv[k * 2 - 1] = r:i16() / 512
       prim.uv[k * 2] = r:i16() / 512
-      prim.nrm[k * 3 - 2] = r:i8() / 127
-      prim.nrm[k * 3 - 1] = r:i8() / 127
-      prim.nrm[k * 3] = r:i8() / 127
+      local a, b, c, alpha = r:u8(), r:u8(), r:u8(), r:u8()
+      prim.color[k * 4 - 3], prim.color[k * 4 - 2] = a, b
+      prim.color[k * 4 - 1], prim.color[k * 4] = c, alpha
+      if a >= 128 then a = a - 256 end
+      if b >= 128 then b = b - 256 end
+      if c >= 128 then c = c - 256 end
+      prim.nrm[k * 3 - 2], prim.nrm[k * 3 - 1], prim.nrm[k * 3] = a / 127, b / 127, c / 127
       prim.skin[k] = r:u8()
     end
     prim.idx = {}
@@ -200,7 +216,7 @@ local function readTextures(r, m)
   m.textures = {}
   for i = 1, m.texCount do
     local w, h, n = r:u16(), r:u16(), r:u32()
-    if n ~= w * h * 4 then error("invalid DSM3 texture length", 0) end
+    if n ~= w * h * 4 then error("invalid DSM4 texture length", 0) end
     m.textures[i] = { w = w, h = h, rgba = r:raw(n) }
   end
 end
@@ -249,26 +265,31 @@ local function readAux(r, m)
 end
 
 function Pack.parse(bytes)
-  if type(bytes) ~= "string" or bytes:sub(1, 4) ~= "DSM3" then return nil, "not a DSM3 pack" end
+  if type(bytes) ~= "string" or bytes:sub(1, 4) ~= "DSM4" then return nil, "not a DSM4 pack" end
   local baseEnd = extensionStart(bytes) - 1
   local ok, result = pcall(function()
     local r = newReader(bytes, baseEnd)
     local m = { bytes = bytes }
     readHeader(r, m)
     if not Pack.validSpecies(m.species) then
-      error("invalid DSM3 species", 0)
+      error("invalid DSM4 species", 0)
     end
     if m.boneCount > 1024 or m.primCount > 4096 or m.texCount > 4096 or m.animCount > 4096 then
-      error("invalid DSM3 counts", 0)
+      error("invalid DSM4 counts", 0)
     end
     readBones(r, m)
     readPrims(r, m)
     readTextures(r, m)
     readAnimations(r, m)
     readAux(r, m)
-    if r.p - 1 ~= baseEnd then error("unexpected DSM3 base payload length", 0) end
+    if r.p - 1 ~= baseEnd then error("unexpected DSM4 base payload length", 0) end
     m.handlers = Handlers.readExtension(bytes)
     Materials.attach(m)
+    local textureReport = TextureParity.audit(m, { indexBase = 1 })
+    if #textureReport.issues > 0 then
+      error("invalid DSM4 texture contract: " .. textureReport.issues[1].message, 0)
+    end
+    m.textureMetrics = textureReport.metrics
     return m
   end)
   if not ok then return nil, tostring(result) end

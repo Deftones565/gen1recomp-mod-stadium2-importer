@@ -1,6 +1,10 @@
 local Build = require("mods.STADIUM2_IMPORTER.lib.build")
 local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
+local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
+local EffectRenderer = require("mods.STADIUM2_IMPORTER.lib.effect_renderer")
+local Sampler = require("mods.STADIUM2_IMPORTER.lib.sampler")
+local RenderContract = require("mods.STADIUM2_IMPORTER.lib.render_contract")
 
 local Renderer = {}
 Renderer.__index = Renderer
@@ -9,21 +13,27 @@ Renderer.FORMAT = {
   { "VertexPosition", "float", 3 },
   { "VertexTexCoord", "float", 2 },
   { "VertexNormal", "float", 3 },
+  { "VertexColor", "float", 4 },
 }
 
 local SHADER = [[
 varying vec3 vNormal;
 varying vec3 vSun;
+varying vec2 vGeneratedUV;
 #ifdef VERTEX
 uniform mat4 mvp;
 uniform mat4 modelMatrix;
+uniform mat4 viewMatrix;
 uniform mat4 sunVP;
 uniform mat3 normalMatrix;
+uniform vec2 textureGenScale;
 attribute vec3 VertexNormal;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
   vNormal = normalize(normalMatrix * VertexNormal);
+  vec3 eyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
+  vGeneratedUV=(eyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
   vSun = (sunVP * (modelMatrix * vertex_position)).xyz;
-  return mvp * vertex_position;
+  return mvp*vertex_position;
 }
 #endif
 #ifdef PIXEL
@@ -47,10 +57,9 @@ uniform float sunEnabled;
 uniform float sunDark;
 uniform float sunBias;
 uniform vec2 sunTexel;
-uniform float koffingGasMode;
+uniform float effectIntensityMode;
 uniform float lightingEnabled;
-varying vec3 vNormal;
-varying vec3 vSun;
+uniform float textureGenEnabled;
 float shadowDepth(vec2 uv) {
   vec4 c=Texel(sunMap,uv);
   return c.r+c.g*(1.0/255.0);
@@ -58,10 +67,12 @@ float shadowDepth(vec2 uv) {
 float sunlight(vec3 p) {
   if (sunEnabled<0.5 || p.x<0.0 || p.x>1.0 || p.y<0.0 || p.y>1.0 || p.z>1.0) return 1.0;
   float z=p.z-sunBias;
-  float lit=step(z,shadowDepth(p.xy+sunTexel*vec2(-0.5,-0.5)))
-    +step(z,shadowDepth(p.xy+sunTexel*vec2(0.5,-0.5)))
-    +step(z,shadowDepth(p.xy+sunTexel*vec2(-0.5,0.5)))
-    +step(z,shadowDepth(p.xy+sunTexel*vec2(0.5,0.5)));
+  // Four taps, as before, but distributed as a rotated 3x3 footprint. This
+  // widens the penumbra and avoids square stair-steps without another fetch.
+  float lit=step(z,shadowDepth(p.xy+sunTexel*vec2(-1.5,-0.5)))
+    +step(z,shadowDepth(p.xy+sunTexel*vec2(0.5,-1.5)))
+    +step(z,shadowDepth(p.xy+sunTexel*vec2(1.5,0.5)))
+    +step(z,shadowDepth(p.xy+sunTexel*vec2(-0.5,1.5)));
   return 1.0-sunDark*(1.0-lit*0.25);
 }
 vec4 sample3(Image image, vec2 uv, vec2 size) {
@@ -81,12 +92,13 @@ vec4 sample3(Image image, vec2 uv, vec2 size) {
     + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.x);
 }
 vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
-  vec4 texel = sample3(texture, texture_coords + textureScroll.xy, primarySize);
+  vec2 uv=mix(texture_coords,vGeneratedUV,textureGenEnabled);
+  vec4 texel = sample3(texture, uv + textureScroll.xy, primarySize);
   if (secondaryEnabled > 0.5) {
-    vec4 other = sample3(secondaryTexture, texture_coords + textureScroll.zw, secondarySize);
+    vec4 other = sample3(secondaryTexture, uv + textureScroll.zw, secondarySize);
     texel = mix(texel, other, secondaryMix);
   }
-  if (koffingGasMode > 0.5) {
+  if (effectIntensityMode > 0.5) {
     float intensity = texel.r;
     float gasAlpha = intensity * primitiveColor.a * color.a * sceneTint.a;
     if (gasAlpha <= alphaCutoff) discard;
@@ -99,7 +111,11 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
   float stadiumShade=clamp(0.7725+n.x*0.06+n.y*0.225+n.z*0.11,0.30,1.0);
   vec3 lit=vec3(stadiumShade);
   vec3 combined = mix(texel.rgb, texel.rgb * environmentColor.rgb, environmentMix);
-  vec3 lighting=mix(vec3(1.0),lit * sunlight(vSun),lightingEnabled);
+  // Stadium's shade includes an ambient component. Shadow only the direct
+  // portion so self-shadowing cannot crush already-dark faces toward black.
+  float shadowVisibility=sunlight(vSun);
+  float litShade=0.30+(stadiumShade-0.30)*shadowVisibility;
+  vec3 lighting=mix(vec3(1.0),vec3(litShade),lightingEnabled);
   vec3 shaded=combined * lighting * sceneTint.rgb;
   shaded=mix(shaded,vec3(1.0),flashAmount);
   return vec4(shaded,
@@ -143,10 +159,10 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
 #ifdef PIXEL
 uniform vec4 primitiveColor;
 uniform vec4 environmentColor;
-uniform float koffingGasMode;
+uniform float effectIntensityMode;
 vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords) {
   vec4 texel = Texel(image, texture_coords);
-  if (koffingGasMode > 0.5) {
+  if (effectIntensityMode > 0.5) {
     float intensity = texel.r;
     float alpha = intensity * primitiveColor.a * color.a;
     if (alpha <= 0.001) discard;
@@ -158,6 +174,19 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords) {
 }
 #endif
 ]]
+
+Renderer.SHADER_SOURCE = SHADER
+Renderer.CAMERA_SHADER_SOURCE = CAMERA_SHADER
+
+function Renderer.compileShaderAudit()
+  if not (love and love.graphics and love.graphics.newShader) then
+    return false, "LÖVE shader compiler unavailable"
+  end
+  local ok, shader = pcall(love.graphics.newShader, SHADER)
+  if not ok or not shader then return false, tostring(shader) end
+  if shader.release then pcall(shader.release, shader) end
+  return true
+end
 
 local floor = math.floor
 local unpack = table.unpack or unpack
@@ -383,8 +412,12 @@ end
 
 local function makeMesh(prim)
   local rows = {}
+  local us, vs = Sampler.uvScale(prim.sampler, prim.textureScale)
   for i = 1, prim.nverts do
-    rows[i] = { 0, 0, 0, prim.uv[i * 2 - 1], prim.uv[i * 2], 0, 1, 0 }
+    local color = prim.vertexSemantics == "color" and prim.color or nil
+    rows[i] = { 0, 0, 0, prim.uv[i * 2 - 1] * us, prim.uv[i * 2] * vs, 0, 1, 0,
+      color and color[i * 4 - 3] / 255 or 1, color and color[i * 4 - 2] / 255 or 1,
+      color and color[i * 4 - 1] / 255 or 1, color and color[i * 4] / 255 or 1 }
   end
   if not (love and love.graphics and love.graphics.newMesh) then return nil, rows end
   local ok, mesh = pcall(love.graphics.newMesh, Renderer.FORMAT, rows, "triangles", "dynamic")
@@ -395,10 +428,10 @@ end
 
 local function makeDynamicMesh()
   local rows = {
-    {0,0,0,0,1,0,0,1},
-    {0,0,0,1,1,0,0,1},
-    {0,0,0,1,0,0,0,1},
-    {0,0,0,0,0,0,0,1},
+    {0,0,0,0,1,0,0,1,1,1,1,1},
+    {0,0,0,1,1,0,0,1,1,1,1,1},
+    {0,0,0,1,0,0,0,1,1,1,1,1},
+    {0,0,0,0,0,0,0,1,1,1,1,1},
   }
   if not (love and love.graphics and love.graphics.newMesh) then return nil, rows end
   local ok, mesh = pcall(love.graphics.newMesh, Renderer.FORMAT, rows, "triangles", "dynamic")
@@ -756,7 +789,9 @@ end
 function Renderer:currentTexture(prim)
   local dynamic = self.handlerState and self.handlerState.textureBySite
   local site = prim and prim.callbackOffset
-  if dynamic and site and dynamic[site] then return dynamic[site] end
+  if dynamic and site and dynamic[site] and prim.callbackTextureRequired then
+    return dynamic[site]
+  end
   return Pack.textureIndex(self.model,prim,self.animIndex,self.frame,self.auxIndex,
     self.handlerRuntime and self.handlerRuntime.callbackFrame)
 end
@@ -776,71 +811,32 @@ end
 -- Draw into the caller's currently-bound color/depth target. The battle scene
 -- uses this path so every actor shares the same camera and depth buffer.
 function Renderer.koffingGasGeometryState(particle, anchor, sourceGeometry, textureWidth, textureHeight)
-  particle = type(particle) == "table" and particle or {}
-  anchor = type(anchor) == "table" and anchor or {0,0,0}
-  sourceGeometry = type(sourceGeometry) == "table" and sourceGeometry or {}
-  local x, y, z
-  if particle.absolute then
-    x, y, z = tonumber(particle.x) or 0, tonumber(particle.y) or 0, tonumber(particle.z) or 0
-  else
-    x = (tonumber(anchor[1]) or 0) + (tonumber(particle.x) or 0)
-    y = (tonumber(anchor[2]) or 0) + (tonumber(particle.y) or 0)
-    z = (tonumber(anchor[3]) or 0) + (tonumber(particle.z) or 0)
-  end
-  local sx = (tonumber(particle.sx) or tonumber(particle.scale) or 1) * 0.1
-  local sy = (tonumber(particle.sy) or tonumber(particle.scale) or 1) * 0.1
-  local sz = (tonumber(particle.sz) or tonumber(particle.scale) or 1) * 0.1
-  local source = sourceGeometry.vertices
-  if type(source) ~= "table" or #source ~= 4 then
-    source = {
-      {x=-50,y=-50,z=0,s=0,t=1024},
-      {x=50,y=-50,z=0,s=1024,t=1024},
-      {x=50,y=50,z=0,s=1024,t=0},
-      {x=-50,y=50,z=0,s=0,t=0},
-    }
-  end
-  local tw = math.max(1, tonumber(textureWidth) or 32)
-  local th = math.max(1, tonumber(textureHeight) or 32)
-  local vertices = {}
-  for i = 1, 4 do
-    local v = source[i]
-    local vx, vy, vz = tonumber(v.x or v[1]) or 0, tonumber(v.y or v[2]) or 0, tonumber(v.z or v[3]) or 0
-    local vs, vt = tonumber(v.s or v[4]) or 0, tonumber(v.t or v[5]) or 0
-    vertices[i] = {
-      x + vx * sx, y + vy * sy, z + vz * sz,
-      (vs / 32) / tw, (vt / 32) / th,
-    }
-  end
-  local indices = sourceGeometry.indices
-  if type(indices) ~= "table" or #indices ~= 6 then indices = {1,2,3,1,3,4} end
-  return {
-    center = {x,y,z}, scale = {sx,sy,sz},
-    sourceVertices = source, vertices = vertices, indices = indices,
-  }
+  return EffectRenderer.billboardGeometry(particle, anchor, sourceGeometry, textureWidth, textureHeight)
 end
 
 function Renderer.koffingGasMaterialState(age)
-  local _, alphaByte, alpha = Handlers.koffingGasRenderState(age)
-  return {
-    combine = {0x3097FF, 0x5FFEFE38},
-    primitiveColor = {10 / 255, 0, 0, alpha},
-    environmentColor = {128 / 255, 0, 0, 0},
-    alphaByte = alphaByte,
-    gasMode = 1,
-  }
+  local state = assert(EffectRenderer.materialState(109, age))
+  state.gasMode = state.effectIntensityMode
+  return state
+end
+
+local function dynamicObjectRecord(model, site)
+  local records = model and model.handlers and model.handlers.records
+  if not site or type(records) ~= "table" then return nil end
+  for _, record in ipairs(records) do
+    if tonumber(record.commandOffset) == tonumber(site)
+        and record.family == "dynamic-object-renderer" then return record end
+  end
 end
 
 local function dynamicObjectCarrier(model, prim)
   local site = tonumber(prim and prim.callbackOffset)
-  local records = model and model.handlers and model.handlers.records
-  local species = math.floor(tonumber(model and model.species) or -1)
-  if (species ~= 109 and species ~= 110)
-      or not site or type(records) ~= "table" then return false end
-  for _, record in ipairs(records) do
-    if tonumber(record.commandOffset) == site
-        and record.family == "dynamic-object-renderer" then return true end
+  if dynamicObjectRecord(model, site) == nil then return false end
+  local primitiveIndex
+  for index, candidate in ipairs(model and model.prims or {}) do
+    if candidate == prim then primitiveIndex=index break end
   end
-  return false
+  return DynamicObject.isCarrierPrimitive(model and model.species, primitiveIndex)
 end
 
 function Renderer.dynamicObjectEmitters(model, matrices)
@@ -853,8 +849,10 @@ function Renderer.dynamicObjectEmitters(model, matrices)
     referenceMatrix[2][4] * root,
     referenceMatrix[3][4] * root,
   } or {0,0,0}
-  for _, prim in ipairs(model.prims or {}) do
-    if dynamicObjectCarrier(model, prim) then
+  local profile = DynamicObject.profile(model.species)
+  if not profile then return emitters end
+  if profile.emitters == "carrier-skin" then
+    for _, prim in ipairs(model.prims or {}) do if dynamicObjectCarrier(model, prim) then
       for _, bone in ipairs(prim.skin or {}) do
         bone = math.floor(tonumber(bone) or -1)
         local matrix = matrices[bone + 1]
@@ -872,6 +870,19 @@ function Renderer.dynamicObjectEmitters(model, matrices)
           }
         end
       end
+    end end
+  else
+    for _, record in ipairs(model.handlers and model.handlers.records or {}) do
+      if record.family == "dynamic-object-renderer" then
+        local bone = math.floor(tonumber(record.bone) or -1)
+        local matrix = matrices[bone + 1]
+        if bone >= 0 and matrix and not seen[bone] then
+          seen[bone] = true
+          emitters[#emitters + 1] = { index=#emitters, bone=bone,
+            origin={matrix[1][4]*root,matrix[2][4]*root,matrix[3][4]*root},
+            reference={reference[1],reference[2],reference[3]} }
+        end
+      end
     end
   end
   return emitters
@@ -882,16 +893,15 @@ function Renderer.primitiveRenderState(model, prim, options)
   local carrier = dynamicObjectCarrier(model, prim)
   return {
     dynamicObjectCarrier = carrier,
-    -- The extractor follows the callback's geometry pointer so the four
-    -- billboard vertices are available to the runtime handler.  They are not
-    -- a normal model primitive: the ASM submits them only for active dynamic
-    -- objects.  Drawing the merged copies here produces Koffing's square
-    -- "detached holes" at rest.
+    -- Carrier profiles contain merged callback billboard copies, not ordinary
+    -- body geometry. Mixed profiles classify individual payload primitives so
+    -- callback-inheriting body meshes remain in the static/shadow passes.
     drawStatic = not carrier,
     cullEnabled = prim and prim.cull == true
       and (carrier or options.disableCulling ~= true),
-    lightingEnabled = not carrier,
+    lightingEnabled = not carrier and (prim == nil or prim.lighting ~= false),
     castsShadow = not carrier,
+    textureGenEnabled = prim and math.floor((prim.geometryMode or 0) / 0x40000) % 2 == 1,
   }
 end
 
@@ -903,7 +913,7 @@ function Renderer:drawDynamicObjects(pass, model, options)
   if type(dynamic) ~= "table" then return end
   local metrics = self:worldMetrics()
   for site, effect in pairs(dynamic) do
-    if effect.family == "koffing-gas" then
+    if effect.family == "dynamic-object" or effect.family == "koffing-gas" then
       local bounds = metrics.bounds or {}
       local fallbackAnchor = self.handlerBoneAnchors and self.handlerBoneAnchors[site] or {
         ((bounds.minX or 0) + (bounds.maxX or 0)) * 0.5,
@@ -911,13 +921,13 @@ function Renderer:drawDynamicObjects(pass, model, options)
         ((bounds.minZ or 0) + (bounds.maxZ or 0)) * 0.5,
       }
       if g.setMeshCullMode then g.setMeshCullMode("none") end
-      if g.setDepthMode then g.setDepthMode("less", false) end
+      if g.setDepthMode then g.setDepthMode(RenderContract.DYNAMIC_DEPTH_COMPARE, false) end
       if g.setBlendMode then g.setBlendMode("alpha", "alphamultiply") end
       pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
       pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
       pcall(self.shader.send, self.shader, "environmentMix", 0)
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
-      pcall(self.shader.send, self.shader, "koffingGasMode", 1)
+      pcall(self.shader.send, self.shader, "effectIntensityMode", 1)
       if g.setColor then g.setColor(1,1,1,1) end
       local emitters = effect.emitters
       if type(emitters) ~= "table" or #emitters == 0 then
@@ -928,8 +938,10 @@ function Renderer:drawDynamicObjects(pass, model, options)
         for i = 1, 10 do
           local particle = emitter.particles and emitter.particles[i]
           if particle and particle.active then
-            local frame = Handlers.koffingGasRenderState(particle.age)
-            local materialState = Renderer.koffingGasMaterialState(particle.age)
+            local materialState = EffectRenderer.materialState(effect.species or 109,
+              particle.age, self.handlerRuntime)
+            local frame = materialState and materialState.frame or 1
+            frame = math.max(1, math.min(#(effect.textureSlots or {}), frame))
             local textureIndex = effect.textureSlots and effect.textureSlots[frame]
             local texture = textureIndex and Pack.image(self.model, textureIndex) or nil
             if texture then
@@ -942,7 +954,7 @@ function Renderer:drawDynamicObjects(pass, model, options)
               end
               if entry.mesh then
                 local tw,th=imageDimensions(texture,self.model.textures[textureIndex])
-                local geometry = Renderer.koffingGasGeometryState(particle, anchor, effect.geometry, tw, th)
+                local geometry = EffectRenderer.billboardGeometry(particle, anchor, effect.geometry, tw, th)
                 local rows = entry.rows
                 for vi = 1, 4 do
                   local source = geometry.vertices[vi]
@@ -964,7 +976,7 @@ function Renderer:drawDynamicObjects(pass, model, options)
         end
       end
       if g.setColor then g.setColor(1,1,1,1) end
-      pcall(self.shader.send, self.shader, "koffingGasMode", 0)
+      pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
     end
   end
 end
@@ -983,6 +995,7 @@ function Renderer:drawScene(pass, model, options)
     g.setShader(self.shader)
     pcall(self.shader.send, self.shader, "mvp", "row", matMul(vp, model))
     pcall(self.shader.send, self.shader, "modelMatrix", "row", model)
+    pcall(self.shader.send, self.shader, "viewMatrix", "row", options.viewMatrix or identity())
     pcall(self.shader.send, self.shader, "normalMatrix", "row",
       options.normalMatrix or {1,0,0, 0,1,0, 0,0,1})
     pcall(self.shader.send, self.shader, "lightDir", options.lightDir or self.lightDir)
@@ -996,15 +1009,22 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send, self.shader, "alphaCutoff", 0.01)
     pcall(self.shader.send, self.shader, "sceneTint", options.tint or {1,1,1,1})
     pcall(self.shader.send, self.shader, "flashAmount", options.flashAmount or 0)
-    pcall(self.shader.send, self.shader, "koffingGasMode", 0)
+    pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
     pcall(self.shader.send, self.shader, "lightingEnabled", 1)
+    pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
+    pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
     pcall(self.shader.send, self.shader, "sunEnabled", options.sunMap and 1 or 0)
     if options.sunMap then pcall(self.shader.send,self.shader,"sunMap",options.sunMap) end
     pcall(self.shader.send,self.shader,"sunDark",options.sunDark or 0.68)
     pcall(self.shader.send,self.shader,"sunBias",options.sunBias or 0.002)
     pcall(self.shader.send,self.shader,"sunTexel",options.sunTexel or {1/1024,1/1024})
-    if g.setDepthMode then g.setDepthMode("less", not additiveOnly) end
+    -- Keep ordinary geometry on strict depth comparison so eye decals cannot
+    -- leak through nearer beaks or muzzles. Alpha decal primitives switch to
+    -- equal-depth comparison without writing depth when they are drawn.
+    if g.setDepthMode then
+      g.setDepthMode(RenderContract.MODEL_DEPTH_COMPARE, not additiveOnly)
+    end
     if g.setBlendMode then
       g.setBlendMode(additiveOnly and "add" or "alpha", "alphamultiply")
     end
@@ -1034,6 +1054,10 @@ function Renderer:drawScene(pass, model, options)
         pcall(self.shader.send, self.shader, "primitiveColor", color)
         pcall(self.shader.send, self.shader, "lightingEnabled",
           renderState.lightingEnabled and 1 or 0)
+        if g.setDepthMode then
+          local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
+          g.setDepthMode(compare, write)
+        end
         pcall(self.shader.send, self.shader, "environmentColor",
           material and material.environmentColor or {1,1,1,1})
         pcall(self.shader.send, self.shader, "environmentMix",
@@ -1059,11 +1083,19 @@ function Renderer:drawScene(pass, model, options)
         if texture then
           if texture.setFilter then pcall(texture.setFilter, texture, self.textureFilter,
             self.textureFilter, self.anisotropy) end
-          if texture.setWrap and material then pcall(texture.setWrap, texture,
-            material.wrapS or "clamp", material.wrapT or "clamp") end
+          if texture.setWrap then
+            local wrapS, wrapT = Sampler.wrap(part.prim.sampler)
+            if material then wrapS, wrapT = material.wrapS or wrapS, material.wrapT or wrapT end
+            pcall(texture.setWrap, texture, wrapS, wrapT)
+          end
           local tw, th = imageDimensions(texture,
             self.model.textures[self:currentTexture(part.prim)])
           pcall(self.shader.send, self.shader, "primarySize", {tw,th})
+          local gs, gt = Sampler.textureGenScale(part.prim.sampler,
+            part.prim.textureScale, tw, th)
+          pcall(self.shader.send, self.shader, "textureGenScale", {gs,gt})
+          pcall(self.shader.send, self.shader, "textureGenEnabled",
+            renderState.textureGenEnabled and 1 or 0)
           if part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
         end
         g.draw(part.mesh)
@@ -1081,7 +1113,7 @@ function Renderer:drawShadowMap(model,lightVP)
   local ok,err=pcall(function()
     g.setShader(self.shadowShader)
     if g.setMeshCullMode then g.setMeshCullMode("none") end
-    if g.setDepthMode then g.setDepthMode("less",true) end
+    if g.setDepthMode then g.setDepthMode(RenderContract.SHADOW_DEPTH_COMPARE,true) end
     if g.setBlendMode then g.setBlendMode("replace","premultiplied") end
     pcall(self.shadowShader.send,self.shadowShader,"lightVP","row",lightVP)
     pcall(self.shadowShader.send,self.shadowShader,"modelMatrix","row",model)
@@ -1134,7 +1166,8 @@ function Renderer:renderToCanvas(width, height, options)
       g.setCanvas(self.canvas)
     end
     g.clear(0, 0, 0, 0, true, true)
-    if g.setDepthMode then g.setDepthMode("less", true) end
+    -- Match the scene renderer's per-primitive body/decal depth contract.
+    if g.setDepthMode then g.setDepthMode(RenderContract.MODEL_DEPTH_COMPARE, true) end
     if self.shader then g.setShader(self.shader) end
 
     local model = self.model
@@ -1148,6 +1181,8 @@ function Renderer:renderToCanvas(width, height, options)
     local mvp = matMul(proj, matMul(view, mm))
     if self.shader then
       pcall(self.shader.send, self.shader, "mvp", "row", mvp)
+      pcall(self.shader.send, self.shader, "modelMatrix", "row", mm)
+      pcall(self.shader.send, self.shader, "viewMatrix", "row", view)
       pcall(self.shader.send, self.shader, "normalMatrix", "row", normalMatrix(options.yaw or self.yaw, options.pitch or self.pitch, self.flipY))
       pcall(self.shader.send, self.shader, "lightDir", self.lightDir)
       pcall(self.shader.send, self.shader, "ambient", self.ambient)
@@ -1160,8 +1195,10 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
       pcall(self.shader.send, self.shader, "sceneTint", {1,1,1,1})
       pcall(self.shader.send, self.shader, "flashAmount", 0)
-      pcall(self.shader.send, self.shader, "koffingGasMode", 0)
+      pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
       pcall(self.shader.send, self.shader, "lightingEnabled", 1)
+      pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
+      pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
     end
 
     local function drawPass(additive)
@@ -1185,6 +1222,10 @@ function Renderer:renderToCanvas(width, height, options)
             or (material and material.primitiveColor) or { 1, 1, 1, 1 }
           if part.prim.effect == "fire" and not (attribute and attribute.color) then
             primitiveColor = { 1, 0.42, 0.12, 1 }
+          end
+          if g.setDepthMode then
+            local compare, write = RenderContract.depthState(part.prim, not additive)
+            g.setDepthMode(compare, write)
           end
           if self.shader then
             pcall(self.shader.send, self.shader, "primitiveColor",
@@ -1220,9 +1261,16 @@ function Renderer:renderToCanvas(width, height, options)
             local tw,th=imageDimensions(texture,
               model.textures[self:currentTexture(part.prim)])
             pcall(self.shader.send, self.shader, "primarySize", {tw,th})
+            local gs,gt=Sampler.textureGenScale(part.prim.sampler,
+              part.prim.textureScale,tw,th)
+            pcall(self.shader.send,self.shader,"textureGenScale",{gs,gt})
+            pcall(self.shader.send,self.shader,"textureGenEnabled",
+              renderState.textureGenEnabled and 1 or 0)
           end
-          if texture and texture.setWrap and material then
-            pcall(texture.setWrap, texture, material.wrapS or "clamp", material.wrapT or "clamp")
+          if texture and texture.setWrap then
+            local wrapS,wrapT=Sampler.wrap(part.prim.sampler)
+            if material then wrapS,wrapT=material.wrapS or wrapS,material.wrapT or wrapT end
+            pcall(texture.setWrap,texture,wrapS,wrapT)
           end
           if texture and part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
           g.draw(part.mesh)

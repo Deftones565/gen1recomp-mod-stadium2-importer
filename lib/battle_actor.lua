@@ -128,6 +128,10 @@ function Actor:load(data, mon, forcedDex)
 
   self.failedFor,self.failedForm=nil,nil
   self.renderer=renderer
+  if renderer.shaderTier ~= "lit" and self.warn then
+    pcall(self.warn, ("%s model %03d is using compatibility rendering; Stadium materials may be incomplete: %s")
+      :format(self.label, dex, tostring(renderer.shaderError or renderer.shaderTier)))
+  end
   self.callbackFrame=self.side=="enemy" and 4 or 0
   self:play("idle",true)
   return true

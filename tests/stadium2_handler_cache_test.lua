@@ -2,12 +2,22 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Build = require("mods.STADIUM2_IMPORTER.lib.build")
+local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
+local Registry = require("mods.STADIUM2_IMPORTER.lib.handler_registry")
 
 local checks = 0
 local function ok(value, message)
   checks = checks + 1
   if not value then error("FAIL " .. message, 0) end
 end
+
+for descriptor, row in pairs(Registry.BY_DESCRIPTOR) do
+  ok(row.ownership and row.geometry and row.texturePolicy and row.argumentDecoder,
+    ("callback %08X has a complete family contract"):format(descriptor))
+end
+ok(Registry.BY_DESCRIPTOR[0x81000140].ownership == "following"
+  and Registry.BY_DESCRIPTOR[0x81000140].geometry == "state-only",
+  "phase-5 contract owns following source geometry without generated scans")
 
 local function be16(value)
   return string.char(math.floor(value / 256) % 256, value % 256)
@@ -55,7 +65,7 @@ local registration = Handlers.evaluate(compiled[4], 0, {})
 ok(registration and registration.operation == "register-model-context", "registration operation")
 ok(registration.ifEmpty == true and registration.noRender == true, "registration semantics")
 
-local pack = "DSM3synthetic" .. Handlers.packExtension(compiled, 0x8FF00000, fragment)
+local pack = "DSM4synthetic" .. Handlers.packExtension(compiled, 0x8FF00000, fragment)
 local decoded = Handlers.readExtension(pack)
 ok(decoded ~= nil, "handler extension decoded")
 ok(decoded.version == 4, "handler extension version")
@@ -96,11 +106,14 @@ local packed = Build.pack({
   handlerSourceBase = 0x8FF00000,
   handlerFragment = fragment,
 }, 25, moveRows, contexts)
-ok(packed:sub(1, 4) == "DSM3", "handler-aware pack keeps DSM3 magic")
+ok(packed:sub(1, 4) == "DSM4", "handler-aware pack uses DSM4 magic")
 local packedHandlers = Handlers.readExtension(packed)
 ok(packedHandlers and #packedHandlers.records == 4, "real pack carries handler extension")
 ok(packedHandlers.fragment == fragment, "real pack carries handler fragment")
 ok(packedHandlers.records[1].bone == 3, "real pack preserves handler bone")
+local parsed = assert(Pack.parse(packed))
+ok(parsed.prims[1].geometryMode == 0 and parsed.prims[1].vertexSemantics == "normal",
+  "DSM4 primitive semantics roundtrip")
 
 local state, deferred = Handlers.run(compiled, 0, { modelContext = "model-25" }, {})
 ok(state.modelContext == "model-25", "phase zero model registration")
@@ -122,7 +135,7 @@ local effectRecords = Handlers.compile({
   { handler = 0x81000070, bone = 3, boneId = 8, arg = 0x40, commandOffset = 0xDC },
   { handler = 0x81000078, bone = 4, boneId = 9, arg = 0x40, commandOffset = 0xEC },
 }, fragment, 0x8FF00000)
-local effectPack = "DSM3effects" .. Handlers.packExtension(effectRecords, 0x8FF00000, fragment, {
+local effectPack = "DSM4effects" .. Handlers.packExtension(effectRecords, 0x8FF00000, fragment, {
   prims = { { materialOffset = 0x40, callbackOffset = 0xCC } }, handlerTextures = {
     { commandOffset = 0xCC, pointer = 0x8FF00040, slot = 5, w = 64, h = 32, format = 0, size = 2 },
     { commandOffset = 0xDC, pointer = 0x8FF00040, slot = 6, w = 64, h = 64, format = 0, size = 2 },

@@ -1,6 +1,9 @@
 
 local StadiumFragment = {}
 local Fx = require("mods.STADIUM2_IMPORTER.lib.fx")
+local Phase5Geometry = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.phase5_geometry")
+local HandlerRegistry = require("mods.STADIUM2_IMPORTER.lib.handler_registry")
+local VertexSemantics = require("mods.STADIUM2_IMPORTER.lib.vertex_semantics")
 
 local byte = string.byte
 local char = string.char
@@ -23,6 +26,7 @@ local CMD_SIZES = {
   [0x19] = 0x08, [0x1A] = 0x04, [0x1B] = 0x10, [0x1C] = 0x10, [0x1D] = 0x1C,
   [0x1E] = 0x08, [0x1F] = 0x18, [0x20] = 0x14, [0x21] = 0x10, [0x22] = 0x08,
   [0x23] = 0x10, [0x24] = 0x04, [0x25] = 0x04, [0x26] = 0x14,
+  [0x28] = 0x04, [0x29] = 0x04,
 }
 
 StadiumFragment.CMD_SIZES = CMD_SIZES
@@ -162,7 +166,7 @@ end
 local Model = {}
 Model.__index = Model
 
-local function newModel(frag)
+local function newModel(frag, options)
   local r = frag:root()
   if not r then return nil, frag.name .. ": could not locate root struct" end
   local geo = frag:ptr(r + 0x08)
@@ -183,6 +187,7 @@ local function newModel(frag)
     rootScale = { 1.0, 1.0, 1.0 },
     fx = {},                
     warnings = {},
+    options = type(options) == "table" and options or {},
   }, Model)
   return m
 end
@@ -282,10 +287,17 @@ function Model:walk(o, depth)
       -- callback to the exact primitive set emitted by the preceding draw
       -- command; grouping only by texture/material merged unrelated nodes
       -- and left every material callback with no consumer.
-      local owned = self.lastDrawPrimsByBone and self.lastDrawPrimsByBone[bone]
-      for _, prim in ipairs(owned or {}) do
-        prim.callbackOffset = o
-        prim.callbackDescriptor = handler
+      -- Most callbacks decorate the draw immediately before the command.
+      -- 0x81000140 is the exception: func_810024E0 installs phase-5 state for
+      -- the geometry that follows it. Retrospectively claiming the previous
+      -- draw merges neighbouring meshes and makes one callback site orphaned.
+      local contract = HandlerRegistry.info(handler)
+      if not contract or contract.ownership == "preceding" then
+        local owned = self.lastDrawPrimsByBone and self.lastDrawPrimsByBone[bone]
+        for _, prim in ipairs(owned or {}) do
+          prim.callbackOffset = o
+          prim.callbackDescriptor = handler
+        end
       end
       self.callbackForBone = self.callbackForBone or {}
       self.callbackForBone[bone] = { offset = o, descriptor = handler }
@@ -424,7 +436,10 @@ function Model:runDL(o, bone, depth)
   end
   local f = self.f
   local vbuf = self.vbuf
-  local cull = 0x400
+  -- The model dispatcher enters these child lists with lighting and back-face
+  -- culling enabled.  Their usual D9FFFFFF/00000400 command preserves that
+  -- inherited lighting bit; starting from culling alone loses caller state.
+  local geometryMode = 0x20400
   local steps = 0
   while o >= 0 and o + 8 <= #f.d and steps < 4096 do
     steps = steps + 1
@@ -455,12 +470,16 @@ function Model:runDL(o, bone, depth)
         end
       end
     elseif op == 0xD9 then                            
-      cull = bor(band(cull, w0 % 0x800, 11), w1 % 0x800, 11)
+      -- F3DEX2 stores a 24-bit keep mask in w0 and the bits to set in w1.
+      -- Preserve the full state, including inherited G_LIGHTING; culling is
+      -- only one part of the geometry-mode contract.
+      geometryMode = bor(band(geometryMode, w0 % 0x1000000, 24),
+        w1 % 0x1000000, 24)
     elseif op == 0x05 or op == 0x06 then              
       local prim = self:primFor(self.curTex, self.curTlut, self.curMat,
-                                self.curTexAnim, cull % 0x800 - cull % 0x200)
-      local flip = (floor(cull / 0x200) % 2 == 1)
-                   and (floor(cull / 0x400) % 2 == 0)
+                                self.curTexAnim, geometryMode)
+      local flip = (floor(geometryMode / 0x200) % 2 == 1)
+                   and (floor(geometryMode / 0x400) % 2 == 0)
       emit(prim, vbuf, flip,
            floor(floor(w0 / 0x10000) % 256 / 2),
            floor(floor(w0 / 0x100) % 256 / 2),
@@ -498,36 +517,51 @@ function Model:bakePhase5Geometry()
   for _, node in ipairs(self.fx) do
     if (node.handler == 0x81000140 or node.handler == 0x81000030
         or node.handler == 0x81000040 or node.handler == 0x81000070) and node.arg then
-      local scanLength = node.handler == 0x81000140 and 0x400 or 0x100
-      local material
-      for at = node.arg, math.min(#f.d - 4, node.arg + scanLength), 4 do
-        local pointer = f:u32(at)
-        local offset = f:off(pointer)
-        if offset then
-          local op = f:u8(offset)
-          if not material and (op == 0xF5 or op == 0xFA or op == 0xFB or op == 0xFC or op == 0xFD) then
-            material = offset
+      local item = node.handler == 0x81000140 and f:ptr(node.arg) or nil
+      local staticPhase5 = item and f:u32(item + 4) == 0
+      -- The static 0x140 path only changes render state. Its argument is not
+      -- a display-list table; scanning 0x400 bytes crosses into adjacent data
+      -- and manufactured hundreds of triangles for Misdreavus and its peers.
+      if node.handler == 0x81000140 then
+        -- func_810024E0 only emits render-state commands before delegating
+        -- texture loading to func_81001F14. item[4] controls dynamic state;
+        -- it is not a geometry pointer or display-list table.
+        node.phase5Geometry = "state-only"
+        node.phase5DynamicState = not staticPhase5
+      else
+        local scanLength = 0x100
+        local material
+        for at = node.arg, math.min(#f.d - 4, node.arg + scanLength), 4 do
+          local pointer = f:u32(at)
+          local offset = f:off(pointer)
+          if offset then
+            local op = f:u8(offset)
+            if not material and (op == 0xF5 or op == 0xFA or op == 0xFB
+                or op == 0xFC or op == 0xFD) then
+              material = offset
+            end
           end
         end
-      end
-      local oldMat, oldCallback, oldDescriptor = self.curMat, self.curCallbackOffset,
-        self.curCallbackDescriptor
-      self.curCallbackOffset = node.commandOffset
-      self.curCallbackDescriptor = node.handler
-      if material then self.curMat = material end
-      for at = node.arg, math.min(#f.d - 4, node.arg + scanLength), 4 do
-        local pointer = f:u32(at)
-        local offset = f:off(pointer)
-        local op = offset and f:u8(offset) or nil
-        local key = tostring(offset) .. ":" .. tostring(node.bone)
-        if offset and not seen[key] and (op == 0x01 or op == 0x05 or op == 0x06 or op == 0xDE) then
-          seen[key] = true
-          self:runDL(offset, node.bone, 0)
+        local oldMat, oldCallback, oldDescriptor = self.curMat, self.curCallbackOffset,
+          self.curCallbackDescriptor
+        self.curCallbackOffset = node.commandOffset
+        self.curCallbackDescriptor = node.handler
+        if material then self.curMat = material end
+        for at = node.arg, math.min(#f.d - 4, node.arg + scanLength), 4 do
+          local pointer = f:u32(at)
+          local offset = f:off(pointer)
+          local op = offset and f:u8(offset) or nil
+          local key = tostring(offset) .. ":" .. tostring(node.bone)
+          if offset and not seen[key]
+              and (op == 0x01 or op == 0x05 or op == 0x06 or op == 0xDE) then
+            seen[key] = true
+            self:runDL(offset, node.bone, 0)
+          end
         end
+        self.curMat = oldMat
+        self.curCallbackOffset = oldCallback
+        self.curCallbackDescriptor = oldDescriptor
       end
-      self.curMat = oldMat
-      self.curCallbackOffset = oldCallback
-      self.curCallbackDescriptor = oldDescriptor
     end
   end
 end
@@ -866,6 +900,8 @@ local function dedupeFx(nodes)
         argOffset = node.argOffset or node.arg,
         argPointer = node.argPointer,
         commandOffset = node.commandOffset,
+        phase5Geometry = node.phase5Geometry,
+        phase5DynamicState = node.phase5DynamicState,
       }
     end
   end
@@ -984,13 +1020,13 @@ function StadiumFragment.inspectFx(data, name, sourceBase)
   }
 end
 
-function StadiumFragment.extract(data, name)
+function StadiumFragment.extract(data, name, options)
   local frag, err = StadiumFragment.open(data, name)
   if not frag then return nil, err end
-  local m, mErr = newModel(frag)
+  local m, mErr = newModel(frag, options)
   if not m then return nil, mErr end
   m:build()
-  m:bakePhase5Geometry()
+  if m.options.bakePhase5Geometry ~= false then m:bakePhase5Geometry() end
   m:mergePrimitivesByCallback()
 
   local auxAnims = {}
@@ -1016,7 +1052,7 @@ function StadiumFragment.extract(data, name)
 
   local callbackTextureMap = {}
   local callbackTextureSites = {}
-  local function registerCallback(node, pointer, w, h, fmt, siz)
+  local function registerCallback(node, pointer, w, h, fmt, siz, sampler, descriptorOffset)
     local offset = type(pointer) == "number" and pointer - BASE or nil
     local bytesPerPixel = siz == 3 and 4 or (siz == 2 and 2 or (siz == 1 and 1 or 0.5))
     local needed = math.ceil(w * h * bytesPerPixel)
@@ -1036,6 +1072,7 @@ function StadiumFragment.extract(data, name)
       handlerTextures[#handlerTextures + 1] = {
         commandOffset = node.commandOffset, pointer = pointer, slot = slot,
         w = w, h = h, format = fmt, size = siz,
+        sampler = sampler, descriptorOffset = descriptorOffset,
       }
     end
     return slot
@@ -1070,7 +1107,21 @@ function StadiumFragment.extract(data, name)
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 4 + i * 4), 64, 32, 0, 2) end
       elseif handler == 0x81000070 then
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 32, 4, 0) end
+      elseif handler == 0x81000140 then
+        for _, texture in ipairs(Phase5Geometry.textureSpecs(frag.d, BASE, arg)) do
+          registerCallback(node, texture.pointer, texture.w, texture.h,
+            texture.format, texture.size, texture.sampler, texture.descriptorOffset)
+        end
       end
+    end
+  end
+
+
+  local callbackTextureBySite, callbackStateBySite = {}, {}
+  for _, row in ipairs(handlerTextures) do callbackTextureBySite[row.commandOffset] = row end
+  for _, node in ipairs(m.fx) do
+    if node.handler == 0x81000140 and node.arg then
+      callbackStateBySite[node.commandOffset] = Phase5Geometry.stateSpec(frag.d, BASE, node.arg)
     end
   end
 
@@ -1097,7 +1148,7 @@ function StadiumFragment.extract(data, name)
       if ti >= 0 then
         tw, th = m.textures[p.tex + 1].w, m.textures[p.tex + 1].h
       end
-      local pos, uv, nrm, skin, idx = {}, {}, {}, {}, {}
+      local pos, uv, nrm, color, skin, idx = {}, {}, {}, {}, {}, {}
       for i = 1, p.nverts do
         local v = p.verts[i]
         pos[i * 3 - 2], pos[i * 3 - 1], pos[i * 3] = v[1], v[2], v[3]
@@ -1106,6 +1157,10 @@ function StadiumFragment.extract(data, name)
         nrm[i * 3 - 2] = v[6] / 127.0
         nrm[i * 3 - 1] = v[7] / 127.0
         nrm[i * 3] = v[8] / 127.0
+        color[i * 4 - 3] = v[6] < 0 and v[6] + 256 or v[6]
+        color[i * 4 - 2] = v[7] < 0 and v[7] + 256 or v[7]
+        color[i * 4 - 1] = v[8] < 0 and v[8] + 256 or v[8]
+        color[i * 4] = v[9]
         skin[i] = v[10]
       end
       local ni = 0
@@ -1114,11 +1169,50 @@ function StadiumFragment.extract(data, name)
         idx[ni + 1], idx[ni + 2], idx[ni + 3] = tri[1], tri[2], tri[3]
         ni = ni + 3
       end
+      -- Stadium 2 commonly leaves G_LIGHTING clear in these local display
+      -- lists even though the Vtx payload contains signed normals.  Inferring
+      -- the layout from that bit turns those normals into the rainbow RGB
+      -- seen in the model viewer.  Classify the payload itself instead.
+      local vertexSemantics = VertexSemantics.classify(nrm)
+      local lighting = vertexSemantics == "normal"
+      local callbackTexture = callbackTextureBySite[p.callbackOffset]
+      local callbackState = callbackStateBySite[p.callbackOffset]
+      local callbackTextureRequired = p.callbackOffset ~= nil and ti < 0
+      local function textureHasAlpha(slot)
+        local texture = slot and slot >= 0 and texOut[slot + 1] or nil
+        local rgba = texture and texture.rgba
+        if type(rgba) ~= "string" then return false end
+        for alpha = 4, #rgba, 4 do
+          if rgba:byte(alpha) < 255 then return true end
+        end
+        return false
+      end
+      local decal = textureHasAlpha(ti)
+      if not decal then
+        for _, slot in pairs(texMap or {}) do
+          if textureHasAlpha(slot) then decal = true; break end
+        end
+      end
+      -- Phase-5 state belongs to the callback-supplied texture surface. A
+      -- node can also contain authored eye/face textures; propagating texgen
+      -- onto those primitives replaces their atlas UVs with reflection UVs.
+      local callbackGeometryMode = callbackTextureRequired and callbackState
+        and callbackState.geometryMode or 0
       prims[#prims + 1] = {
-        tex = ti, cull = p.cull, texAnim = p.texAnim, texMap = texMap,
+        tex = ti, cull = floor((p.cull or 0) / 0x400) % 2 == 1,
+        geometryMode = bor(p.cull or 0, callbackGeometryMode, 24), lighting = lighting,
+        vertexSemantics = vertexSemantics,
+        color = color, texAnim = p.texAnim, texMap = texMap,
+        sampler = callbackTextureRequired and callbackTexture and callbackTexture.sampler or nil,
+        textureScale = callbackTextureRequired and callbackState
+          and callbackState.textureScale or nil,
         blend = (p.callbackDescriptor == 0x81000038 or p.callbackDescriptor == 0x81000068)
           and "add" or "alpha",
         materialOffset = p.mat, callbackOffset = p.callbackOffset,
+        callbackDescriptor = p.callbackDescriptor,
+        callbackTextureRequired = callbackTextureRequired,
+        sourceTextureMissing = ti < 0,
+        decal = decal and not callbackTextureRequired,
         pos = pos, uv = uv, nrm = nrm, skin = skin, nverts = p.nverts,
         idx = idx, nidx = ni,
       }
@@ -1267,7 +1361,8 @@ local function crystal251LooksLikeAnim(frag, off, bones)
     local row = chanTable + channel * 0xA
     local ns, nr, nt = frag:u8(row), frag:u8(row + 1), frag:u8(row + 2)
     local interp = frag:u8(row + 3)
-    if interp > 7 then return false end
+    -- Upper interpolation bits are source flags in raw pose records. The
+    -- three component decoders consume only bits 0..2, matching Anim:chan.
     if ns > 0 or nr > 0 or nt > 0 then active = active + 1 end
     if ns > 1 then needsScale, changing = true, changing + 1 end
     if nr > 1 then needsRot, changing = true, changing + 1 end

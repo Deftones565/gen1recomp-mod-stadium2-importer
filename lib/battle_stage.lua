@@ -18,8 +18,8 @@ float dep(vec2 uv){vec4 c=Texel(sunMap,uv);return c.r+c.g/255.0;}
 float sunlight(vec3 p){
  if(sunEnabled<.5||p.x<0.||p.x>1.||p.y<0.||p.y>1.||p.z>1.)return 1.;
  float z=p.z-sunBias;
- float l=step(z,dep(p.xy+sunTexel*vec2(-.5,-.5)))+step(z,dep(p.xy+sunTexel*vec2(.5,-.5)))
-  +step(z,dep(p.xy+sunTexel*vec2(-.5,.5)))+step(z,dep(p.xy+sunTexel*vec2(.5,.5)));
+ float l=step(z,dep(p.xy+sunTexel*vec2(-1.5,-.5)))+step(z,dep(p.xy+sunTexel*vec2(.5,-1.5)))
+  +step(z,dep(p.xy+sunTexel*vec2(1.5,.5)))+step(z,dep(p.xy+sunTexel*vec2(-.5,1.5)));
  return 1.-sunDark*(1.-l*.25);
 }
 vec4 effect(vec4 color,Image tex,vec2 tc,vec2 sc){
