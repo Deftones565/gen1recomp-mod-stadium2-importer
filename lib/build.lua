@@ -439,6 +439,7 @@ function StadiumBuild.pack(data, species, moveRows, ctx)
       + (p.vertexSemantics == "color" and 16 or 0)
       + (p.sourceTextureMissing and 32 or 0)
       + (p.decal and 64 or 0)
+      + (p.effect == "fire" and 128 or 0)
     w:u8(flags)
     w:u32(p.geometryMode or 0)
     local sampler = p.sampler or {}

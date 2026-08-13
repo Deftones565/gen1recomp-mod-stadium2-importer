@@ -4,7 +4,8 @@ local Registry = {}
 
 Registry.BY_DESCRIPTOR = {
   [0x81000030] = { target = 0x810039CC, phases = { 2 }, family = "display-list-wrapper", confidence = "verified-structure" },
-  [0x81000038] = { target = 0x81005AC0, phases = { 2 }, family = "dynamic-material-builder", confidence = "verified-structure" },
+  [0x81000038] = { target = 0x81005AC0, phases = { 2 }, family = "flame-object-renderer", confidence = "verified-behavior",
+    implementation = "render_callbacks.flame" },
   [0x81000040] = { target = 0x81003A74, phases = { 2 }, family = "display-list-wrapper", confidence = "verified-structure" },
   [0x81000048] = { target = 0x81005DB4, phases = { 2 }, family = "dynamic-material-builder", confidence = "verified-structure" },
   [0x81000050] = { target = 0x81003B78, phases = { 2 }, family = "texture-material-builder", confidence = "verified-structure" },
@@ -24,6 +25,8 @@ local CONTRACTS = {
     texturePolicy="material", argumentDecoder="model_handlers.pointerWords" },
   ["dynamic-material-builder"] = { ownership="preceding", geometry="source",
     texturePolicy="replace-owned", argumentDecoder="model_handlers.dynamicMaterial" },
+  ["flame-object-renderer"] = { ownership="none", geometry="generated-runtime",
+    texturePolicy="generated-only", argumentDecoder="render_callbacks.flame" },
   ["texture-material-builder"] = { ownership="preceding", geometry="source",
     texturePolicy="replace-owned", argumentDecoder="model_handlers.textureMaterial" },
   ["visibility-range-enable"] = { ownership="preceding", geometry="source",
@@ -52,6 +55,7 @@ Registry.FAMILY_IDS = {
   ["visibility-range-disable"] = 5, ["dynamic-object-renderer"] = 6,
   ["attribute-transform"] = 7, ["model-context-register"] = 8,
   ["runtime-dispatch-bridge"] = 9, ["render-time-geometry-pipeline"] = 10,
+  ["flame-object-renderer"] = 11,
 }
 
 Registry.FAMILY_NAMES = {}

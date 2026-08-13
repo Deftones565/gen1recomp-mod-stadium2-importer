@@ -1,6 +1,7 @@
 
 local StadiumFragment = {}
 local Fx = require("mods.STADIUM2_IMPORTER.lib.fx")
+local Flame = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.flame")
 local Phase5Geometry = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.phase5_geometry")
 local HandlerRegistry = require("mods.STADIUM2_IMPORTER.lib.handler_registry")
 local VertexSemantics = require("mods.STADIUM2_IMPORTER.lib.vertex_semantics")
@@ -1126,6 +1127,7 @@ function StadiumFragment.extract(data, name, options)
   end
 
   local prims = {}
+  local inheritedPhase5Offset, inheritedPhase5Descriptor
   for _, p in ipairs(m.prims) do
     if p.ntris > 0 then
       local pal = m:tilePalette(p.mat)
@@ -1175,9 +1177,22 @@ function StadiumFragment.extract(data, name, options)
       -- seen in the model viewer.  Classify the payload itself instead.
       local vertexSemantics = VertexSemantics.classify(nrm)
       local lighting = vertexSemantics == "normal"
-      local callbackTexture = callbackTextureBySite[p.callbackOffset]
-      local callbackState = callbackStateBySite[p.callbackOffset]
-      local callbackTextureRequired = p.callbackOffset ~= nil and ti < 0
+      local callbackOffset, callbackDescriptor = p.callbackOffset,
+        p.callbackDescriptor
+      if callbackDescriptor == 0x81000140 then
+        inheritedPhase5Offset = callbackOffset
+        inheritedPhase5Descriptor = callbackDescriptor
+      elseif ti >= 0 then
+        -- An authored texture/material supersedes the callback's persistent
+        -- RDP state. Textureless draws before that point still inherit it.
+        inheritedPhase5Offset, inheritedPhase5Descriptor = nil, nil
+      elseif callbackOffset == nil and inheritedPhase5Offset ~= nil then
+        callbackOffset = inheritedPhase5Offset
+        callbackDescriptor = inheritedPhase5Descriptor
+      end
+      local callbackTexture = callbackTextureBySite[callbackOffset]
+      local callbackState = callbackStateBySite[callbackOffset]
+      local callbackTextureRequired = callbackOffset ~= nil and ti < 0
       local function textureHasAlpha(slot)
         local texture = slot and slot >= 0 and texOut[slot + 1] or nil
         local rgba = texture and texture.rgba
@@ -1208,8 +1223,8 @@ function StadiumFragment.extract(data, name, options)
           and callbackState.textureScale or nil,
         blend = (p.callbackDescriptor == 0x81000038 or p.callbackDescriptor == 0x81000068)
           and "add" or "alpha",
-        materialOffset = p.mat, callbackOffset = p.callbackOffset,
-        callbackDescriptor = p.callbackDescriptor,
+        materialOffset = p.mat, callbackOffset = callbackOffset,
+        callbackDescriptor = callbackDescriptor,
         callbackTextureRequired = callbackTextureRequired,
         sourceTextureMissing = ti < 0,
         decal = decal and not callbackTextureRequired,
@@ -1219,15 +1234,10 @@ function StadiumFragment.extract(data, name, options)
     end
   end
 
-  -- The fire callbacks allocate their vertices at runtime through
-  -- func_8007087C/func_80070974, so no triangles exist in the model DL to
-  -- extract. Build only that missing billboard geometry here and feed it
-  -- the eight textures extracted from the callback argument. Unlike the
-  -- old importer stand-in, the pixels and frame order are Stadium 2 data.
+  -- Descriptor 0x38 draws a separate shared flame object, so its triangles
+  -- are absent from the Pokemon's model DL. Import the exact ROM mesh from
+  -- lib/render_callbacks/flame.lua and feed it the callback's eight images.
   do
-    local extent = Fx.modelExtent({ rootScale=m.rootScale, prims=prims })
-    local scales = {}
-    for i = 1, #m.bones do scales[i] = 1 end
     local texturesBySite = {}
     for _, row in ipairs(handlerTextures) do
       local list = texturesBySite[row.commandOffset]
@@ -1235,19 +1245,16 @@ function StadiumFragment.extract(data, name, options)
       list[#list + 1] = row.slot
     end
     for _, node in ipairs(m.fx) do
-      local tail = node.handler == 0x81000038
-      local small = node.handler == 0x81000068
+      local tail = node.handler == Flame.DESCRIPTOR
       local slots = texturesBySite[node.commandOffset]
-      if (tail or small) and slots and #slots > 0 and node.bone >= 0 then
-        local scale = scales[node.bone + 1] or 1
-        if scale == 0 then scale = 1 end
-        local length = extent * (tail and 0.40 or 0.075) / scale
-        local width = extent * (tail and 0.22 or 0.042) / scale
-        local geo = Fx.crossedQuads(node.bone, length, width)
+      if tail and slots and #slots > 0 and node.bone >= 0 then
+        local geo = Flame.geometry(node.bone)
         prims[#prims + 1] = {
           tex = slots[1], cull = 0, texAnim = -1, texMap = nil,
           callbackOffset = node.commandOffset,
+          callbackDescriptor = node.handler,
           generated = true, effect = "fire", blend = "add", fxFrames = slots,
+          vertexSemantics = "color", color = geo.color,
           materialOffset = nil,
           pos = geo.pos, uv = geo.uv, nrm = geo.nrm, skin = geo.skin,
           nverts = geo.nverts, idx = geo.idx, nidx = geo.nidx,

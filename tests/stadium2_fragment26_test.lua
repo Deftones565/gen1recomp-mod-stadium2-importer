@@ -111,7 +111,7 @@ ok(graph and graph.functions[calleeInfo.start] ~= nil, "call graph follows fragm
 
 local expectedFamilies = {
   [0x81000030] = "display-list-wrapper",
-  [0x81000038] = "dynamic-material-builder",
+  [0x81000038] = "flame-object-renderer",
   [0x81000040] = "display-list-wrapper",
   [0x81000048] = "dynamic-material-builder",
   [0x81000050] = "texture-material-builder",

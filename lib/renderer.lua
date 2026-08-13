@@ -28,8 +28,18 @@ uniform mat4 viewMatrix;
 uniform mat4 sunVP;
 uniform mat3 normalMatrix;
 uniform vec2 textureGenScale;
+uniform float billboardEnabled;
+uniform vec3 billboardCenter;
+uniform vec3 billboardRight;
+uniform vec3 billboardUp;
+uniform vec2 billboardSize;
 attribute vec3 VertexNormal;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  if (billboardEnabled > 0.5) {
+    vertex_position.xyz = billboardCenter
+      + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
+      + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
+  }
   vNormal = normalize(normalMatrix * VertexNormal);
   vec3 eyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
   vGeneratedUV=(eyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
@@ -154,7 +164,17 @@ vec4 effect(vec4 color,Image tex,vec2 tc,vec2 sc) {
 local CAMERA_SHADER = [[
 #ifdef VERTEX
 uniform mat4 mvp;
+uniform float billboardEnabled;
+uniform vec3 billboardCenter;
+uniform vec3 billboardRight;
+uniform vec3 billboardUp;
+uniform vec2 billboardSize;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  if (billboardEnabled > 0.5) {
+    vertex_position.xyz = billboardCenter
+      + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
+      + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
+  }
   return mvp * vertex_position;
 }
 #endif
@@ -442,6 +462,33 @@ local function makeDynamicMesh()
   return mesh, rows
 end
 
+local function sendFlameBillboard(shader, part, view, model)
+  if not (shader and shader.send) then return end
+  if not (part and part.prim and part.prim.effect == "fire"
+      and part.rows and #part.rows >= 10) then
+    pcall(shader.send, shader, "billboardEnabled", 0)
+    return
+  end
+  local tipA, tipB, baseA, baseB = part.rows[1], part.rows[2],
+    part.rows[9], part.rows[10]
+  local center = { (baseA[1] + baseB[1]) * .5,
+    (baseA[2] + baseB[2]) * .5, (baseA[3] + baseB[3]) * .5 }
+  local tip = { (tipA[1] + tipB[1]) * .5,
+    (tipA[2] + tipB[2]) * .5, (tipA[3] + tipB[3]) * .5 }
+  local width = math.sqrt((baseB[1]-baseA[1])^2
+    + (baseB[2]-baseA[2])^2 + (baseB[3]-baseA[3])^2)
+  local height = math.sqrt((tip[1]-center[1])^2
+    + (tip[2]-center[2])^2 + (tip[3]-center[3])^2)
+  local vm = matMul(view or identity(), model or identity())
+  local rx, ry, rz = normalize3(vm[1], vm[2], vm[3])
+  local ux, uy, uz = normalize3(vm[5], vm[6], vm[7])
+  pcall(shader.send, shader, "billboardCenter", center)
+  pcall(shader.send, shader, "billboardRight", {rx,ry,rz})
+  pcall(shader.send, shader, "billboardUp", {ux,uy,uz})
+  pcall(shader.send, shader, "billboardSize", {width,height})
+  pcall(shader.send, shader, "billboardEnabled", 1)
+end
+
 local function makeCanvas(w, h, msaa)
   if not (love and love.graphics and love.graphics.newCanvas) then return nil end
   msaa = math.max(0, floor(tonumber(msaa) or 0))
@@ -584,6 +631,7 @@ end
 
 function Renderer:handlerValues()
   local values = {
+    species = self.model and self.model.species,
     sourceFrame = self.frame,
     frame = self.frame,
     textureFrame = self.frame,
@@ -1106,9 +1154,8 @@ function Renderer:drawScene(pass, model, options)
         local attribute = site and attributes and attributes[site]
         local color = attribute and attribute.color or
           (material and material.primitiveColor) or {1,1,1,1}
-        if part.prim.effect == "fire" and not (attribute and attribute.color) then
-          color = {1,0.42,0.12,1}
-        end
+        pcall(self.shader.send, self.shader, "effectIntensityMode",
+          material and material.intensity and 1 or 0)
         pcall(self.shader.send, self.shader, "primitiveColor", color)
         pcall(self.shader.send, self.shader, "lightingEnabled",
           renderState.lightingEnabled and 1 or 0)
@@ -1169,6 +1216,7 @@ function Renderer:drawScene(pass, model, options)
             renderState.textureGenEnabled and 1 or 0)
           if part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
         end
+        sendFlameBillboard(self.shader, part, options.viewMatrix, model)
         g.draw(part.mesh)
       end
     end
@@ -1292,14 +1340,13 @@ function Renderer:renderToCanvas(width, height, options)
           local attribute = site and attributes and attributes[site]
           local primitiveColor = attribute and attribute.color
             or (material and material.primitiveColor) or { 1, 1, 1, 1 }
-          if part.prim.effect == "fire" and not (attribute and attribute.color) then
-            primitiveColor = { 1, 0.42, 0.12, 1 }
-          end
           if g.setDepthMode then
             local compare, write = RenderContract.depthState(part.prim, not additive)
             g.setDepthMode(compare, write)
           end
           if self.shader then
+            pcall(self.shader.send, self.shader, "effectIntensityMode",
+              material and material.intensity and 1 or 0)
             pcall(self.shader.send, self.shader, "primitiveColor",
               primitiveColor)
             pcall(self.shader.send, self.shader, "environmentColor",
@@ -1361,6 +1408,7 @@ function Renderer:renderToCanvas(width, height, options)
             pcall(texture.setWrap,texture,wrapS,wrapT)
           end
           if texture and part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
+          sendFlameBillboard(self.shader, part, view, mm)
           g.draw(part.mesh)
         end
       end
@@ -1428,6 +1476,7 @@ Renderer.lookAt = lookAt
 Renderer.modelMatrix = modelMatrix
 Renderer.normalMatrix = normalMatrix
 Renderer.identity = identity
+Renderer.sendFlameBillboard = sendFlameBillboard
 
 function Renderer.ortho(l,r,b,t,n,f)
   return {2/(r-l),0,0,-(r+l)/(r-l), 0,2/(t-b),0,-(t+b)/(t-b),

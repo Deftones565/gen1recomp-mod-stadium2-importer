@@ -173,6 +173,7 @@ local function readPrims(r, m)
     prim.vertexSemantics = math.floor(flags / 16) % 2 == 1 and "color" or "normal"
     prim.sourceTextureMissing = math.floor(flags / 32) % 2 == 1
     prim.decal = math.floor(flags / 64) % 2 == 1
+    prim.effect = math.floor(flags / 128) % 2 == 1 and "fire" or nil
     prim.geometryMode = r:u32()
     prim.sampler = { cms=r:u8(), cmt=r:u8(), masks=r:u8(), maskt=r:u8(),
       shifts=r:u8(), shiftt=r:u8() }

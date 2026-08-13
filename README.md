@@ -47,7 +47,7 @@ Unown A is species 201 in the ordinary normal/shiny directories. Stadium 2
 model and pose records 254 through 278 supply Unown B through Z, so the cache
 contains all 26 forms in both normal and shiny variants.
 
-The cache marker format is `S2IMP29`. Shiny packs use Stadium 2's per-species
+The cache marker format is `S2IMP32`. Shiny packs use Stadium 2's per-species
 HSL metadata, while Clefairy, Clefable, Jigglypuff, Wigglytuff, Gyarados,
 Noctowl, Cleffa, and Igglybuff use the ROM's dedicated native-format rare-texture
 archive, preserving each source texture's N64 bit depth. Translucent model-local FX are kept out of the HSL pass. Model packs use the `DSM4` magic and
@@ -101,6 +101,7 @@ STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_model_parity_audit.lua --r
 STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_model_parity_audit.lua --species=181,200,238,245 --report
 STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_dsm4_roundtrip_audit.lua
 STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_dual_texture_material_audit.lua
+STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_fire_face_parity_audit.lua
 love tests/stadium2_shader_audit
 ```
 

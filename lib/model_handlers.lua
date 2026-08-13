@@ -2,6 +2,7 @@ local Registry = require("mods.STADIUM2_IMPORTER.lib.handler_registry")
 local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
 local Phase5Geometry = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.phase5_geometry")
 local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+local Flame = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.flame")
 local Handlers = {}
 
 -- Compatibility exports.  New code should require handler_registry directly.
@@ -96,7 +97,9 @@ local function flagsFor(row, hasArg)
   if family ~= "model-context-register" then flags = flags + 2 end
   if family == "model-context-register" then flags = flags + 4 + 64 end
   if family == "display-list-wrapper" or family == "dynamic-material-builder"
-      or family == "texture-material-builder" then flags = flags + 8 end
+      or family == "texture-material-builder" or family == "flame-object-renderer" then
+    flags = flags + 8
+  end
   if family == "render-time-geometry-pipeline" or family == "dynamic-object-renderer" then
     flags = flags + 16
   end
@@ -268,7 +271,8 @@ function Handlers.evaluate(record, phase, runtime)
   if record.family == "display-list-wrapper" then
     result.displayLists = record.sourcePointers
     result.enabled = runtime.suppressWrappedLists ~= true
-  elseif record.family == "dynamic-material-builder" or record.family == "texture-material-builder" then
+  elseif record.family == "dynamic-material-builder" or record.family == "texture-material-builder"
+      or record.family == "flame-object-renderer" then
     local callbackFrame = math.floor(tonumber(runtime.textureFrame) or frame)
     if record.descriptor == 0x81000050 and tonumber(runtime.species) == 88 then
       local animation, animationFrame = tonumber(runtime.selector) or -1,
@@ -285,6 +289,12 @@ function Handlers.evaluate(record, phase, runtime)
       result.textureScroll = result.materialFx.textureScroll
     end
     result.materialPointer = record.argAddress
+    if record.descriptor == Flame.DESCRIPTOR then
+      result.materialFx = {
+        material = Flame.material(runtime.species,
+          runtime.materialFrame or runtime.callbackFrame or callbackFrame),
+      }
+    end
   elseif record.family == "dynamic-object-renderer" then
     result.emitterPointer = record.argAddress
     result.emitterFrame = frame
@@ -454,11 +464,15 @@ function Handlers.run(records, phase, runtime, state)
         local item = { record = record, result = result, extension = runtime.extension }
         state.operations[key] = item
         if result.operation == "display-list-wrapper" or result.operation == "dynamic-material-builder"
-            or result.operation == "texture-material-builder" then
+            or result.operation == "texture-material-builder"
+            or result.operation == "flame-object-renderer" then
           local assets = result.program and result.program.assets or {}
           local selected = #assets > 0
             and assets[result.textureFrame and (result.textureFrame % #assets + 1) or 1] or nil
           state.materialBySite[key] = selected and selected.material or nil
+          if result.materialFx and result.materialFx.material then
+            state.materialBySite[key] = result.materialFx.material
+          end
           local textures = result.program and result.program.textures or {}
           if #textures > 0 then
             if result.dualTexture then

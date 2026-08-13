@@ -46,7 +46,8 @@ local bytes = Build.pack({
   },
   prims = {
     {
-      tex = 0, cull = 1, blend = "add", texAnim = 0, texMap = { [5] = 1 },
+      tex = 0, cull = 1, blend = "add", effect = "fire",
+      texAnim = 0, texMap = { [5] = 1 },
       pos = { 0, 0, 0, 10, 0, 0, 0, 10, 0, 1000, 1000, 1000 },
       uv = { 0, 0, 1, 0, 0, 1, 1, 1 },
       nrm = { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0 },
@@ -82,6 +83,7 @@ ok(model ~= nil, err or "pack parse")
 ok(model.species == 25, "species")
 ok(model.boneCount == 2 and #model.bones == 2, "bones")
 ok(model.primCount == 1 and #model.prims == 1, "primitives")
+ok(model.prims[1].effect == "fire", "generated fire semantics survive DSM packing")
 ok(model.texCount == 2 and #model.textures == 2, "textures")
 ok(model.animCount == 1 and #model.anims == 1, "animations")
 ok(model.handlers and #model.handlers.records == 2, "handler extension")
@@ -217,6 +219,28 @@ local orient = Renderer.modelMatrix(0, 0, 1, 0, 5, 0, true)
 ok(math.abs(orient[6] + 1) < 0.000001 and math.abs(orient[8] - 5) < 0.000001, "Stadium model matrix flips vertical axis around model center")
 local shiftedProjection = Renderer.perspective(math.pi / 4, 1, 0.1, 100, 0.25, -0.5)
 ok(math.abs(shiftedProjection[3] + 0.25) < 0.000001 and math.abs(shiftedProjection[7] - 0.5) < 0.000001, "projection supports screen-space model panning")
+local billboardUniforms = {}
+local billboardShader = { send = function(_, name, value)
+  billboardUniforms[name] = value
+end }
+local billboardRows = {}
+for row = 1, 5 do
+  local y = 200 - (row - 1) * 50
+  billboardRows[(row-1)*2+1] = {-50,y,0}
+  billboardRows[(row-1)*2+2] = {50,y,0}
+end
+Renderer.sendFlameBillboard(billboardShader,
+  { prim={effect="fire"}, rows=billboardRows },
+  Renderer.identity(), Renderer.identity())
+ok(billboardUniforms.billboardEnabled == 1
+    and billboardUniforms.billboardSize[1] == 100
+    and billboardUniforms.billboardSize[2] == 200,
+  "shared flame object retains its ROM size while facing the camera")
+ok(billboardUniforms.billboardCenter[1] == 0
+    and billboardUniforms.billboardCenter[2] == 0
+    and billboardUniforms.billboardRight[1] == 1
+    and billboardUniforms.billboardUp[2] == 1,
+  "shared flame object derives camera-facing axes from the view transform")
 
 rig:setHandlerRuntime({ selector = 4, rangeValue = 3000 })
 rig:updatePose(true)
