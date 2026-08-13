@@ -786,10 +786,52 @@ function Renderer:seekFrame(frame)
   return true
 end
 
+local function callbackRecord(model, site)
+  for _, record in ipairs(model and model.handlers and model.handlers.records or {}) do
+    if tonumber(record.commandOffset) == tonumber(site) then return record end
+  end
+end
+
+local function uniformTexture(model, index)
+  local texture = model and model.textures and model.textures[index]
+  local rgba = texture and texture.rgba
+  if type(rgba) ~= "string" or #rgba < 4 then return false end
+  local first = rgba:sub(1, 4)
+  for pixel = 5, #rgba, 4 do
+    if rgba:sub(pixel, pixel + 3) ~= first then return false end
+  end
+  return true
+end
+
+function Renderer:callbackOwnsTexture(prim)
+  if not prim or not prim.callbackOffset then return false end
+  if prim.callbackTextureRequired then return true end
+  local record = callbackRecord(self.model, prim.callbackOffset)
+  if not record then return false end
+  if record.descriptor == 0x81000050 then return true end
+  -- The dual-texture slime builder is attached above mixed geometry. Uniform
+  -- fill inputs are its body surfaces; authored eye/mouth/detail atlases at
+  -- the same site retain their own texture and material.
+  local authored = Pack.textureIndex(self.model, prim, self.animIndex, self.frame,
+    self.auxIndex, self.handlerRuntime and self.handlerRuntime.callbackFrame)
+  return record.descriptor == 0x81000048 and uniformTexture(self.model, authored)
+end
+
+function Renderer:callbackUsesMaterialFx(prim)
+  if not prim or prim.decal or not prim.callbackOffset then return false end
+  local record = callbackRecord(self.model, prim.callbackOffset)
+  -- Texture ownership and material ownership are intentionally separate.
+  -- The slime builder's second scrolling layer affects body surfaces even
+  -- when their authored primary texture contains detail. Alpha eye/mouth
+  -- decals remain outside the body material.
+  return record ~= nil and record.descriptor == 0x81000048
+end
+
 function Renderer:currentTexture(prim)
   local dynamic = self.handlerState and self.handlerState.textureBySite
   local site = prim and prim.callbackOffset
-  if dynamic and site and dynamic[site] and prim.callbackTextureRequired then
+  if dynamic and site and dynamic[site]
+      and self:callbackOwnsTexture(prim) then
     return dynamic[site]
   end
   return Pack.textureIndex(self.model,prim,self.animIndex,self.frame,self.auxIndex,
@@ -1064,7 +1106,8 @@ function Renderer:drawScene(pass, model, options)
           material and material.combine and
           (material.combine[1] ~= 0 or material.combine[2] ~= 0) and 1 or 0)
         local sets = self.handlerState and self.handlerState.textureSetBySite
-        local set = site and sets and sets[site] or nil
+        local set = self:callbackUsesMaterialFx(part.prim)
+          and site and sets and sets[site] or nil
         local secondary = set and Pack.image(self.model, set[2]) or nil
         if secondary then
           pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
@@ -1235,7 +1278,8 @@ function Renderer:renderToCanvas(width, height, options)
             pcall(self.shader.send, self.shader, "environmentMix",
               material and material.combine and (material.combine[1] ~= 0 or material.combine[2] ~= 0) and 1 or 0)
             local sets = self.handlerState and self.handlerState.textureSetBySite
-            local set = site and sets and sets[site] or nil
+            local set = self:callbackUsesMaterialFx(part.prim)
+              and site and sets and sets[site] or nil
             local secondary = set and Pack.image(model, set[2]) or nil
             if secondary then
               pcall(self.shader.send, self.shader, "secondaryTexture", secondary)

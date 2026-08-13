@@ -459,10 +459,17 @@ function Handlers.run(records, phase, runtime, state)
           state.materialBySite[key] = selected and selected.material or nil
           local textures = result.program and result.program.textures or {}
           if #textures > 0 then
-            if result.dualTexture and #textures >= 2 then
-              state.textureBySite[key] = textures[1].slot + 1
+            if result.dualTexture then
+              -- The source material always has two texture tiles, but both
+              -- tiles may point at the same image (Grimer does this). The
+              -- extraction cache deliberately deduplicates identical image
+              -- payloads, so one cached texture still represents a complete
+              -- two-layer material rather than a single-texture fallback.
+              local first = textures[1].slot + 1
+              local second = textures[2] and textures[2].slot + 1 or first
+              state.textureBySite[key] = first
               state.textureSetBySite[key] = {
-                textures[1].slot + 1, textures[2].slot + 1,
+                first, second,
                 scroll = result.textureScroll, mix = 100 / 255,
               }
             else

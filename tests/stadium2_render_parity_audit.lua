@@ -22,6 +22,7 @@ local archive = assert(Rom.archiveAt(data, Layout.MODEL_TABLE_START))
 
 local descriptors, callbacks, models, materials, callbackTextures = {}, 0, 0, 0, 0
 local phase5Callbacks, phase5Resolved = 0, 0
+local materialFxCallbacks, materialFxResolved = 0, 0
 local targetPhase5 = { [159] = { total = 0, textures = 0, materials = 0, nonWhite = 0 },
   [200] = { total = 0, textures = 0, materials = 0, nonWhite = 0 } }
 local textureHandlers = { [0x81000038] = true, [0x81000048] = true, [0x81000050] = true,
@@ -65,6 +66,9 @@ for dex = 1, 251 do
         else
           local phase5State = select(1, Handlers.runExtension(extension, 5, {
             species = dex, sourceFrame = 0, geometryIndex = 0,
+          }, {})) or {}
+          local materialState = select(1, Handlers.runExtension(extension, 2, {
+            species = dex, sourceFrame = 0, callbackFrame = 0,
           }, {})) or {}
           for _, row in ipairs(extension.records) do
             if not row.program or not row.program.complete then
@@ -115,6 +119,17 @@ for dex = 1, 251 do
                 if resolved and resolved.material then target.materials = target.materials + 1 end
               end
             end
+            if row.descriptor == 0x81000048 and callbackConsumers[row.commandOffset] then
+              materialFxCallbacks = materialFxCallbacks + 1
+              local set = materialState.textureSetBySite
+                and materialState.textureSetBySite[row.commandOffset]
+              if set and set[1] and set[2] and set.scroll then
+                materialFxResolved = materialFxResolved + 1
+              else
+                fail(("dex %03d slime callback %08X has no complete two-layer material FX route")
+                  :format(dex, row.descriptor or 0))
+              end
+            end
           end
           callbackTextures = callbackTextures + #(extension.render and extension.render.handlerTextures or {})
           local offsets = extension.render and extension.render.primitiveMaterials or {}
@@ -156,9 +171,10 @@ if misdreavus.total ~= 6 or misdreavus.textures ~= 4 or misdreavus.materials ~= 
       misdreavus.nonWhite))
 end
 
-print(("render parity audit: models=%d descriptors=%d callbacks=%d materials=%d callbackTextures=%d phase5=%d/%d failures=%d")
+print(("render parity audit: models=%d descriptors=%d callbacks=%d materials=%d callbackTextures=%d phase5=%d/%d materialFx=%d/%d failures=%d")
   :format(models, descriptorCount, callbacks, materials, callbackTextures,
-    phase5Resolved, phase5Callbacks, #failures))
+    phase5Resolved, phase5Callbacks, materialFxResolved, materialFxCallbacks,
+    #failures))
 for i = 1, math.min(#failures, 80) do print("FAIL " .. failures[i]) end
 if #failures > 80 then print(("... %d more"):format(#failures - 80)) end
 if #failures > 0 then os.exit(1) end

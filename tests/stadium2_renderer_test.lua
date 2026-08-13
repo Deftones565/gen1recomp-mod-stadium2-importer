@@ -161,6 +161,25 @@ rig.handlerState.textureBySite = { [0x44] = 3 }
 model.prims[1].callbackOffset = 0x44
 model.prims[1].callbackTextureRequired = false
 ok(rig:currentTexture(model.prims[1]) == 2, "authored texture survives site callback")
+local savedHandlers = model.handlers
+model.handlers = { records = {{ commandOffset = 0x44, descriptor = 0x81000048 }} }
+model.textures[2].rgba = "\255\0\0\255\0\255\0\255\0\0\255\255\255\255\255\255"
+ok(rig:currentTexture(model.prims[1]) == 2,
+  "dual-texture material builder preserves a detailed authored atlas")
+model.textures[2].rgba = string.rep("\255\255\255\255", 4)
+ok(rig:currentTexture(model.prims[1]) == 3,
+  "dual-texture material builder replaces a uniform body fill")
+model.prims[1].decal = false
+ok(rig:callbackUsesMaterialFx(model.prims[1]),
+  "dual-texture material FX reaches a non-decal body surface")
+model.prims[1].decal = true
+ok(not rig:callbackUsesMaterialFx(model.prims[1]),
+  "dual-texture material FX does not cover an alpha face decal")
+model.prims[1].decal = nil
+model.handlers.records[1].descriptor = 0x81000050
+ok(rig:currentTexture(model.prims[1]) == 3,
+  "animated texture builder replaces its controlled authored input")
+model.handlers = savedHandlers
 model.prims[1].callbackTextureRequired = true
 ok(rig:currentTexture(model.prims[1]) == 3, "callback texture targets eligible primitive")
 model.prims[1].callbackOffset = nil

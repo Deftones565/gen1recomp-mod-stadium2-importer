@@ -249,6 +249,11 @@ local function makeScene(resetView)
   if resetView ~= false then
     Camera.recentre()
     Camera.reset()
+    local initialOrbit = tonumber(os.getenv("STADIUM2_VISUAL_ORBIT"))
+    if initialOrbit then
+      Camera.orbit(initialOrbit)
+      Camera.update(1)
+    end
   end
   local nextScene = Presentation.newScene({ warn = warn, label = "Stadium 2 model viewer" })
   nextScene.game = {

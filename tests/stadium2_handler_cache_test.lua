@@ -154,6 +154,26 @@ ok(effectState.operations[0xDC].result.transform == nil,
 ok(effectState.attributesBySite[0xEC].color[2] == 0.5,
   "source-provided attribute colour is retained by command site")
 
+local slimeRecords = Handlers.compile({
+  { handler = 0x81000048, bone = 2, arg = 0x40, commandOffset = 0xF0 },
+}, fragment, 0x8FF00000)
+local slimePack = "DSM4slime" .. Handlers.packExtension(slimeRecords,
+  0x8FF00000, fragment, { handlerTextures = {
+    -- A deduplicated texture cache represents both source tiles with one
+    -- image slot. This is the material layout used by Grimer.
+    { commandOffset = 0xF0, pointer = 0x8FF00040, slot = 9,
+      w = 32, h = 32, format = 0, size = 2 },
+  } })
+local slimeExtension = assert(Handlers.readExtension(slimePack))
+local slimeState = select(1, Handlers.runExtension(slimeExtension, 2,
+  { species = 88, sourceFrame = 0 }, {}))
+ok(slimeState.textureBySite[0xF0] == 10,
+  "deduplicated slime texture remains the primary material layer")
+ok(slimeState.textureSetBySite[0xF0]
+    and slimeState.textureSetBySite[0xF0][1] == 10
+    and slimeState.textureSetBySite[0xF0][2] == 10,
+  "deduplicated slime texture still resolves both scrolling material tiles")
+
 local grimer = Handlers.compile({
   { handler = 0x81000050, bone = 2, arg = 0x40, commandOffset = 0xFC },
 }, fragment, 0x8FF00000)[1]

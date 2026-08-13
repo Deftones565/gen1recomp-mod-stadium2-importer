@@ -196,6 +196,33 @@ function ModelParity.auditModel(model, fragment, sourceBase, options)
     end
   end
 
+  for site, node in pairs(callbackSites) do
+    if node.handler == 0x81000048 or node.handler == 0x81000050 then
+      local owned = false
+      for _, prim in ipairs(model.prims or {}) do
+        if prim.callbackOffset == site then owned = true; break end
+      end
+      -- A node can install several successive material callbacks before its
+      -- first draw. Only the last command site owns the emitted primitives;
+      -- an earlier same-family callback on that bone is intentionally
+      -- superseded rather than orphaned (Muk contains this source pattern).
+      if not owned then
+        for otherSite, other in pairs(callbackSites) do
+          if otherSite ~= site and other.handler == node.handler
+              and other.bone == node.bone and consumers[otherSite] then
+            owned = true
+            break
+          end
+        end
+      end
+      if not owned then
+        issue(out, "error", "MATERIAL_BUILDER_WITHOUT_SURFACE",
+          ("material-builder callback 0x%X has no controlled surface"):format(site or 0),
+          { site = site, descriptor = node.handler })
+      end
+    end
+  end
+
   local auxRoute, routeInfo = AnimationRouting.assign(model.anims, model.auxAnims)
   out.metrics.auxAligned = routeInfo.matches
 
