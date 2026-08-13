@@ -18,6 +18,7 @@ local unpack = table.unpack or unpack
 
 local frost, blurA, blurB, shader, gaugeShader, uiLayer, hudOnlyLayer, modalOnlyLayer
 local fw, fh = 0, 0
+local modRef = nil
 local BLUR=[[
 uniform vec2 dir;
 vec4 effect(vec4 color,Image tex,vec2 tc,vec2 sc){
@@ -244,6 +245,13 @@ function Hud.modalLayer(draw)
 end
 
 local function panel(scene,rect)
+  -- DRAW HUD PANELS option: when OFF, suppress the frosted/tinted backing
+  -- glass entirely. The status cards and lower band still composite their HUD
+  -- text onto the raw 3D scene, just without the plate behind them.
+  if modRef and modRef.options then
+    local ok,enabled=pcall(modRef.options.get,modRef.options,"stadium2_hud_panels")
+    if ok and enabled==false then return true end
+  end
   if not (scene and scene.width and scene.height) then return false end
   local g=love.graphics
   local x,y,w,h=rect[1],rect[2],rect[3],rect[4]
@@ -259,6 +267,11 @@ local function panel(scene,rect)
   g.setColor(1,1,1,Hud.TINT);g.rectangle("fill",x,y,w,h)
   g.setColor(1,1,1,1)
   return true
+end
+
+-- Capture the mod handle so panel() can read the DRAW HUD PANELS option live.
+function Hud.configure(mod)
+  modRef = mod
 end
 
 function Hud.layout(scene,screen)
