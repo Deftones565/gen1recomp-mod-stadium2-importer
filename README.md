@@ -47,7 +47,7 @@ Unown A is species 201 in the ordinary normal/shiny directories. Stadium 2
 model and pose records 254 through 278 supply Unown B through Z, so the cache
 contains all 26 forms in both normal and shiny variants.
 
-The cache marker format is `S2IMP17`. Shiny packs use Stadium 2's per-species
+The cache marker format is `S2IMP18`. Shiny packs use Stadium 2's per-species
 HSL metadata, while Clefairy, Clefable, Jigglypuff, Wigglytuff, Gyarados,
 Noctowl, Cleffa, and Igglybuff use the ROM's dedicated native-format rare-texture
 archive, preserving each source texture's N64 bit depth. Translucent model-local FX are kept out of the HSL pass. Model packs retain the `DSM3` magic and
@@ -62,6 +62,17 @@ directly. They use rigid bone bindings, source 30 Hz animation frames,
 per-animation and callback texture streams, parsed material state, primitive
 culling, additive second-pass rendering, embedded RGBA textures, and the
 verified Stadium 2 model-handler state implemented by the importer.
+
+For standalone visual inspection, run:
+
+```sh
+love mods/STADIUM2_IMPORTER/tests/stadium2_model_viewer_visual
+```
+
+`Tab` selects the enemy or player model, left/right cycle one species, and
+up/down jump ten species. `Q`/`E` cycle animations, number keys isolate a
+primitive, and the existing Koffing gas controls remain available whenever
+Koffing is loaded.
 
 Battle models advance from the real presentation clock rather than the
 speed-scaled game-logic clock. Fast-forward therefore does not change the

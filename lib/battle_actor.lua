@@ -41,6 +41,7 @@ function Actor.new(side, opts)
   return setmetatable({
     side=side, mon=nil, dex=nil, variant=nil, renderer=nil,
     context="idle", callbackFrame=0, grow=nil, flash=0,
+    dynamicObjectIndex=nil,
     faintFinished=false, pendingFaint=false,
     failedFor=nil, failedForm=nil, form=nil,
     dexOf=opts.dexOf or defaultDex,
@@ -177,6 +178,11 @@ function Actor:update(dt)
     frame=self.renderer.frame,
     textureFrame=self.renderer.frame,
     species=self.dex,
+    dynamicObjectIndex=self.dynamicObjectIndex,
+    animationState=self.renderer.animIndex,
+    animationFrame=self.renderer.frame,
+    dynamicObjectEnabled=true,
+    dynamicObjectUpdateEnabled=true,
   },true)
   self.renderer:step(dt)
   if self.renderer.finished then

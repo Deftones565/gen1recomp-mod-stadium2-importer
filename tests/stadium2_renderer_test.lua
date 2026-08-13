@@ -79,6 +79,38 @@ ok(Pack.moveIndex(model, 1) == 1, "move mapping")
 ok(Pack.textureIndex(model, model.prims[1], 1, 0) == 2, "texture animation mapping")
 ok(model.prims[1].cull == true and model.prims[1].additive == true, "render state")
 
+local carrierPrim = { callbackOffset = 0x1118, cull = true }
+local carrierState = Renderer.primitiveRenderState({ species = 109, handlers = { records = {
+  { commandOffset = 0x1118, family = "dynamic-object-renderer" },
+} } }, carrierPrim, { disableCulling = true })
+ok(carrierState.dynamicObjectCarrier and not carrierState.drawStatic,
+  "dynamic-object callback geometry is excluded from the static model pass")
+ok(carrierState.cullEnabled,
+  "dynamic-object carrier retains source culling through scene override")
+ok(not carrierState.lightingEnabled,
+  "dynamic-object carrier preserves unlit vertex-color interpretation")
+ok(not carrierState.castsShadow,
+  "dynamic-object carrier cannot enlarge the model shadow silhouette")
+
+local emitterModel = { species = 109, rootScale = 0.1,
+  handlers = { records = {{ commandOffset = 0x1118, family = "dynamic-object-renderer" }} },
+  prims = {{ callbackOffset = 0x1118, skin = {} }},
+}
+local emitterMatrices = {}
+for i = 0, 39 do
+  emitterMatrices[i + 1] = {{1,0,0,i},{0,1,0,i * 2},{0,0,1,i * 3}}
+end
+for i = 0, 17 do
+  local bone = i * 2 + 5
+  for _ = 1, 4 do emitterModel.prims[1].skin[#emitterModel.prims[1].skin + 1] = bone end
+end
+local emitterRuntime = Renderer.dynamicObjectEmitters(emitterModel, emitterMatrices)
+ok(#emitterRuntime == 18 and emitterRuntime[1].bone == 5 and emitterRuntime[18].bone == 39,
+  "dynamic carrier expands to 18 ordered emitter bones")
+ok(math.abs(emitterRuntime[1].origin[1] - 0.5) < 0.000001
+    and math.abs(emitterRuntime[18].origin[1] - 3.9) < 0.000001,
+  "emitter origins use each posed callback bone and model root scale")
+
 local rig, rigErr = Renderer.new(model)
 ok(rig ~= nil, rigErr or "renderer")
 ok(rig.animIndex == 1, "renderer idle")

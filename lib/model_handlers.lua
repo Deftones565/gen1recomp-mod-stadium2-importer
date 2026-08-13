@@ -58,6 +58,12 @@ local function u16be(data, offset)
   return a * 256 + b
 end
 
+local function i16be(data, offset)
+  local value = u16be(data, offset)
+  if value and value >= 0x8000 then value = value - 0x10000 end
+  return value
+end
+
 local function u32be(data, offset)
   local a, b, c, d = string.byte(data, offset + 1, offset + 4)
   if not d then return nil end
@@ -291,11 +297,12 @@ function Handlers.evaluate(record, phase, runtime)
   end
   runtime = type(runtime) == "table" and runtime or {}
   local frame = math.max(0, math.floor(tonumber(runtime.sourceFrame or runtime.frame) or 0))
+  local callbackFrame = math.max(0, math.floor(tonumber(runtime.callbackFrame) or frame))
   local result = {
     operation = record.family, runtimeDependent = record.runtimeDependent,
     argument = record.argument, sourcePointers = record.sourcePointers,
     commandOffset = record.commandOffset, bone = record.bone, boneId = record.boneId,
-    sourceFrame = frame, program = record.program,
+    sourceFrame = frame, callbackFrame = callbackFrame, program = record.program,
   }
   if record.family == "display-list-wrapper" then
     result.displayLists = record.sourcePointers
@@ -362,6 +369,45 @@ local function pointerWords(extension, offset, bytes)
 end
 
 
+local function dynamicObjectGeometry(extension, record)
+  local data = extension and extension.fragment
+  local base = tonumber(extension and extension.sourceBase) or 0x8FF00000
+  local arg = tonumber(record and record.argOffset)
+  if type(data) ~= "string" or not arg then return nil end
+  local dlPointer = u32be(data, arg + 4)
+  local dl = dlPointer and (dlPointer - base) or -1
+  if dl < 0 or dl + 16 > #data then return nil end
+  local vtxWord = u32be(data, dl)
+  local vtxPointer = u32be(data, dl + 4)
+  local tri0 = u32be(data, dl + 8)
+  local tri1 = u32be(data, dl + 12)
+  if not vtxWord or math.floor(vtxWord / 0x1000000) ~= 0x01 then return nil end
+  local count = math.floor(vtxWord / 0x1000) % 256
+  if count ~= 4 then return nil end
+  local vtx = vtxPointer and (vtxPointer - base) or -1
+  if vtx < 0 or vtx + 64 > #data then return nil end
+  local vertices = {}
+  for i = 0, 3 do
+    local at = vtx + i * 16
+    vertices[i + 1] = {
+      x = i16be(data, at), y = i16be(data, at + 2), z = i16be(data, at + 4),
+      s = i16be(data, at + 8), t = i16be(data, at + 10),
+    }
+  end
+  local function tri(word)
+    return {
+      math.floor(math.floor(word / 0x10000) % 256 / 2) + 1,
+      math.floor(math.floor(word / 0x100) % 256 / 2) + 1,
+      math.floor(word % 256 / 2) + 1,
+    }
+  end
+  local a, b = tri(tri0 or 0), tri(tri1 or 0)
+  return {
+    displayListPointer = dlPointer, vertexPointer = vtxPointer,
+    vertices = vertices, indices = {a[1],a[2],a[3],b[1],b[2],b[3]},
+  }
+end
+
 function Handlers.prepare(extension)
   if type(extension) ~= "table" or type(extension.records) ~= "table" then return extension end
   local Materials = require("mods.STADIUM2_IMPORTER.lib.materials")
@@ -369,6 +415,9 @@ function Handlers.prepare(extension)
     local scanBytes = record.family == "render-time-geometry-pipeline" and 0x400 or 0x100
     local assets = pointerWords(extension, record.argOffset, scanBytes)
     local program = { family = record.family, assets = assets, textures = {}, complete = true }
+    if record.family == "dynamic-object-renderer" then
+      program.geometry = dynamicObjectGeometry(extension, record)
+    end
     for _, texture in ipairs(extension.render and extension.render.handlerTextures or {}) do
       if texture.commandOffset == record.commandOffset then program.textures[#program.textures + 1] = texture end
     end
@@ -398,6 +447,185 @@ function Handlers.runExtension(extension, phase, runtime, state)
   return Handlers.run(extension.records, phase, values, state)
 end
 
+local KOFFING_SPAWN_SCHEDULE = {
+  {36,65,8,38,96,115}, {32,65,8,38,96,115}, {36,65,8,38,96,115},
+  {44,65,8,38,96,115}, {32,65,8,38,96,115}, {44,65,8,38,96,115},
+  {36,65,8,38,96,115}, {32,65,8,38,96,115}, {44,65,8,38,96,115},
+  {44,65,8,38,96,115}, {36,65,8,38,96,115}, {44,65,8,38,96,115},
+  {32,65,8,38,96,115}, {44,65,8,38,96,115}, {32,65,8,38,96,115},
+  {44,65,8,38,96,115}, {36,65,8,38,96,115}, {32,65,8,38,96,115},
+}
+
+local function koffingSpawnExpected(runtime)
+  if runtime.dynamicObjectEnabled == false then return false end
+  local index = math.floor(tonumber(runtime.dynamicObjectIndex) or -1)
+  if index < 0 or index >= #KOFFING_SPAWN_SCHEDULE then return false end
+  local state = math.floor(tonumber(runtime.animationState) or -1)
+  local frame = math.floor(tonumber(runtime.animationFrame) or -1)
+  local row = KOFFING_SPAWN_SCHEDULE[index + 1]
+  if state == 2 then return frame == row[6] end
+  if state == 3 then return frame == row[3] or frame == row[4] or frame == row[5] end
+  if state == 4 then return frame == row[2] end
+  return frame == row[1]
+end
+
+local function vector3(value, fallbackX, fallbackY, fallbackZ)
+  if type(value) ~= "table" then return fallbackX or 0, fallbackY or 0, fallbackZ or 0 end
+  return tonumber(value[1] or value.x) or fallbackX or 0,
+    tonumber(value[2] or value.y) or fallbackY or 0,
+    tonumber(value[3] or value.z) or fallbackZ or 0
+end
+
+local function spawnKoffingGas(emitter, runtime)
+  emitter.particles = type(emitter.particles) == "table" and emitter.particles or {}
+  local slot
+  for i = 1, 10 do
+    local particle = emitter.particles[i]
+    if not (particle and particle.active) then slot = i break end
+  end
+  if not slot then return false end
+  local ox, oy, oz = vector3(runtime.dynamicObjectOrigin, 0, 0, 0)
+  local rx, ry, rz = vector3(runtime.dynamicObjectReference, ox, oy, oz)
+  local dx, dy, dz = ox - rx, oy - ry, oz - rz
+  local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+  local speed = tonumber(runtime.dynamicObjectInitialSpeed) or 0.5
+  local vx, vy, vz = 0, 0, 0
+  if length > 0 then
+    vx, vy, vz = dx / length * speed, dy / length * speed, dz / length * speed
+  end
+  local particle = emitter.particles[slot] or {}
+  particle.active = true
+  particle.age = 0
+  particle.x, particle.y, particle.z = ox, oy, oz
+  particle.vx, particle.vy, particle.vz = vx, vy, vz
+  particle.absolute = type(runtime.dynamicObjectOrigin) == "table"
+  particle.sx, particle.sy, particle.sz = 1, 1, 1
+  particle.scale = 1
+  emitter.particles[slot] = particle
+  return true
+end
+
+local function stepKoffingGas(emitter, runtime)
+  if runtime.dynamicObjectUpdateEnabled == false then return end
+  local growth = tonumber(runtime.dynamicObjectGrowth) or 0.10000000149011612
+  local damping = tonumber(runtime.dynamicObjectDamping) or 0.8999999761581421
+  local modelScaleY = tonumber(runtime.modelScaleY) or 1
+  for i = 1, 10 do
+    local particle = emitter.particles and emitter.particles[i]
+    if particle and particle.active then
+      local x, y, z = tonumber(particle.x) or 0, tonumber(particle.y) or 0, tonumber(particle.z) or 0
+      local vx, vy, vz = tonumber(particle.vx) or 0, tonumber(particle.vy) or 0, tonumber(particle.vz) or 0
+      local sx = tonumber(particle.sx) or tonumber(particle.scale) or 1
+      local sy = tonumber(particle.sy) or tonumber(particle.scale) or 1
+      local sz = tonumber(particle.sz) or tonumber(particle.scale) or 1
+      particle.age = (math.floor(tonumber(particle.age) or 0) + 1)
+      particle.sx, particle.sy, particle.sz = sx + growth, sy + growth, sz + growth
+      particle.y = y + 0.5 * modelScaleY
+      if particle.age >= 16 then particle.active = false end
+      particle.x = x + vx
+      particle.y = particle.y + vy
+      particle.z = z + vz
+      particle.vx, particle.vy, particle.vz = vx * damping, vy * damping, vz * damping
+      particle.scale = particle.sx
+    end
+  end
+end
+
+function Handlers.koffingGasSpawnExpected(runtime)
+  return koffingSpawnExpected(type(runtime) == "table" and runtime or {})
+end
+
+function Handlers.koffingGasRenderState(age)
+  age = math.floor(tonumber(age) or 0)
+  local frame = math.max(1, math.min(8, math.floor(age / 2) + 1))
+  local alphaByte = (200 - 13 * age) % 256
+  return frame, alphaByte, alphaByte / 255
+end
+
+function Handlers.koffingGasInitialize(origin, reference, speed)
+  local runtime = {
+    dynamicObjectOrigin = origin,
+    dynamicObjectReference = reference,
+    dynamicObjectInitialSpeed = speed,
+  }
+  local effect = { particles = {} }
+  spawnKoffingGas(effect, runtime)
+  return effect.particles[1]
+end
+
+local function updateDynamicObjectState(state, key, result, runtime)
+  state.dynamicObjectsBySite = type(state.dynamicObjectsBySite) == "table"
+    and state.dynamicObjectsBySite or {}
+  local species = math.floor(tonumber(runtime.species) or -1)
+  if species ~= 109 and species ~= 110 then return end
+  local effect = state.dynamicObjectsBySite[key]
+  if type(effect) ~= "table" then
+    effect = {
+      family = "koffing-gas", species = species, particles = {}, emitters = {},
+      lastFrame = nil, textureSlots = {},
+    }
+    state.dynamicObjectsBySite[key] = effect
+  end
+  effect.species = species
+  effect.emitters = type(effect.emitters) == "table" and effect.emitters or {}
+  if #effect.emitters == 0 and type(effect.particles) == "table" and next(effect.particles) ~= nil then
+    effect.emitters[1] = { index = 0, particles = effect.particles }
+  end
+  effect.geometry = result.program and result.program.geometry or effect.geometry
+  effect.textureSlots = {}
+  for i, texture in ipairs(result.program and result.program.textures or {}) do
+    effect.textureSlots[i] = (tonumber(texture.slot) or -1) + 1
+  end
+  local frame = math.max(0, math.floor(tonumber(result.callbackFrame) or tonumber(runtime.callbackFrame) or 0))
+  local first = effect.lastFrame == nil or frame < effect.lastFrame
+  if first then
+    effect.emitters = {}
+    effect.particles = {}
+    effect.lastFrame = frame
+  elseif frame > effect.lastFrame then
+    for _, emitter in ipairs(effect.emitters or {}) do stepKoffingGas(emitter, runtime) end
+    effect.lastFrame = frame
+  end
+
+  local sources = runtime.dynamicObjectEmitters
+  if type(sources) ~= "table" or #sources == 0 then
+    sources = {{
+      index = math.floor(tonumber(runtime.dynamicObjectIndex) or -1),
+      bone = result.bone,
+      origin = runtime.dynamicObjectOrigin,
+      reference = runtime.dynamicObjectReference,
+    }}
+  end
+  for order, source in ipairs(sources) do
+    local index = math.floor(tonumber(source.index) or (order - 1))
+    local slot = index + 1
+    if slot >= 1 and slot <= #KOFFING_SPAWN_SCHEDULE then
+      local emitter = effect.emitters[slot]
+      if type(emitter) ~= "table" then
+        emitter = { index = index, particles = {} }
+        effect.emitters[slot] = emitter
+      end
+      emitter.index = index
+      emitter.bone = tonumber(source.bone) or emitter.bone
+      emitter.origin = source.origin or emitter.origin
+      emitter.reference = source.reference or emitter.reference
+      local spawnFrame = tonumber(emitter.spawnFrame) or -1
+      if first or frame > spawnFrame then
+        local emitterRuntime = {}
+        for name, value in pairs(runtime) do emitterRuntime[name] = value end
+        emitterRuntime.dynamicObjectIndex = index
+        emitterRuntime.dynamicObjectOrigin = emitter.origin
+        emitterRuntime.dynamicObjectReference = emitter.reference
+        if koffingSpawnExpected(emitterRuntime) then spawnKoffingGas(emitter, emitterRuntime) end
+        emitter.spawnFrame = frame
+      end
+    end
+  end
+  -- Keep the original single-emitter surface for callers and old caches that
+  -- do not yet provide an emitter list.
+  effect.particles = effect.emitters[1] and effect.emitters[1].particles or effect.particles
+end
+
 function Handlers.run(records, phase, runtime, state)
   state = type(state) == "table" and state or {}
   runtime = type(runtime) == "table" and runtime or {}
@@ -411,6 +639,7 @@ function Handlers.run(records, phase, runtime, state)
   state.attributesBySite = type(state.attributesBySite) == "table" and state.attributesBySite or {}
   state.textureBySite = type(state.textureBySite) == "table" and state.textureBySite or {}
   state.textureSetBySite = type(state.textureSetBySite) == "table" and state.textureSetBySite or {}
+  state.dynamicObjectsBySite = type(state.dynamicObjectsBySite) == "table" and state.dynamicObjectsBySite or {}
   if tonumber(phase) == 5 then state.renderQueue = {} end
   local deferred = {}
   for _, record in ipairs(records or {}) do
@@ -444,10 +673,9 @@ function Handlers.run(records, phase, runtime, state)
             end
           end
         elseif result.operation == "dynamic-object-renderer" then
-          local textures = result.program and result.program.textures or {}
-          if #textures > 0 then
-            state.textureBySite[key] = textures[(result.sourceFrame or 0) % #textures + 1].slot + 1
-          end
+          state.textureBySite[key] = nil
+          state.textureSetBySite[key] = nil
+          updateDynamicObjectState(state, key, result, runtime)
         elseif result.operation == "attribute-transform" then
           state.attributesBySite[key] = result
         end

@@ -32,6 +32,15 @@ local function rotateY(angle)
   return {c,0,s,0,0,1,0,0,-s,0,c,0,0,0,0,1}
 end
 
+local function hasDynamicObjectHandler(actor)
+  local records=actor and actor.renderer and actor.renderer.model
+    and actor.renderer.model.handlers and actor.renderer.model.handlers.records
+  for _,record in ipairs(type(records)=="table" and records or {}) do
+    if record.descriptor==0x81000070 then return true end
+  end
+  return false
+end
+
 function Scene.init(self,opts)
   opts=opts or {}
   self.actors=opts.actors or self.actors or {}
@@ -159,9 +168,16 @@ function Scene:render(requestedWidth,requestedHeight)
     local vp=frame.vp
     self.hudBox=frame.letterbox
     local matrices,drawActors={},{}
+    local dynamicObjectIndex=0
     for _,side in ipairs({"enemy","player"}) do
       local actor=self:visualActor(side)
       if actor and actor.renderer then
+        if hasDynamicObjectHandler(actor) then
+          actor.dynamicObjectIndex=dynamicObjectIndex
+          dynamicObjectIndex=dynamicObjectIndex+1
+        else
+          actor.dynamicObjectIndex=nil
+        end
         drawActors[side]=actor
         matrices[side]={self:modelMatrix(side,actor)}
       end
@@ -197,7 +213,7 @@ function Scene:render(requestedWidth,requestedHeight)
         if entry and actor.renderer then
           local base=self.environment.modelTint or {1,1,1}
           local drawn,drawErr=actor.renderer:drawScene(pass,entry[1],{
-            viewProjection=vp,
+            viewProjection=vp,viewMatrix=frame.view,
             normalMatrix=Renderer.normalMatrix(entry[2],0,false),
             lightDir=self.environment.light,ambient=self.environment.ambient,
             diffuse=self.environment.diffuse,skipHandlers=pass=="additive",

@@ -21,10 +21,11 @@ local function ok(value,message)
 end
 
 local calls={}
-local rig={finished=false,frame=0,
+local handlerRuntime
+local rig={finished=false,frame=0,animIndex=1,
   setContext=function(self,name,loop) calls[#calls+1]=name;return name~="missing" end,
   setMove=function() return true end,
-  setHandlerRuntime=function() end,
+  setHandlerRuntime=function(_,runtime) handlerRuntime=runtime end,
   step=function() end,
 }
 local actor=Gen2.Actor.new("player")
@@ -40,8 +41,17 @@ ok(not actor:attack(1),"pending faint cannot be overwritten by an attack")
 actor:faint()
 ok(actor.context=="faint" and not actor:play("attack",false),"faint is final")
 rig.finished=true
+rig.frame=12
+rig.animIndex=3
+actor.dex=109
+actor.dynamicObjectIndex=1
 actor:update(1/30)
 ok(actor.faintFinished and actor.context=="faint","faint holds its terminal pose")
+ok(handlerRuntime and handlerRuntime.species==109 and handlerRuntime.dynamicObjectIndex==1
+  and handlerRuntime.animationState==3
+  and handlerRuntime.animationFrame==12 and handlerRuntime.dynamicObjectEnabled==true
+  and handlerRuntime.dynamicObjectUpdateEnabled==true,
+  "battle actor supplies the fragment-26 dynamic-object runtime")
 
 local scene=Gen2.Scene.new({})
 scene.actors.player=actor

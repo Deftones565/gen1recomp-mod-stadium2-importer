@@ -1069,7 +1069,7 @@ function StadiumFragment.extract(data, name)
       elseif handler == 0x81000068 then
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 4 + i * 4), 64, 32, 0, 2) end
       elseif handler == 0x81000070 then
-        for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 64, 64, 0, 2) end
+        for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 32, 4, 0) end
       end
     end
   end
