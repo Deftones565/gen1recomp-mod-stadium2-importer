@@ -32,7 +32,14 @@ return function(mod)
     { key="stadium2_battle_aa", label="BATTLE AA", type="choice", default=0,
       choices={{"OFF",0},{"2X",2},{"4X",4}},
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
+    { key="stadium2_hud_panels", label="DRAW HUD PANELS", type="toggle", default=true,
+      help="Back the Stadium 2 status cards with the frosted glass plate. Turn OFF for a bare HUD on the 3D scene." },
   })
+
+  -- Hand the mod handle to the HUD module so its panels can read the
+  -- DRAW HUD PANELS option live.
+  local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
+  Hud.configure(mod)
 
   -- DSM animations are authored at 30 Hz, but advance from presented-frame
   -- real time. The speed-scaled logic clock can run many times per frame.
