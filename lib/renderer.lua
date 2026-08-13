@@ -21,6 +21,7 @@ local SHADER = [[
 varying vec3 vNormal;
 varying vec3 vSun;
 varying vec2 vGeneratedUV;
+varying vec3 vEyeNormal;
 #ifdef VERTEX
 uniform mat4 mvp;
 uniform mat4 modelMatrix;
@@ -41,8 +42,8 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
       + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
   }
   vNormal = normalize(normalMatrix * VertexNormal);
-  vec3 eyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
-  vGeneratedUV=(eyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
+  vEyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
+  vGeneratedUV=(vEyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
   vSun = (sunVP * (modelMatrix * vertex_position)).xyz;
   return mvp*vertex_position;
 }
@@ -70,6 +71,7 @@ uniform float sunBias;
 uniform vec2 sunTexel;
 uniform float effectIntensityMode;
 uniform float lightingEnabled;
+uniform float celShadingEnabled;
 uniform float textureGenEnabled;
 uniform vec2 textureCoordinateScale;
 float shadowDepth(vec2 uv) {
@@ -127,8 +129,29 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
   // portion so self-shadowing cannot crush already-dark faces toward black.
   float shadowVisibility=sunlight(vSun);
   float litShade=0.30+(stadiumShade-0.30)*shadowVisibility;
+  float mangaAmount=celShadingEnabled*lightingEnabled;
+  float washShade=floor(litShade*3.0+0.5)/3.0;
+  litShade=mix(litShade,washShade,mangaAmount);
   vec3 lighting=mix(vec3(1.0),vec3(litShade),lightingEnabled);
   vec3 shaded=combined * lighting * sceneTint.rgb;
+  // Watercolor-manga mode stays in the existing material pass. A warm paper
+  // lift, muted pigment and screen-stable irregularity suggest a physical
+  // wash; the grazing-angle term lays ink inside the silhouette without a
+  // second expanded-mesh outline draw.
+  float paperNoise=fract(sin(dot(floor(screen_coords.xy*0.5),
+    vec2(12.9898,78.233)))*43758.5453)-0.5;
+  float broadWash=sin(screen_coords.x*0.021+screen_coords.y*0.017)*0.5
+    +sin(screen_coords.x*0.009-screen_coords.y*0.013)*0.5;
+  float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
+  float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
+  vec3 watercolor=mix(vec3(pigmentGray),shaded,0.82)*pigmentVariation;
+  watercolor=mix(vec3(1.0,0.965,0.885),watercolor,0.94);
+  float ink=1.0-smoothstep(0.025,0.15,abs(vEyeNormal.z));
+  float hatch=smoothstep(0.58,0.76,
+    fract((screen_coords.x+screen_coords.y)*0.115+paperNoise*0.35));
+  float inkMark=ink*(0.22+0.78*hatch);
+  watercolor*=mix(1.0,0.18,inkMark);
+  shaded=mix(shaded,watercolor,mangaAmount);
   shaded=mix(shaded,vec3(1.0),flashAmount);
   return vec4(shaded,
     texel.a * mix(1.0, environmentColor.a, environmentMix) * sceneTint.a);
@@ -533,6 +556,9 @@ function Renderer.new(model, options)
     flipY = options.flipY ~= false,
     textureFilter = options.textureFilter == "linear" and "linear" or "nearest",
     anisotropy = math.max(1, tonumber(options.anisotropy) or 4),
+    shaderStyle = options.shaderStyle == "cel" and "cel" or "stadium",
+    shaderStyleProvider = type(options.shaderStyleProvider) == "function"
+      and options.shaderStyleProvider or nil,
     handlerRuntime = {},
     randomSeed = math.floor(tonumber(options.randomSeed) or 1),
     handlerState = {},
@@ -576,6 +602,14 @@ function Renderer.new(model, options)
   if not model.staticPose then self.animIndex = idleIndex end
   self:updatePose(true)
   return self
+end
+
+function Renderer:currentShaderStyle()
+  if self.shaderStyleProvider then
+    local ok, value = pcall(self.shaderStyleProvider)
+    if ok then return value == "cel" and "cel" or "stadium" end
+  end
+  return self.shaderStyle == "cel" and "cel" or "stadium"
 end
 
 function Renderer:geometryAnchor()
@@ -1116,6 +1150,8 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send, self.shader, "flashAmount", options.flashAmount or 0)
     pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
     pcall(self.shader.send, self.shader, "lightingEnabled", 1)
+    pcall(self.shader.send, self.shader, "celShadingEnabled",
+      self:currentShaderStyle() == "cel" and 1 or 0)
     pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
     pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
     pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
@@ -1316,6 +1352,8 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "flashAmount", 0)
       pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
       pcall(self.shader.send, self.shader, "lightingEnabled", 1)
+      pcall(self.shader.send, self.shader, "celShadingEnabled",
+        self:currentShaderStyle() == "cel" and 1 or 0)
       pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
       pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
       pcall(self.shader.send, self.shader, "textureGenScale", {1,1})

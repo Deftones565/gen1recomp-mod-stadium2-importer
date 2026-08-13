@@ -160,6 +160,26 @@ function Importer.battleEnabled()
   return true
 end
 
+function Importer.shaderStyle()
+  if modRef and modRef.options and modRef.options.get then
+    local ok, value = pcall(modRef.options.get, modRef.options, "stadium2_shader")
+    if ok and value == "cel" then return "cel" end
+  end
+  return "stadium"
+end
+
+local function rendererOptions(options)
+  local out = {}
+  for key, value in pairs(type(options) == "table" and options or {}) do
+    out[key] = value
+  end
+  if out.shaderStyle == nil then out.shaderStyle = Importer.shaderStyle() end
+  -- Existing battle actors observe an option change immediately; this does
+  -- not rebuild packs, meshes, shaders, or the active battle scene.
+  if out.shaderStyleProvider == nil then out.shaderStyleProvider = Importer.shaderStyle end
+  return out
+end
+
 function Importer.modelPath(species, variant)
   species = tonumber(species)
   if not species or species < 1 or species > configuredCount then return nil end
@@ -211,7 +231,7 @@ function Importer.newRenderer(species, variant, options)
   if not Importer.modelsEnabled() then return nil, "Stadium 2 models disabled" end
   local model, err = Importer.loadModel(species, variant)
   if not model then return nil, err end
-  return Renderer.new(model, options)
+  return Renderer.new(model, rendererOptions(options))
 end
 
 function Importer.loadSpecial(name)
@@ -231,7 +251,7 @@ end
 function Importer.newSpecialRenderer(name,options)
   local model,err=Importer.loadSpecial(name)
   if not model then return nil,err end
-  return Renderer.new(model,options)
+  return Renderer.new(model,rendererOptions(options))
 end
 
 function Importer.releaseModels()

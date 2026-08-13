@@ -8,13 +8,20 @@ end
 
 package.loaded["mods.STADIUM2_IMPORTER.lib.importer"] = nil
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
-local models, battle = true, true
+local models, battle, shader = true, true, "stadium"
 Importer.bind({ options={ get=function(_, key)
   if key == "stadium2_models" then return models end
   if key == "stadium2_battle" then return battle end
+  if key == "stadium2_shader" then return shader end
 end } })
 ok(Importer.modelsEnabled(), "Stadium 2 models default/ON state is enabled")
 ok(Importer.battleEnabled(), "Stadium 2 carried 3D battle default/ON state is enabled")
+ok(Importer.shaderStyle() == "stadium", "Stadium lighting is the default model shader")
+shader = "cel"
+ok(Importer.shaderStyle() == "cel", "cel-shaded model option reaches the renderer configuration")
+shader = "invalid"
+ok(Importer.shaderStyle() == "stadium", "unknown shader settings safely use Stadium lighting")
+shader = "stadium"
 models = false
 ok(not Importer.modelsEnabled(), "Stadium 2 models OFF disables renderers")
 ok(Importer.battleEnabled(), "battle mode remains selected when models are OFF")
@@ -28,6 +35,9 @@ ok(not Importer.battleEnabled(), "Stadium 2 battle OFF disables the importer-own
 local main = assert(io.open("mods/STADIUM2_IMPORTER/main.lua", "rb")):read("*a")
 ok(main:find('key="stadium2_models"', 1, true) ~= nil, "importer exposes the Stadium 2 models option")
 ok(main:find('key="stadium2_battle"', 1, true) ~= nil, "importer exposes the Stadium 2 battle option")
+ok(main:find('key="stadium2_shader"', 1, true) ~= nil
+    and main:find('{"WATERCOLOR MANGA","cel"}', 1, true) ~= nil,
+  "importer exposes Stadium and watercolor-manga model shader choices")
 ok(main:find('label="STADIUM 2 BATTLE"', 1, true) ~= nil, "battle option uses the requested Stadium label")
 ok(not main:find("lib.battle_stage", 1, true), "stage wiring stays outside the bootstrap")
 ok(not main:find("RENDER QUALITY", 1, true) and not main:find("TEXTURE FILTERING", 1, true), "no unrelated Stadium renderer options are exposed")

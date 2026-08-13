@@ -27,6 +27,7 @@ local autoCapture = os.getenv("STADIUM2_VISUAL_AUTOCAPTURE")
 local autoCaptureFrames = 0
 local autoKeys = os.getenv("STADIUM2_VISUAL_AUTOKEYS")
 local autoKeysApplied = false
+local shaderStyle = os.getenv("STADIUM2_VISUAL_SHADER") == "cel" and "cel" or "stadium"
 
 local function fileExists(path)
   local handle = io.open(path, "rb")
@@ -325,6 +326,9 @@ local function initialise()
   installModLoader(root)
   local ok, result = pcall(function()
     Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
+    Importer.bind({ options={ get=function(_, key)
+      if key == "stadium2_shader" then return shaderStyle end
+    end } })
     Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
     Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
     DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
@@ -365,7 +369,7 @@ local function drawText(g)
     g.print("Drag mouse orbit/pitch   Wheel zoom", 24, 80)
     g.print("Q/E animation   R recenter   SPACE pause", 24, 98)
     g.print("G force selected FX   [ / ] age   X suppress FX draw", 24, 116)
-    g.print("0 all primitives   1-9 isolate   S shot   H/D/P debug", 24, 134)
+    g.print("0 all primitives   1-9 isolate   V shader   S shot   H/D/P debug", 24, 134)
   end
   if debugPanel then
     local d = gasSnapshot()
@@ -384,9 +388,10 @@ local function drawText(g)
     g.print("FX forced: " .. tostring(forceGas) .. "  suppressed: "
       .. tostring(suppressGasDraw), 24, y + 72)
     g.print("Callback texture: " .. tostring(d.textureInfo or "none"), 24, y + 90)
-    g.print(("Textures: %d authored + %d neutral; resolved %d/%d; shader %s; cache %s")
+    g.print(("Textures: %d authored + %d neutral; resolved %d/%d; shader %s/%s; cache %s")
       :format(authoredTextures, neutralTextures, resolvedTextures, #(model.prims or {}),
         tostring(renderer and renderer.shaderTier or "none"),
+        tostring(renderer and renderer:currentShaderStyle() or shaderStyle),
         tostring(Importer and Importer.FORMAT or "?")), 24, y + 108)
   end
   if screenshotMessage then
@@ -522,6 +527,8 @@ function love.keypressed(key)
     applyDebugControls()
   elseif key == "d" then
     debugPanel = not debugPanel
+  elseif key == "v" then
+    shaderStyle = shaderStyle == "cel" and "stadium" or "cel"
   elseif key == "p" then
     printGasSnapshot()
   elseif key == "s" then

@@ -332,8 +332,8 @@ function g.newMesh(format, rows, mode, usage)
   return m
 end
 function g.newShader(code)
-  local sh = { code = code }
-  function sh:send(...) end
+  local sh = { code = code, uniforms = {} }
+  function sh:send(name, value, ...) self.uniforms[name] = value end
   function sh:release() end
   return sh
 end
@@ -380,6 +380,19 @@ ok(normalColor[9] == 1 and normalColor[10] == 1
   "lit normal geometry reaches the shader with neutral vertex colour")
 local canvas, renderErr = gpuRig:renderToCanvas(64, 64)
 ok(canvas ~= nil, renderErr or "GPU canvas")
+ok(gpuRig.shader.uniforms.celShadingEnabled == 0,
+  "Stadium shader style leaves source lighting continuous")
+local liveShaderStyle = "cel"
+gpuRig.shaderStyleProvider = function() return liveShaderStyle end
+local celCanvas, celErr = gpuRig:renderToCanvas(64, 64)
+ok(celCanvas ~= nil and gpuRig.shader.uniforms.celShadingEnabled == 1,
+  celErr or "cel-shaded option updates an existing renderer")
+liveShaderStyle = "stadium"
+gpuRig:renderToCanvas(64, 64)
+ok(gpuRig.shader.uniforms.celShadingEnabled == 0,
+  "renderer returns to Stadium lighting without rebuilding the model")
+calls = {}
+gpuRig:renderToCanvas(64, 64)
 local drawOrder, blendBeforeDraw = {}, {}
 local currentBlend
 for _, call in ipairs(calls) do

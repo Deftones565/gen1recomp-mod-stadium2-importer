@@ -70,6 +70,14 @@ per-animation and callback texture streams, parsed material state, primitive
 culling, additive second-pass rendering, embedded RGBA textures, and the
 verified Stadium 2 model-handler state implemented by the importer.
 
+`MODEL SHADER` in the mod options selects `STADIUM` (the parity-oriented
+default lighting) or `WATERCOLOR MANGA`. The latter combines inked silhouette
+shading, stepped value washes, paper warmth, muted pigment, and subtle
+screen-stable watercolor irregularity. It uses the same material shader and
+draw calls, so textures, callback FX, reflection, alpha, shadows, and
+performance characteristics remain shared with the default path. Changing it
+updates existing imported battle actors immediately.
+
 For standalone visual inspection, run:
 
 ```sh

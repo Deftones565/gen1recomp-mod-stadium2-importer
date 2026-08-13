@@ -26,6 +26,9 @@ return function(mod)
   mod.options:define({
     { key="stadium2_models", label="STADIUM 2 MODELS", type="toggle", default=true },
     { key="stadium2_battle", label="STADIUM 2 BATTLE", type="toggle", default=true },
+    { key="stadium2_shader", label="MODEL SHADER", type="choice", default="stadium",
+      choices={{"STADIUM","stadium"},{"WATERCOLOR MANGA","cel"}},
+      help="Choose authentic Stadium lighting or an inked watercolor-manga treatment for imported Pokemon models." },
     { key="stadium2_battle_aa", label="BATTLE AA", type="choice", default=0,
       choices={{"OFF",0},{"2X",2},{"4X",4}},
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
@@ -46,12 +49,13 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.10.7"
+  mod.exports.version = "0.10.8"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.available = Importer.available
   mod.exports.modelsEnabled = Importer.modelsEnabled
   mod.exports.battleEnabled = Importer.battleEnabled
+  mod.exports.shaderStyle = Importer.shaderStyle
   mod.exports.battleStatus = Battle.status
   mod.exports.configureGame = Battle.configureGame
   mod.exports.presentation = BattlePresentation
