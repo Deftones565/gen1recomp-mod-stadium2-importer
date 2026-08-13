@@ -45,11 +45,13 @@ combine words `FC262A04 1F1893FF`: cycle one lerps TEXEL0/TEXEL1 with
 environment alpha `100/255`, then cycle two applies SHADE. The callback owns
 all non-decal primitives in its preceding draw; local alpha face decals retain
 their authored material. Grimer's `arg[1]=0x8FF11120` requests bytes through
-offset `0x11920`, while its Yay0 model output ends at `0x11630`. The missing
-`0x2F0` bytes are the beginning of the active raw pose payload: Stadium 2 lays
-that payload immediately after the model in the `0x8FF00000` runtime image.
-The importer and parity audits now recreate that contiguous model-plus-pose
-layout before extracting callback textures, instead of padding or substituting
-tile zero.
+offset `0x11920`, while its Yay0 file output ends at `0x11630`. Its FRAGMENT
+header identifies `0x11120` as the relocation-table start, `0x11630` as the
+file end, and `0x12120` as the loaded-memory end. The loader consumes the
+relocation table and zero-initializes that entire runtime scratch/BSS range;
+it is not model texture data and is not followed by a pose payload. The
+importer and audits now recreate that loaded memory image before extracting
+callback textures, preventing relocation or pose bytes from becoming rainbow
+RGBA16 noise.
 
 `lib/model_handlers.lua` compiles these families into a portable `S2HX` trailer on every generated `DSM4` pack. DSM4 owns lossless core mesh semantics—geometry mode, vertex RGBA/normal interpretation, callback targeting, and sampler state—while the extension retains callback programs and decoded FRAGMENT data. Callback ownership and implementation live in the declarative handler registry and family modules. Pose records are aligned with model-local auxiliary streams by authored order and duration in `animation_routing.lua`.

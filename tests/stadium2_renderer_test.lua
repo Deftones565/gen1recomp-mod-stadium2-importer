@@ -172,6 +172,11 @@ ok(rig:currentTexture(model.prims[1]) == 3,
 model.prims[1].decal = false
 ok(rig:callbackUsesMaterialFx(model.prims[1]),
   "dual-texture material FX reaches a non-decal body surface")
+local uvS,uvT=Renderer.callbackTextureCoordinateScale({textures={
+  {w=4,h=8},{w=32,h=32},
+}}, {tex=1,sampler={shifts=0,shiftt=1},textureScale={1,1}}, 2)
+ok(math.abs(uvS-0.125)<0.000001 and math.abs(uvT-0.5)<0.000001,
+  "callback texture replacement preserves raw N64 S/T across texture size and shift changes")
 model.prims[1].decal = true
 ok(not rig:callbackUsesMaterialFx(model.prims[1]),
   "dual-texture material FX does not cover an alpha face decal")

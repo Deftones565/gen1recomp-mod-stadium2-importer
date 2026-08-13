@@ -648,7 +648,7 @@ check(cacheRoot ~= nil, "Koffing cache root found=%s", tostring(cacheRoot))
 local model
 if cacheRoot then
   local marker = readFile(cacheRoot .. "/pack.info") or ""
-  check(marker:find("format=S2IMP28", 1, true) ~= nil, "Koffing cache format is S2IMP28; stale caches must be re-imported")
+  check(marker:find("format=S2IMP29", 1, true) ~= nil, "Koffing cache format is S2IMP29; stale caches must be re-imported")
   local packBytes = readFile(cacheRoot .. "/normal/109.dsm")
   check(type(packBytes) == "string", "Koffing DSM pack readable")
   if packBytes then

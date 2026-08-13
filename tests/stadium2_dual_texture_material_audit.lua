@@ -6,6 +6,7 @@ local Extract = require("mods.STADIUM2_IMPORTER.lib.extract")
 local Fragment = require("mods.STADIUM2_IMPORTER.lib.fragment")
 local Fragment26 = require("mods.STADIUM2_IMPORTER.lib.fragment26")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
+local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
 local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
 
 local path = os.getenv("STADIUM2_ROM") or arg[1]
@@ -78,14 +79,22 @@ local callbacks, consumers, bodyPrims, decalPrims, routes = 0, 0, 0, 0, 0
 local missingPayloads = {}
 local missingCachePairs = {}
 local targets = {
-  [88] = { callbacks = 0, consumers = 0, body = 0, decals = 0, textureKinds = {} },
-  [89] = { callbacks = 0, consumers = 0, body = 0, decals = 0, textureKinds = {} },
+  [88] = { callbacks = 0, consumers = 0, body = 0, decals = 0, textureKinds = {}, uvConverted = false },
+  [89] = { callbacks = 0, consumers = 0, body = 0, decals = 0, textureKinds = {}, uvConverted = false },
 }
 
 for dex = 1, 251 do
   local decoded = assert(Rom.decompress(assert(Rom.recordBytes(data, archive.records[dex + 1]))))
   local info = assert(Extract.fragmentInfo(decoded))
   local runtimeDecoded = Extract.runtimeFragmentForSpecies(data, dex, decoded)
+  if dex == 88 then
+    check(u32(decoded, 0x14) == 0x11120 and u32(decoded, 0x18) == 0x11630
+        and u32(decoded, 0x1C) == 0x12120,
+      "Grimer FRAGMENT relocation/file/runtime boundaries changed")
+    check(#runtimeDecoded == 0x12120
+        and runtimeDecoded:sub(0x11120 + 1):find("[^\0]") == nil,
+      "Grimer callback scratch textures are not loader-zeroed runtime storage")
+  end
   Fragment.setBase(info.sourceBase)
   local model = assert(Fragment.extract(runtimeDecoded, ("dual-texture-%03d"):format(dex)))
   local records = Handlers.compile(model.fx, runtimeDecoded, info.sourceBase)
@@ -163,6 +172,23 @@ for dex = 1, 251 do
             and set.tileOrigins[2][1] == 37 and set.tileOrigins[2][2] == 74,
           ("dex %03d callback 0x%X uses incorrect ROM scroll math")
             :format(dex, record.commandOffset or 0))
+        local target = targets[dex]
+        if target and set and set[1] then
+          for _, prim in ipairs(model.prims or {}) do
+            local source = model.textures and model.textures[(prim.tex or -1) + 1]
+            if prim.callbackOffset == record.commandOffset
+                and DualTexture.ownsPrimitive(prim)
+                and source and source.w == 4 and source.h == 4 then
+              local s, t = Renderer.callbackTextureCoordinateScale(model, {
+                tex = prim.tex + 1, sampler = prim.sampler,
+                textureScale = prim.textureScale,
+              }, set[1])
+              if close(s, 1 / 8) and close(t, 1 / 8) then
+                target.uvConverted = true
+              end
+            end
+          end
+        end
       end
     end
   end
@@ -173,11 +199,11 @@ check(callbacks == 36 and consumers == 35 and routes == 35,
     :format(callbacks, consumers, routes))
 check(targets[88].callbacks == 16 and targets[88].consumers == 16
     and targets[88].body == 21 and targets[88].decals == 1
-    and targets[88].textureKinds[2],
+    and targets[88].textureKinds[2] and targets[88].uvConverted,
   "Grimer callback topology or distinct-pointer dual-tile contract changed")
 check(targets[89].callbacks == 20 and targets[89].consumers == 19
     and targets[89].body == 23 and targets[89].decals == 1
-    and targets[89].textureKinds[2],
+    and targets[89].textureKinds[2] and targets[89].uvConverted,
   "Muk callback topology or distinct-image dual-tile contract changed")
 
 print(("dual-texture material audit: callbacks=%d consumers=%d routes=%d body=%d decals=%d failures=%d")

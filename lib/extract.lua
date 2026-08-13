@@ -682,15 +682,26 @@ local function poseSourcesForRecord(data, record, dependencies, label)
   return collectPosePayload(payload, dependencies, label, 0)
 end
 
--- Stadium 2 installs a model fragment immediately before the active raw pose
--- payload.  Render callbacks use absolute 0x8FF..... pointers and may legally
--- read across that boundary (Grimer's animated slime maps do this).  Preserve
--- that runtime address space while parsing/caching callback-owned textures.
-local function runtimeModelFragment(decoded, poseSources)
-  local pose = poseSources and poseSources[1]
-  local tail = pose and pose.decoded
-  if type(decoded) ~= "string" or type(tail) ~= "string" then return decoded end
-  return decoded .. tail
+-- FRAGMENT bytes at relocationStart..fileEnd are loader relocation records,
+-- not runtime data. The loader consumes that table, then zero-initializes the
+-- same address range through memoryEnd. Grimer deliberately points two
+-- callback textures into this scratch/BSS region, so audits and extraction
+-- must reproduce the loaded memory image rather than decode relocation words
+-- as RGBA16 or append unrelated pose data.
+local function runtimeModelFragment(decoded)
+  if type(decoded) ~= "string" or decoded:sub(9, 16) ~= "FRAGMENT" then
+    return decoded
+  end
+  local relocationStart = u32be(decoded, 0x14)
+  local fileEnd = u32be(decoded, 0x18)
+  local memoryEnd = u32be(decoded, 0x1C)
+  if not relocationStart or not fileEnd or not memoryEnd
+      or fileEnd ~= #decoded or relocationStart > fileEnd
+      or memoryEnd < relocationStart then
+    return decoded
+  end
+  return decoded:sub(1, relocationStart)
+    .. string.rep("\0", memoryEnd - relocationStart)
 end
 
 local function appendSource(bucket, species, source)
@@ -1024,7 +1035,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
       self.specialWorker=coroutine.create(function()
         local decoded,infoOrErr=decompressedFragment(data,source.record,StadiumRom)
         if not decoded then return nil,infoOrErr end
-        local runtimeDecoded=runtimeModelFragment(decoded,special.animations)
+        local runtimeDecoded=runtimeModelFragment(decoded)
         local parser=fragmentParser(infoOrErr.sourceBase)
         local model,extractErr=parser.extract(runtimeDecoded,"stadium2_"..special.name..".bin")
         if not model then return nil,extractErr end
@@ -1083,8 +1094,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
       local decoded, infoOrErr = decompressedFragment(data, modelSource.record,
         StadiumRom)
       if not decoded then return nil, infoOrErr end
-      local runtimeDecoded = runtimeModelFragment(decoded,
-        self.animationSources[species])
+      local runtimeDecoded = runtimeModelFragment(decoded)
       local parser = fragmentParser(infoOrErr.sourceBase)
       local model, extractErr = parser.extract(runtimeDecoded,
         ("stadium2_model_%d.bin"):format(species))
@@ -1217,14 +1227,7 @@ end
 -- Audit/inspection entry point for recreating the same contiguous model+pose
 -- memory image used by the importer and by the original game.
 function Extract.runtimeFragmentForSpecies(data, species, decoded)
-  species = math.floor(tonumber(species) or 0)
-  local archive = archiveAt(data, POSE_TABLE_START)
-  local record = archive and archive.records and archive.records[species + 1]
-  if not record then return decoded, { "missing pose-table record" } end
-  local label = ("pose-table=0x%X species=%d file=%d")
-    :format(POSE_TABLE_START, species, species)
-  local sources, errors = poseSourcesForRecord(data, record, { StadiumRom = Rom }, label)
-  return runtimeModelFragment(decoded, sources), errors, sources
+  return runtimeModelFragment(decoded), {}, nil
 end
 
 Extract.runtimeModelFragment = runtimeModelFragment

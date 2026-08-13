@@ -61,6 +61,7 @@ uniform vec2 sunTexel;
 uniform float effectIntensityMode;
 uniform float lightingEnabled;
 uniform float textureGenEnabled;
+uniform vec2 textureCoordinateScale;
 float shadowDepth(vec2 uv) {
   vec4 c=Texel(sunMap,uv);
   return c.r+c.g*(1.0/255.0);
@@ -93,7 +94,7 @@ vec4 sample3(Image image, vec2 uv, vec2 size) {
     + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.x);
 }
 vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
-  vec2 uv=mix(texture_coords,vGeneratedUV,textureGenEnabled);
+  vec2 uv=mix(texture_coords*textureCoordinateScale,vGeneratedUV,textureGenEnabled);
   vec4 texel = sample3(texture, uv + textureScroll.xy, primarySize);
   if (secondaryEnabled > 0.5) {
     vec4 other = sample3(secondaryTexture, uv + textureScroll.zw, secondarySize);
@@ -832,6 +833,26 @@ function Renderer:currentTexture(prim)
     self.handlerRuntime and self.handlerRuntime.callbackFrame)
 end
 
+-- Fragment UVs are normalized against the authored texture before DSM
+-- packing, and the authored sampler shift is baked into each mesh. A render
+-- callback can replace that texture with a differently-sized image and its
+-- own zero-shift tile. Convert back to the same raw N64 S/T coordinate space
+-- before sampling the callback image.
+function Renderer.callbackTextureCoordinateScale(model, prim, textureIndex)
+  if type(prim) ~= "table" or not textureIndex then return 1, 1 end
+  local source = model and model.textures and model.textures[prim.tex]
+  local target = model and model.textures and model.textures[textureIndex]
+  if not target then return 1, 1 end
+  local sourceW = source and tonumber(source.w) or 32
+  local sourceH = source and tonumber(source.h) or 32
+  local targetW = math.max(1, tonumber(target.w) or 32)
+  local targetH = math.max(1, tonumber(target.h) or 32)
+  local us, vs = Sampler.uvScale(prim.sampler, prim.textureScale)
+  if us == 0 then us = 1 end
+  if vs == 0 then vs = 1 end
+  return sourceW / targetW / us, sourceH / targetH / vs
+end
+
 function Renderer:worldMetrics()
   local model = self.model or {}
   local bounds = self.bindBounds or self:poseBounds()
@@ -1048,6 +1069,7 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
     pcall(self.shader.send, self.shader, "lightingEnabled", 1)
     pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
+    pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
     pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
     pcall(self.shader.send, self.shader, "sunEnabled", options.sunMap and 1 or 0)
@@ -1102,6 +1124,14 @@ function Renderer:drawScene(pass, model, options)
         local sets = self.handlerState and self.handlerState.textureSetBySite
         local set = self:callbackUsesMaterialFx(part.prim)
           and site and sets and sets[site] or nil
+        local textureIndex = self:currentTexture(part.prim)
+        local uvScaleS, uvScaleT = 1, 1
+        if set then
+          uvScaleS, uvScaleT = Renderer.callbackTextureCoordinateScale(
+            self.model, part.prim, textureIndex)
+        end
+        pcall(self.shader.send, self.shader, "textureCoordinateScale",
+          {uvScaleS, uvScaleT})
         local secondary = set and Pack.image(self.model, set[2]) or nil
         if secondary then
           if secondary.setWrap and set.wrap then
@@ -1239,6 +1269,7 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
       pcall(self.shader.send, self.shader, "lightingEnabled", 1)
       pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
+      pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
       pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
     end
 
@@ -1278,6 +1309,14 @@ function Renderer:renderToCanvas(width, height, options)
             local sets = self.handlerState and self.handlerState.textureSetBySite
             local set = self:callbackUsesMaterialFx(part.prim)
               and site and sets and sets[site] or nil
+            local textureIndex = self:currentTexture(part.prim)
+            local uvScaleS,uvScaleT=1,1
+            if set then
+              uvScaleS,uvScaleT=Renderer.callbackTextureCoordinateScale(
+                model,part.prim,textureIndex)
+            end
+            pcall(self.shader.send,self.shader,"textureCoordinateScale",
+              {uvScaleS,uvScaleT})
             local secondary = set and Pack.image(model, set[2]) or nil
             if secondary then
               if secondary.setWrap and set.wrap then
