@@ -134,24 +134,43 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
   litShade=mix(litShade,washShade,mangaAmount);
   vec3 lighting=mix(vec3(1.0),vec3(litShade),lightingEnabled);
   vec3 shaded=combined * lighting * sceneTint.rgb;
-  // Watercolor-manga mode stays in the existing material pass. A warm paper
-  // lift, muted pigment and screen-stable irregularity suggest a physical
-  // wash; the grazing-angle term lays ink inside the silhouette without a
-  // second expanded-mesh outline draw.
-  float paperNoise=fract(sin(dot(floor(screen_coords.xy*0.5),
-    vec2(12.9898,78.233)))*43758.5453)-0.5;
-  float broadWash=sin(screen_coords.x*0.021+screen_coords.y*0.017)*0.5
-    +sin(screen_coords.x*0.009-screen_coords.y*0.013)*0.5;
-  float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
-  float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
-  vec3 watercolor=mix(vec3(pigmentGray),shaded,0.82)*pigmentVariation;
-  watercolor=mix(vec3(1.0,0.965,0.885),watercolor,0.94);
-  float ink=1.0-smoothstep(0.025,0.15,abs(vEyeNormal.z));
-  float hatch=smoothstep(0.58,0.76,
-    fract((screen_coords.x+screen_coords.y)*0.115+paperNoise*0.35));
-  float inkMark=ink*(0.22+0.78*hatch);
-  watercolor*=mix(1.0,0.18,inkMark);
-  shaded=mix(shaded,watercolor,mangaAmount);
+  float watercolorScreenScale=max(1.0,1080.0/max(1.0,love_ScreenSize.y));
+  if(watercolorScreenScale<=1.0001){
+    // Watercolor-manga mode stays in the existing material pass. A warm paper
+    // lift, muted pigment and screen-stable irregularity suggest a physical
+    // wash; the grazing-angle term lays ink inside the silhouette without a
+    // second expanded-mesh outline draw.
+    float paperNoise=fract(sin(dot(floor(screen_coords.xy*0.5),
+      vec2(12.9898,78.233)))*43758.5453)-0.5;
+    float broadWash=sin(screen_coords.x*0.021+screen_coords.y*0.017)*0.5
+      +sin(screen_coords.x*0.009-screen_coords.y*0.013)*0.5;
+    float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
+    float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
+    vec3 watercolor=mix(vec3(pigmentGray),shaded,0.82)*pigmentVariation;
+    watercolor=mix(vec3(1.0,0.965,0.885),watercolor,0.94);
+    float ink=1.0-smoothstep(0.025,0.15,abs(vEyeNormal.z));
+    float hatch=smoothstep(0.58,0.76,
+      fract((screen_coords.x+screen_coords.y)*0.115+paperNoise*0.35));
+    float inkMark=ink*(0.22+0.78*hatch);
+    watercolor*=mix(1.0,0.18,inkMark);
+    shaded=mix(shaded,watercolor,mangaAmount);
+  }else{
+    vec2 watercolorCoords=screen_coords.xy*watercolorScreenScale;
+    float paperNoise=fract(sin(dot(floor(watercolorCoords*0.5),
+      vec2(12.9898,78.233)))*43758.5453)-0.5;
+    float broadWash=sin(watercolorCoords.x*0.021+watercolorCoords.y*0.017)*0.5
+      +sin(watercolorCoords.x*0.009-watercolorCoords.y*0.013)*0.5;
+    float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
+    float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
+    vec3 watercolor=mix(vec3(pigmentGray),shaded,0.82)*pigmentVariation;
+    watercolor=mix(vec3(1.0,0.965,0.885),watercolor,0.94);
+    float ink=1.0-smoothstep(0.025,0.15,abs(vEyeNormal.z));
+    float hatch=smoothstep(0.58,0.76,
+      fract((watercolorCoords.x+watercolorCoords.y)*0.115+paperNoise*0.35));
+    float inkMark=ink*(0.22+0.78*hatch);
+    watercolor*=mix(1.0,0.18,inkMark);
+    shaded=mix(shaded,watercolor,mangaAmount);
+  }
   shaded=mix(shaded,vec3(1.0),flashAmount);
   return vec4(shaded,
     texel.a * mix(1.0, environmentColor.a, environmentMix) * sceneTint.a);
