@@ -10,6 +10,12 @@ local TextureParity = require("mods.STADIUM2_IMPORTER.lib.texture_parity")
 
 local ModelParity = {}
 
+local function u32be(data, offset)
+  if type(data) ~= "string" or type(offset) ~= "number" then return nil end
+  local a, b, c, d = data:byte(offset + 1, offset + 4)
+  return d and ((a * 256 + b) * 256 + c) * 256 + d or nil
+end
+
 local function count(t)
   local n = 0
   for _ in pairs(t or {}) do n = n + 1 end
@@ -59,6 +65,7 @@ function ModelParity.auditModel(model, fragment, sourceBase, options)
   end
 
   local callbackSites, consumers, callbackTextureSites = {}, {}, {}
+  local truncatedCallbackTextures = {}
   for _, node in ipairs(model.fx or {}) do
     local descriptor = tonumber(node.handler or node.callback) or 0
     out.families[descriptor] = (out.families[descriptor] or 0) + 1
@@ -75,6 +82,24 @@ function ModelParity.auditModel(model, fragment, sourceBase, options)
         ("callback 0x%X must use following source geometry, got %s")
           :format(node.commandOffset or 0, tostring(node.phase5Geometry)),
         { site = node.commandOffset, descriptor = descriptor })
+    end
+    if descriptor == 0x81000048 then
+      local arg = tonumber(node.argOffset or node.arg)
+      for index = 0, 1 do
+        local pointer = arg and u32be(fragment, arg + index * 4) or nil
+        local offset = pointer and pointer - sourceBase or -1
+        if offset < 0 or offset + 0x800 > #fragment then
+          local key = tostring(pointer)
+          if not truncatedCallbackTextures[key] then
+            truncatedCallbackTextures[key] = true
+            issue(out, "error", "CALLBACK_TEXTURE_PAYLOAD_TRUNCATED",
+              ("dual-texture callback pointer %08X needs 0x800 bytes at 0x%X, fragment ends at 0x%X")
+                :format(pointer or 0, math.max(0, offset), #fragment),
+              { site = node.commandOffset, descriptor = descriptor,
+                pointer = pointer, missingBytes = math.max(0, offset + 0x800 - #fragment) })
+          end
+        end
+      end
     end
   end
   for _, texture in ipairs(model.handlerTextures or {}) do

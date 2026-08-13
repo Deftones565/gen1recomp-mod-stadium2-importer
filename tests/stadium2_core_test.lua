@@ -34,8 +34,12 @@ ok(Extract.unownLetter(254)=="B" and Extract.unownLetter(278)=="Z",
 ok(Cache.unownPath("B","normal")=="stadium2_importer/battle/unown_b.dsm"
   and Cache.unownPath("Z","shiny")=="stadium2_importer/battle/unown_z_shiny.dsm",
   "normal and shiny Unown form packs have stable cache paths")
-ok(Cache.FORMAT=="S2IMP27",
-  "vertex and texture semantics fixes invalidate older extracted model packs")
+ok(Cache.FORMAT=="S2IMP28",
+  "runtime model-plus-pose textures invalidate older extracted model packs")
+ok(Extract.runtimeModelFragment("model", {{ decoded = "pose" }}) == "modelpose",
+  "callback extraction preserves the ROM's contiguous model-plus-pose image")
+ok(Extract.runtimeModelFragment("model", {}) == "model",
+  "models without a decoded pose retain their original runtime image")
 ok(Pack.validSpecies(254) and Pack.validSpecies(278)
   and not Pack.validSpecies(252) and not Pack.validSpecies(279),
   "DSM parser accepts exactly the Stadium 2 Unown form record range")

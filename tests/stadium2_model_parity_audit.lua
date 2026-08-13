@@ -57,14 +57,15 @@ for dex = 1, 251 do
           counts = { error = 1, warning = 0 }, rules = { FRAGMENT_INFO_FAILED = 1 }, families = {},
         }
       else
+        local runtimeDecoded = Extract.runtimeFragmentForSpecies(data, dex, decoded)
         Fragment.setBase(info.sourceBase)
-        local model, modelErr = Fragment.extract(decoded, ("dex_%03d"):format(dex))
+        local model, modelErr = Fragment.extract(runtimeDecoded, ("dex_%03d"):format(dex))
         if model then
           local anims, aux, animationErrors = Extract.animationBankForSpecies(data, dex, model.bones)
           if anims and #anims > 0 then model.anims = anims end
           if aux and #aux > 0 then model.auxAnims = aux end
           model.animationAuditErrors = animationErrors
-          reports[#reports + 1] = Parity.auditModel(model, decoded, info.sourceBase, { species = dex })
+          reports[#reports + 1] = Parity.auditModel(model, runtimeDecoded, info.sourceBase, { species = dex })
         else
           reports[#reports + 1] = {
             species = dex,

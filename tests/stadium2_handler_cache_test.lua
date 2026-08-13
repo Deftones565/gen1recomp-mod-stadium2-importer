@@ -159,8 +159,8 @@ local slimeRecords = Handlers.compile({
 }, fragment, 0x8FF00000)
 local slimePack = "DSM4slime" .. Handlers.packExtension(slimeRecords,
   0x8FF00000, fragment, { handlerTextures = {
-    -- A deduplicated texture cache represents both source tiles with one
-    -- image slot. This is the material layout used by Grimer.
+    -- A deduplicated texture cache can represent two source tiles with one
+    -- image slot when their complete source payload is identical.
     { commandOffset = 0xF0, pointer = 0x8FF00040, slot = 9,
       w = 32, h = 32, format = 0, size = 2 },
   } })
@@ -173,6 +173,16 @@ ok(slimeState.textureSetBySite[0xF0]
     and slimeState.textureSetBySite[0xF0][1] == 10
     and slimeState.textureSetBySite[0xF0][2] == 10,
   "deduplicated slime texture still resolves both scrolling material tiles")
+ok(slimeState.textureSetBySite[0xF0].tileOrigins[1][1] == 0
+    and slimeState.textureSetBySite[0xF0].tileOrigins[2][2] == 0
+    and slimeState.textureSetBySite[0xF0].wrap == "repeat"
+    and slimeState.textureSetBySite[0xF0].combineMode == "lerp-then-shade",
+  "dual-texture runtime retains ROM tile, sampler, and combiner state")
+ok(slimeState.materialBySite[0xF0]
+    and slimeState.materialBySite[0xF0].primitiveColor[1] == 1
+    and slimeState.materialBySite[0xF0].environmentColor[4] == 1
+    and slimeState.materialBySite[0xF0].combine[1] == 0,
+  "dual-texture callback replaces inherited primitive/environment material")
 
 local grimer = Handlers.compile({
   { handler = 0x81000050, bone = 2, arg = 0x40, commandOffset = 0xFC },

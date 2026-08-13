@@ -5,6 +5,7 @@ local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object
 local EffectRenderer = require("mods.STADIUM2_IMPORTER.lib.effect_renderer")
 local Sampler = require("mods.STADIUM2_IMPORTER.lib.sampler")
 local RenderContract = require("mods.STADIUM2_IMPORTER.lib.render_contract")
+local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
 
 local Renderer = {}
 Renderer.__index = Renderer
@@ -585,6 +586,9 @@ function Renderer:handlerValues()
     sourceFrame = self.frame,
     frame = self.frame,
     textureFrame = self.frame,
+    -- func_81005B50 reads a global display-frame counter, not the model's
+    -- looping animation frame. Keep this material moving across anim loops.
+    materialFrame = math.floor(self.time * 60),
     time = self.time,
     randomSeed = self.randomSeed,
     modelContext = self,
@@ -792,29 +796,19 @@ local function callbackRecord(model, site)
   end
 end
 
-local function uniformTexture(model, index)
-  local texture = model and model.textures and model.textures[index]
-  local rgba = texture and texture.rgba
-  if type(rgba) ~= "string" or #rgba < 4 then return false end
-  local first = rgba:sub(1, 4)
-  for pixel = 5, #rgba, 4 do
-    if rgba:sub(pixel, pixel + 3) ~= first then return false end
-  end
-  return true
-end
-
 function Renderer:callbackOwnsTexture(prim)
   if not prim or not prim.callbackOffset then return false end
   if prim.callbackTextureRequired then return true end
   local record = callbackRecord(self.model, prim.callbackOffset)
   if not record then return false end
   if record.descriptor == 0x81000050 then return true end
-  -- The dual-texture slime builder is attached above mixed geometry. Uniform
-  -- fill inputs are its body surfaces; authored eye/mouth/detail atlases at
-  -- the same site retain their own texture and material.
-  local authored = Pack.textureIndex(self.model, prim, self.animIndex, self.frame,
-    self.auxIndex, self.handlerRuntime and self.handlerRuntime.callbackFrame)
-  return record.descriptor == 0x81000048 and uniformTexture(self.model, authored)
+  if record.descriptor == DualTexture.DESCRIPTOR then
+    -- Command 0x08 decorates the complete preceding draw. Its generated
+    -- material replaces body inputs; alpha face decals establish a local
+    -- authored material and remain outside the callback.
+    return DualTexture.ownsPrimitive(prim, record.descriptor)
+  end
+  return false
 end
 
 function Renderer:callbackUsesMaterialFx(prim)
@@ -824,7 +818,7 @@ function Renderer:callbackUsesMaterialFx(prim)
   -- The slime builder's second scrolling layer affects body surfaces even
   -- when their authored primary texture contains detail. Alpha eye/mouth
   -- decals remain outside the body material.
-  return record ~= nil and record.descriptor == 0x81000048
+  return record ~= nil and record.descriptor == DualTexture.DESCRIPTOR
 end
 
 function Renderer:currentTexture(prim)
@@ -1110,6 +1104,9 @@ function Renderer:drawScene(pass, model, options)
           and site and sets and sets[site] or nil
         local secondary = set and Pack.image(self.model, set[2]) or nil
         if secondary then
+          if secondary.setWrap and set.wrap then
+            pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
+          end
           pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
           local sw, sh = imageDimensions(secondary,self.model.textures[set[2]])
           pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
@@ -1129,6 +1126,7 @@ function Renderer:drawScene(pass, model, options)
           if texture.setWrap then
             local wrapS, wrapT = Sampler.wrap(part.prim.sampler)
             if material then wrapS, wrapT = material.wrapS or wrapS, material.wrapT or wrapT end
+            if set and set.wrap then wrapS, wrapT = set.wrap, set.wrap end
             pcall(texture.setWrap, texture, wrapS, wrapT)
           end
           local tw, th = imageDimensions(texture,
@@ -1282,6 +1280,9 @@ function Renderer:renderToCanvas(width, height, options)
               and site and sets and sets[site] or nil
             local secondary = set and Pack.image(model, set[2]) or nil
             if secondary then
+              if secondary.setWrap and set.wrap then
+                pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
+              end
               pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
               local sw,sh=imageDimensions(secondary,model.textures[set[2]])
               pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
@@ -1314,6 +1315,10 @@ function Renderer:renderToCanvas(width, height, options)
           if texture and texture.setWrap then
             local wrapS,wrapT=Sampler.wrap(part.prim.sampler)
             if material then wrapS,wrapT=material.wrapS or wrapS,material.wrapT or wrapT end
+            local wrapSets=self.handlerState and self.handlerState.textureSetBySite
+            local wrapSet=self:callbackUsesMaterialFx(part.prim)
+              and site and wrapSets and wrapSets[site] or nil
+            if wrapSet and wrapSet.wrap then wrapS,wrapT=wrapSet.wrap,wrapSet.wrap end
             pcall(texture.setWrap,texture,wrapS,wrapT)
           end
           if texture and part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end

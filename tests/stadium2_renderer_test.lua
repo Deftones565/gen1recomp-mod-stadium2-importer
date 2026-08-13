@@ -164,8 +164,8 @@ ok(rig:currentTexture(model.prims[1]) == 2, "authored texture survives site call
 local savedHandlers = model.handlers
 model.handlers = { records = {{ commandOffset = 0x44, descriptor = 0x81000048 }} }
 model.textures[2].rgba = "\255\0\0\255\0\255\0\255\0\0\255\255\255\255\255\255"
-ok(rig:currentTexture(model.prims[1]) == 2,
-  "dual-texture material builder preserves a detailed authored atlas")
+ok(rig:currentTexture(model.prims[1]) == 3,
+  "dual-texture material builder replaces every non-decal owned body input")
 model.textures[2].rgba = string.rep("\255\255\255\255", 4)
 ok(rig:currentTexture(model.prims[1]) == 3,
   "dual-texture material builder replaces a uniform body fill")
@@ -175,6 +175,8 @@ ok(rig:callbackUsesMaterialFx(model.prims[1]),
 model.prims[1].decal = true
 ok(not rig:callbackUsesMaterialFx(model.prims[1]),
   "dual-texture material FX does not cover an alpha face decal")
+ok(rig:currentTexture(model.prims[1]) == 2,
+  "dual-texture material builder preserves an alpha face decal texture")
 model.prims[1].decal = nil
 model.handlers.records[1].descriptor = 0x81000050
 ok(rig:currentTexture(model.prims[1]) == 3,

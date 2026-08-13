@@ -1,6 +1,7 @@
 local Registry = require("mods.STADIUM2_IMPORTER.lib.handler_registry")
 local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
 local Phase5Geometry = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.phase5_geometry")
+local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
 local Handlers = {}
 
 -- Compatibility exports.  New code should require handler_registry directly.
@@ -277,11 +278,12 @@ function Handlers.evaluate(record, phase, runtime)
     else
       result.textureFrame = callbackFrame % 8
     end
-    result.dualTexture = record.descriptor == 0x81000048
-    result.textureScroll = result.dualTexture and {
-      { -callbackFrame / 32, callbackFrame / 32 },
-      { -callbackFrame / 16, callbackFrame / 16 },
-    } or nil
+    result.dualTexture = record.descriptor == DualTexture.DESCRIPTOR
+    if result.dualTexture then
+      result.materialFx = DualTexture.state(runtime.materialFrame
+        or runtime.callbackFrame or callbackFrame)
+      result.textureScroll = result.materialFx.textureScroll
+    end
     result.materialPointer = record.argAddress
   elseif record.family == "dynamic-object-renderer" then
     result.emitterPointer = record.argAddress
@@ -468,9 +470,15 @@ function Handlers.run(records, phase, runtime, state)
               local first = textures[1].slot + 1
               local second = textures[2] and textures[2].slot + 1 or first
               state.textureBySite[key] = first
+              state.materialBySite[key] = result.materialFx.material
               state.textureSetBySite[key] = {
                 first, second,
-                scroll = result.textureScroll, mix = 100 / 255,
+                scroll = result.textureScroll,
+                tileOrigins = result.materialFx.tileOrigins,
+                mix = result.materialFx.mix,
+                wrap = result.materialFx.wrap,
+                combine = result.materialFx.combine,
+                combineMode = result.materialFx.combineMode,
               }
             else
               state.textureBySite[key] = textures[(result.textureFrame or 0) % #textures + 1].slot + 1

@@ -47,7 +47,7 @@ Unown A is species 201 in the ordinary normal/shiny directories. Stadium 2
 model and pose records 254 through 278 supply Unown B through Z, so the cache
 contains all 26 forms in both normal and shiny variants.
 
-The cache marker format is `S2IMP27`. Shiny packs use Stadium 2's per-species
+The cache marker format is `S2IMP28`. Shiny packs use Stadium 2's per-species
 HSL metadata, while Clefairy, Clefable, Jigglypuff, Wigglytuff, Gyarados,
 Noctowl, Cleffa, and Igglybuff use the ROM's dedicated native-format rare-texture
 archive, preserving each source texture's N64 bit depth. Translucent model-local FX are kept out of the HSL pass. Model packs use the `DSM4` magic and
@@ -100,8 +100,15 @@ alignment. It audits all 251 species by default or a focused shared-code list:
 STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_model_parity_audit.lua --report
 STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_model_parity_audit.lua --species=181,200,238,245 --report
 STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_dsm4_roundtrip_audit.lua
+STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_dual_texture_material_audit.lua
 love tests/stadium2_shader_audit
 ```
+
+The dual-texture material audit disassembles the `0x81000048` ROM family
+contract and compares its allocation, texture pointers, tile scroll math,
+repeat sampler, two-cycle combiner, callback ownership, and complete source
+payloads against every family consumer. A valid route with substituted or
+truncated pixels is a parity failure.
 
 Omit `--report` in CI to return a failing status while semantic losses remain.
 Misdreavus additionally locks its ASM-derived reference topology and six

@@ -29,6 +29,12 @@ local textureHandlers = { [0x81000038] = true, [0x81000048] = true, [0x81000050]
   [0x81000068] = true, [0x81000070] = true }
 local failures = {}
 local function fail(text) failures[#failures + 1] = text end
+local reportedMaterialPayload = {}
+local reportedMaterialRoute = {}
+local function u32be(bytes, offset)
+  local a, b, c, d = bytes:byte(offset + 1, offset + 4)
+  return d and ((a * 256 + b) * 256 + c) * 256 + d or nil
+end
 
 if not RenderContract.supportsCoplanarDecals() then
   fail("model depth contract lacks strict body occlusion plus non-writing eye/face decals")
@@ -45,8 +51,9 @@ for dex = 1, 251 do
     if not info then
       fail(("dex %03d fragment: %s"):format(dex, tostring(infoErr)))
     else
+      local runtimeDecoded = Extract.runtimeFragmentForSpecies(data, dex, decoded)
       Fragment.setBase(info.sourceBase)
-      local model, modelErr = Fragment.extract(decoded, ("dex_%03d"):format(dex))
+      local model, modelErr = Fragment.extract(runtimeDecoded, ("dex_%03d"):format(dex))
       if not model then
         fail(("dex %03d extract: %s"):format(dex, tostring(modelErr)))
       else
@@ -55,11 +62,11 @@ for dex = 1, 251 do
         for _, prim in ipairs(model.prims or {}) do
           if prim.callbackOffset then callbackConsumers[prim.callbackOffset] = true end
         end
-        local records = Handlers.compile(model.fx, decoded, info.sourceBase)
+        local records = Handlers.compile(model.fx, runtimeDecoded, info.sourceBase)
         callbacks = callbacks + #records
         for _, row in ipairs(records) do descriptors[row.descriptor] = true end
         local extension = Handlers.readExtension("DSM4audit"
-          .. Handlers.packExtension(records, info.sourceBase, decoded,
+          .. Handlers.packExtension(records, info.sourceBase, runtimeDecoded,
             { prims = model.prims, handlerTextures = model.handlerTextures }))
         if not extension or extension.version ~= 4 then
           fail(("dex %03d S2HX v4 roundtrip"):format(dex))
@@ -68,7 +75,7 @@ for dex = 1, 251 do
             species = dex, sourceFrame = 0, geometryIndex = 0,
           }, {})) or {}
           local materialState = select(1, Handlers.runExtension(extension, 2, {
-            species = dex, sourceFrame = 0, callbackFrame = 0,
+            species = dex, sourceFrame = 0, materialFrame = 37,
           }, {})) or {}
           for _, row in ipairs(extension.records) do
             if not row.program or not row.program.complete then
@@ -123,11 +130,44 @@ for dex = 1, 251 do
               materialFxCallbacks = materialFxCallbacks + 1
               local set = materialState.textureSetBySite
                 and materialState.textureSetBySite[row.commandOffset]
-              if set and set[1] and set[2] and set.scroll then
+              local callbackMaterial = materialState.materialBySite
+                and materialState.materialBySite[row.commandOffset]
+              local first = row.argOffset and u32be(runtimeDecoded, row.argOffset)
+              local second = row.argOffset and u32be(runtimeDecoded, row.argOffset + 4)
+              local expectedTextures = first == second and 1 or 2
+              local payloadComplete = #(row.program and row.program.textures or {})
+                == expectedTextures
+              if not payloadComplete then
+                local key = ("%03d:%08X:%08X"):format(dex, first or 0, second or 0)
+                if not reportedMaterialPayload[key] then
+                  reportedMaterialPayload[key] = true
+                  fail(("dex %03d slime callbacks cache %d/%d ROM texture payloads for %08X/%08X")
+                    :format(dex, #(row.program and row.program.textures or {}),
+                      expectedTextures, first or 0, second or 0))
+                end
+              end
+              if payloadComplete and set and set[1] and set[2] and set.scroll
+                  and set.wrap == "repeat" and set.combineMode == "lerp-then-shade"
+                  and set.combine and set.combine[1] == 0x262A04
+                  and set.combine[2] == 0x1F1893FF
+                  and set.tileOrigins and set.tileOrigins[1][1] == 4059
+                  and set.tileOrigins[1][2] == 37
+                  and set.tileOrigins[2][1] == 37
+                  and set.tileOrigins[2][2] == 74
+                  and callbackMaterial and callbackMaterial.primitiveColor
+                  and callbackMaterial.primitiveColor[1] == 1
+                  and callbackMaterial.environmentColor
+                  and callbackMaterial.environmentColor[4] == 1
+                  and callbackMaterial.combine and callbackMaterial.combine[1] == 0
+                  and callbackMaterial.combine[2] == 0 then
                 materialFxResolved = materialFxResolved + 1
               else
-                fail(("dex %03d slime callback %08X has no complete two-layer material FX route")
-                  :format(dex, row.descriptor or 0))
+                local key = ("%03d:%08X:%08X"):format(dex, first or 0, second or 0)
+                if not reportedMaterialRoute[key] then
+                  reportedMaterialRoute[key] = true
+                  fail(("dex %03d slime family has no complete ROM two-layer material FX route for %08X/%08X")
+                    :format(dex, first or 0, second or 0))
+                end
               end
             end
           end

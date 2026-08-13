@@ -682,6 +682,17 @@ local function poseSourcesForRecord(data, record, dependencies, label)
   return collectPosePayload(payload, dependencies, label, 0)
 end
 
+-- Stadium 2 installs a model fragment immediately before the active raw pose
+-- payload.  Render callbacks use absolute 0x8FF..... pointers and may legally
+-- read across that boundary (Grimer's animated slime maps do this).  Preserve
+-- that runtime address space while parsing/caching callback-owned textures.
+local function runtimeModelFragment(decoded, poseSources)
+  local pose = poseSources and poseSources[1]
+  local tail = pose and pose.decoded
+  if type(decoded) ~= "string" or type(tail) ~= "string" then return decoded end
+  return decoded .. tail
+end
+
 local function appendSource(bucket, species, source)
   local list = bucket[species]
   if not list then list = {}; bucket[species] = list end
@@ -1013,13 +1024,14 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
       self.specialWorker=coroutine.create(function()
         local decoded,infoOrErr=decompressedFragment(data,source.record,StadiumRom)
         if not decoded then return nil,infoOrErr end
+        local runtimeDecoded=runtimeModelFragment(decoded,special.animations)
         local parser=fragmentParser(infoOrErr.sourceBase)
-        local model,extractErr=parser.extract(decoded,"stadium2_"..special.name..".bin")
+        local model,extractErr=parser.extract(runtimeDecoded,"stadium2_"..special.name..".bin")
         if not model then return nil,extractErr end
         model.species=special.record
-        model.handlerOps=Handlers.compile(model.fx,decoded,infoOrErr.sourceBase)
+        model.handlerOps=Handlers.compile(model.fx,runtimeDecoded,infoOrErr.sourceBase)
         model.handlerSourceBase=infoOrErr.sourceBase
-        model.handlerFragment=decoded
+        model.handlerFragment=runtimeDecoded
         local drawable,drawableErr=normaliseDrawableModel(model,
           special.record,dependencies.Fx)
         if not drawable then return nil,drawableErr end
@@ -1071,14 +1083,17 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
       local decoded, infoOrErr = decompressedFragment(data, modelSource.record,
         StadiumRom)
       if not decoded then return nil, infoOrErr end
+      local runtimeDecoded = runtimeModelFragment(decoded,
+        self.animationSources[species])
       local parser = fragmentParser(infoOrErr.sourceBase)
-      local model, extractErr = parser.extract(decoded,
+      local model, extractErr = parser.extract(runtimeDecoded,
         ("stadium2_model_%d.bin"):format(species))
       if not model then return nil, extractErr end
       model.species = species
-      model.handlerOps = Handlers.compile(model.fx, decoded, infoOrErr.sourceBase)
+      model.handlerOps = Handlers.compile(model.fx, runtimeDecoded,
+        infoOrErr.sourceBase)
       model.handlerSourceBase = infoOrErr.sourceBase
-      model.handlerFragment = decoded
+      model.handlerFragment = runtimeDecoded
       local drawable, drawableErr = normaliseDrawableModel(model, species, Fx)
       if not drawable then return nil, drawableErr end
       coroutine.yield("model")
@@ -1198,6 +1213,21 @@ function Extract.animationBankForSpecies(data, species, bones)
   for _, value in ipairs(decodeErrors or {}) do errors[#errors + 1] = value end
   return anims, aux, errors, stats
 end
+
+-- Audit/inspection entry point for recreating the same contiguous model+pose
+-- memory image used by the importer and by the original game.
+function Extract.runtimeFragmentForSpecies(data, species, decoded)
+  species = math.floor(tonumber(species) or 0)
+  local archive = archiveAt(data, POSE_TABLE_START)
+  local record = archive and archive.records and archive.records[species + 1]
+  if not record then return decoded, { "missing pose-table record" } end
+  local label = ("pose-table=0x%X species=%d file=%d")
+    :format(POSE_TABLE_START, species, species)
+  local sources, errors = poseSourcesForRecord(data, record, { StadiumRom = Rom }, label)
+  return runtimeModelFragment(decoded, sources), errors, sources
+end
+
+Extract.runtimeModelFragment = runtimeModelFragment
 
 Extract.fragmentInfo = fragmentInfo
 Extract.fragmentSpecies = fragmentSpecies

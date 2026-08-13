@@ -36,4 +36,20 @@ The root function code also establishes distinct lifecycle phases. `func_810033D
 
 The 0.3.6 call-graph audit reached 39 fragment26 functions and 17 external runtime targets. The model-handler roots can now be separated into verified operation families. `0x81000080` is a phase-0 model-context registration hook. `0x81000058` and `0x81000060` are inverse phase-2 visibility gates. The common predicate is `selector == arg[0]` and `arg[2] <= ((global+0x48 >> 16) & 0xFFFF) <= arg[4]`; `0x81000058` writes bit 0 to the predicate result and `0x81000060` writes the inverse. `0x81000030` and `0x81000040` allocate and build display-list wrappers. `0x81000038`, `0x81000048`, `0x81000050`, and `0x81000068` build dynamic N64 material/display-list state. `0x81000070` reaches the libultra `random`, `mtxxfmf`, and `mtxcatl` paths and is classified as a randomized transform emitter. `0x81000140` is a phase-5 render-time geometry pipeline; its `func_81001F14` path selects texels through the callback item's image config and `func_810024E0` supplies optional primitive/environment colors. These resources are decoded by `lib/render_callbacks/phase5_geometry.lua` and applied through renderer state for every member of the callback family. `0x81000078` and `0x81000088` remain only partially classified as an attribute transform and a runtime-dispatch bridge.
 
+`0x81000048 -> func_81005DB4 -> func_81005B50` is now behavior-audited rather
+than treated as a generic dual-texture route. It allocates `0xF0` bytes, loads
+two 32x32 RGBA16 images from `arg[0]` and `arg[1]`, uses repeat masks of five,
+and derives tile origins `(-frame,+frame)` and `(+frame,+2*frame)` in 10.2
+units from global display counter `0x80094904`. Static list `0x810061B0` uses
+combine words `FC262A04 1F1893FF`: cycle one lerps TEXEL0/TEXEL1 with
+environment alpha `100/255`, then cycle two applies SHADE. The callback owns
+all non-decal primitives in its preceding draw; local alpha face decals retain
+their authored material. Grimer's `arg[1]=0x8FF11120` requests bytes through
+offset `0x11920`, while its Yay0 model output ends at `0x11630`. The missing
+`0x2F0` bytes are the beginning of the active raw pose payload: Stadium 2 lays
+that payload immediately after the model in the `0x8FF00000` runtime image.
+The importer and parity audits now recreate that contiguous model-plus-pose
+layout before extracting callback textures, instead of padding or substituting
+tile zero.
+
 `lib/model_handlers.lua` compiles these families into a portable `S2HX` trailer on every generated `DSM4` pack. DSM4 owns lossless core mesh semantics—geometry mode, vertex RGBA/normal interpretation, callback targeting, and sampler state—while the extension retains callback programs and decoded FRAGMENT data. Callback ownership and implementation live in the declarative handler registry and family modules. Pose records are aligned with model-local auxiliary streams by authored order and duration in `animation_routing.lua`.
