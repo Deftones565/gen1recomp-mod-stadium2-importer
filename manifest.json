@@ -13,7 +13,7 @@
   "permissions": [
     "engine_internals"
   ],
-  "game_version": ">=0.0.0-0 <2.0.0",
+  "game_version": ">=0.1.86 <1.0.0",
   "priority": 105,
   "dependencies": [],
   "optional_dependencies": [],
