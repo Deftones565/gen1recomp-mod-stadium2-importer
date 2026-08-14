@@ -1,0 +1,23 @@
+# Never commit or publish user-provided ROM dumps.
+/baseroms/**
+
+# Cartridge and disc image formats (case-insensitive via bracket patterns).
+*.[gG][bB]
+*.[gG][bB][cC]
+*.[gG][bB][aA]
+*.[nN][dD][sS]
+*.[3][dD][sS]
+*.[cC][iI][aA]
+*.[rR][oO][mM]
+*.[zZ][6][4]
+*.[vV][6][4]
+*.[nN][6][4]
+*.[bB][iI][nN]
+*.[iI][sS][oO]
+
+# Legacy picker names and archives that could conceal ROM payloads.
+picked_rom.*
+picked_stadium2.*
+*.[zZ][iI][pP]
+*.[7][zZ]
+*.[rR][aA][rR]
