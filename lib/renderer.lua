@@ -209,6 +209,87 @@ void effect() {
 #endif
 ]]
 
+-- Android uses the simpler Stadium lighting path from v0.10.7. Keep the
+-- current material contract (billboards, generated UVs, dual textures and
+-- effect intensity), but avoid the procedural Manga work, manual 3-point
+-- filtering and packed model self-shadow sampling that are fragile on GLES.
+local MOBILE_SHADER = [[
+#define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
+varying STADIUM_FLOAT vec3 vNormal;
+varying STADIUM_FLOAT vec2 vGeneratedUV;
+#ifdef VERTEX
+uniform mat4 mvp;
+uniform mat4 viewMatrix;
+uniform mat3 normalMatrix;
+uniform vec2 textureGenScale;
+uniform float billboardEnabled;
+uniform vec3 billboardCenter;
+uniform vec3 billboardRight;
+uniform vec3 billboardUp;
+uniform vec2 billboardSize;
+uniform float decalDepthBias;
+attribute vec3 VertexNormal;
+vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  if (billboardEnabled > 0.5) {
+    vertex_position.xyz = billboardCenter
+      + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
+      + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
+  }
+  vNormal=normalize(normalMatrix*VertexNormal);
+  vec3 eyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
+  vGeneratedUV=(eyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
+  vec4 clip=mvp*vertex_position;
+  clip.z-=decalDepthBias*clip.w;
+  return clip;
+}
+#endif
+#ifdef PIXEL
+uniform Image MainTex;
+uniform vec4 primitiveColor;
+uniform vec4 environmentColor;
+uniform float environmentMix;
+uniform Image secondaryTexture;
+uniform float secondaryEnabled;
+uniform float secondaryMix;
+uniform vec4 textureScroll;
+uniform float alphaCutoff;
+uniform vec4 sceneTint;
+uniform float flashAmount;
+uniform float effectIntensityMode;
+uniform float lightingEnabled;
+uniform float textureGenEnabled;
+uniform vec2 textureCoordinateScale;
+void effect() {
+  vec4 color=VaryingColor;
+  STADIUM_FLOAT vec2 uv=mix(VaryingTexCoord.st*textureCoordinateScale,
+    vGeneratedUV,textureGenEnabled);
+  vec4 texel=Texel(MainTex,uv+textureScroll.xy);
+  if (secondaryEnabled > 0.5) {
+    vec4 other=Texel(secondaryTexture,uv+textureScroll.zw);
+    texel=mix(texel,other,secondaryMix);
+  }
+  if (effectIntensityMode > 0.5) {
+    float intensity=texel.r;
+    float gasAlpha=intensity*primitiveColor.a*color.a*sceneTint.a;
+    if (gasAlpha <= alphaCutoff) discard;
+    vec3 gasColor=mix(environmentColor.rgb,primitiveColor.rgb,intensity);
+    love_PixelColor=vec4(gasColor*color.rgb*sceneTint.rgb,gasAlpha);
+    return;
+  }
+  texel*=color*primitiveColor;
+  if (texel.a <= alphaCutoff) discard;
+  vec3 n=normalize(vNormal);
+  float stadiumShade=clamp(0.7725+n.x*0.06+n.y*0.225+n.z*0.11,0.30,1.0);
+  vec3 combined=mix(texel.rgb,texel.rgb*environmentColor.rgb,environmentMix);
+  vec3 lighting=mix(vec3(1.0),vec3(stadiumShade),lightingEnabled);
+  vec3 shaded=combined*lighting*sceneTint.rgb;
+  shaded=mix(shaded,vec3(1.0),flashAmount);
+  love_PixelColor=vec4(shaded,
+    texel.a*mix(1.0,environmentColor.a,environmentMix)*sceneTint.a);
+}
+#endif
+]]
+
 local SHADOW_SHADER = [[
 varying float vDepth;
 #ifdef VERTEX
@@ -274,6 +355,7 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords) {
 ]]
 
 Renderer.SHADER_SOURCE = SHADER
+Renderer.MOBILE_SHADER_SOURCE = MOBILE_SHADER
 Renderer.CAMERA_SHADER_SOURCE = CAMERA_SHADER
 
 function Renderer.shaderSource(forceMediump)
@@ -288,6 +370,16 @@ function Renderer.compileShaderAudit(forceMediump)
   end
   local ok, shader = pcall(love.graphics.newShader,
     Renderer.shaderSource(forceMediump))
+  if not ok or not shader then return false, tostring(shader) end
+  if shader.release then pcall(shader.release, shader) end
+  return true
+end
+
+function Renderer.compileMobileShaderAudit()
+  if not (love and love.graphics and love.graphics.newShader) then
+    return false, "LÖVE shader compiler unavailable"
+  end
+  local ok, shader = pcall(love.graphics.newShader, MOBILE_SHADER)
   if not ok or not shader then return false, tostring(shader) end
   if shader.release then pcall(shader.release, shader) end
   return true
@@ -657,14 +749,42 @@ function Renderer.shouldBoundTextureUV(options)
   return false
 end
 
-function Renderer.isMobileGraphics()
+local function graphicsRendererLabel()
   if not (love and love.graphics and love.graphics.getRendererInfo) then return false end
   local ok,name,version,vendor,device=pcall(love.graphics.getRendererInfo)
   if not ok then return false end
-  local label=table.concat({tostring(name or ""),tostring(version or ""),
+  return table.concat({tostring(name or ""),tostring(version or ""),
     tostring(vendor or ""),tostring(device or "")}," "):lower()
+end
+
+function Renderer.isAndroidGraphics()
+  local label=graphicsRendererLabel()
+  if not label then return false end
+  -- The sandbox does not expose love.system. Android is the GLES target used
+  -- by the engine; Metal remains on the full shader for desktop Macs.
+  return label:find("opengl es",1,true)~=nil or label:find("gles",1,true)~=nil
+end
+
+function Renderer.isMobileGraphics()
+  local label=graphicsRendererLabel()
+  if not label then return false end
   return label:find("opengl es",1,true)~=nil or label:find("gles",1,true)~=nil
     or label:find("metal",1,true)~=nil
+end
+
+function Renderer.shouldUseSimpleMobileShader(options)
+  if type(options)=="table" and options.simpleMobileShader~=nil then
+    return options.simpleMobileShader==true
+  end
+  return Renderer.isAndroidGraphics()
+end
+
+function Renderer.activeShaderSource(options)
+  options=type(options)=="table" and options or {}
+  if Renderer.shouldUseSimpleMobileShader(options) then
+    return MOBILE_SHADER,"mobile-simple"
+  end
+  return Renderer.shaderSource(options.forceMediumpShader==true),"lit"
 end
 
 function Renderer.shouldReceiveModelSunShadows(options)
@@ -719,11 +839,10 @@ function Renderer.new(model, options)
     self.parts[i] = { prim = prim, mesh = mesh, rows = rows, visible = {}, used = used }
   end
   if love and love.graphics and love.graphics.newShader then
-    local forceMediump = options.forceMediumpShader == true
-    local ok, shader = pcall(love.graphics.newShader,
-      Renderer.shaderSource(forceMediump))
+    local shaderSource,shaderTier=Renderer.activeShaderSource(options)
+    local ok, shader = pcall(love.graphics.newShader,shaderSource)
     if ok and shader then
-      self.shader, self.shaderTier = shader, "lit"
+      self.shader, self.shaderTier = shader,shaderTier
     else
       self.shaderError = tostring(shader)
       local fallbackOK, fallback = pcall(love.graphics.newShader, CAMERA_SHADER)

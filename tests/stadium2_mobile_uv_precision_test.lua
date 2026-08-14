@@ -62,11 +62,36 @@ check(Renderer.shouldBoundTextureUV({boundedTextureUV=false}) == false,
 do
   local oldLove = love
   love = {graphics={getRendererInfo=function() return "OpenGL ES","3.2","Qualcomm","Adreno" end}}
+  check(Renderer.isAndroidGraphics() == true,
+    "GLES renderer selects the Android compatibility path")
   check(Renderer.shouldBoundTextureUV({}) == true,
     "mobile GLES automatically enables bounded UV sampling")
   check(Renderer.shouldReceiveModelSunShadows({}) == false,
     "mobile GLES disables unstable packed model self-shadow reception")
+  local source,tier=Renderer.activeShaderSource({})
+  check(source==Renderer.MOBILE_SHADER_SOURCE and tier=="mobile-simple",
+    "Android automatically selects the simple Stadium shader")
   love = oldLove
+end
+do
+  local oldLove=love
+  love={graphics={getRendererInfo=function() return "Metal","3.1","Apple","GPU" end}}
+  local source,tier=Renderer.activeShaderSource({})
+  check(Renderer.isMobileGraphics() and not Renderer.isAndroidGraphics(),
+    "Metal keeps mobile depth safeguards without impersonating Android")
+  check(source==Renderer.SHADER_SOURCE and tier=="lit",
+    "desktop Metal retains the full Stadium and Manga shader")
+  love=oldLove
+end
+do
+  local oldLove=love
+  love={graphics={getRendererInfo=function() return "OpenGL","4.6","NVIDIA","GPU" end}}
+  local source,tier=Renderer.activeShaderSource({})
+  check(source==Renderer.SHADER_SOURCE and tier=="lit",
+    "desktop OpenGL retains the full Stadium and Manga shader")
+  check(Renderer.activeShaderSource({simpleMobileShader=true})==Renderer.MOBILE_SHADER_SOURCE,
+    "simple shader can be forced for compatibility diagnostics")
+  love=oldLove
 end
 check(Renderer.shouldReceiveModelSunShadows({modelSunShadows=true})==true,
   "model self-shadows remain explicitly selectable for diagnostics")
@@ -89,6 +114,15 @@ check(Renderer.shaderSource(true):find("#define STADIUM_FLOAT mediump",1,true)~=
   "test shader can force the GLES2 minimum precision path")
 check(shader:find("clip.z-=decalDepthBias*clip.w",1,true)~=nil,
   "coplanar detail layers have a clip-space depth stabilization path")
+local mobileShader=assert(Renderer.MOBILE_SHADER_SOURCE)
+check(mobileShader:find("stadiumShade=clamp",1,true)~=nil,
+  "Android shader retains v0.10.7 Stadium lighting")
+check(mobileShader:find("paperNoise",1,true)==nil
+    and mobileShader:find("sample3",1,true)==nil
+    and mobileShader:find("sunMap",1,true)==nil,
+  "Android shader omits procedural Manga, manual filtering and model shadow sampling")
+check(mobileShader:find("VaryingTexCoord.st",1,true)~=nil,
+  "Android simple shader retains precision-safe LOVE texture coordinates")
 
 print(("RESULT checks=%d failures=%d"):format(checks, failures))
 if failures > 0 then os.exit(1) end
