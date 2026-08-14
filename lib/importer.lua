@@ -6,6 +6,9 @@ local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
 local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
+local GLB = require("mods.STADIUM2_IMPORTER.lib.glb")
+local GLBLoader = require("mods.STADIUM2_IMPORTER.lib.glb_loader")
+local GLBAssets = require("mods.STADIUM2_IMPORTER.lib.glb_assets")
 
 local Importer = {}
 
@@ -51,6 +54,7 @@ function Importer.bind(mod)
   modRef = mod
   Cache.bind(mod)
   Discovery.bind(mod)
+  GLBAssets.bind(mod)
   return Importer
 end
 
@@ -153,9 +157,20 @@ function Importer.loadModel(species, variant)
     touchModel(key)
     return hit
   end
-  local bytes = Cache.read(species, variant)
-  if not bytes then return nil, "model pack unavailable" end
-  local model, err = Pack.parse(bytes)
+  local glbBytes,glbPath=GLBAssets.readSpecies(species,variant)
+  local model,err
+  if glbBytes then
+    local sourceBytes=Cache.read(species,variant)
+    local sourceModel=sourceBytes and Pack.parse(sourceBytes) or nil
+    model,err=GLBLoader.decode(glbBytes,{variant=variant,species=species,
+      sourceModel=sourceModel})
+    if not model then return nil,("packaged GLB %s: %s"):format(glbPath,tostring(err)) end
+    model.packagedPath=glbPath
+  else
+    local bytes = Cache.read(species, variant)
+    if not bytes then return nil, "model pack unavailable" end
+    model,err=Pack.parse(bytes)
+  end
   if not model then return nil, err end
   model.variant = variant
   modelCache[key] = model
@@ -170,13 +185,40 @@ function Importer.newRenderer(species, variant, options)
   return Renderer.new(model, rendererOptions(options))
 end
 
+-- Return a complete GLB payload. The sandbox deliberately exposes bytes
+-- rather than a host path; callers can hand the payload to an engine export
+-- API, while the repository dump utility writes the same bytes during model
+-- development outside the game.
+function Importer.exportGLB(species, variant, options)
+  local model,err=Importer.loadModel(species,variant)
+  if not model then return nil,err end
+  local exportOptions={}
+  for key,value in pairs(type(options)=="table" and options or {}) do
+    exportOptions[key]=value
+  end
+  if exportOptions.variant==nil then
+    exportOptions.variant=variant=="shiny" and "shiny" or "normal"
+  end
+  return GLB.encode(model,exportOptions)
+end
+
 function Importer.loadSpecial(name)
   local key="special:"..tostring(name)
   local hit=modelCache[key]
   if hit then touchModel(key);return hit end
-  local bytes=Cache.readSpecial(name)
-  if not bytes then return nil,"special battle pack unavailable" end
-  local model,err=Pack.parse(bytes)
+  local glbBytes,glbPath=GLBAssets.readSpecial(name)
+  local model,err
+  if glbBytes then
+    local sourceBytes=Cache.readSpecial(name)
+    local sourceModel=sourceBytes and Pack.parse(sourceBytes) or nil
+    model,err=GLBLoader.decode(glbBytes,{name=name,sourceModel=sourceModel})
+    if not model then return nil,("packaged GLB %s: %s"):format(glbPath,tostring(err)) end
+    model.packagedPath=glbPath
+  else
+    local bytes=Cache.readSpecial(name)
+    if not bytes then return nil,"special battle pack unavailable" end
+    model,err=Pack.parse(bytes)
+  end
   if not model then return nil,err end
   model.variant="normal"
   modelCache[key]=model
@@ -190,6 +232,17 @@ function Importer.newSpecialRenderer(name,options)
   return Renderer.new(model,rendererOptions(options))
 end
 
+function Importer.exportSpecialGLB(name,options)
+  local model,err=Importer.loadSpecial(name)
+  if not model then return nil,err end
+  local exportOptions={}
+  for key,value in pairs(type(options)=="table" and options or {}) do
+    exportOptions[key]=value
+  end
+  if exportOptions.name==nil then exportOptions.name="stadium2_"..tostring(name) end
+  return GLB.encode(model,exportOptions)
+end
+
 function Importer.releaseModels()
   for _, model in pairs(modelCache) do Pack.release(model) end
   modelCache, modelOrder = {}, {}
@@ -197,6 +250,10 @@ end
 
 function Importer.parsePack(bytes)
   return Pack.parse(bytes)
+end
+
+function Importer.loadGLB(bytes,options)
+  return GLBLoader.decode(bytes,options)
 end
 
 function Importer.readHandlers(species, variant)
@@ -362,5 +419,8 @@ Importer.rom = Rom
 Importer.extract = Extract
 Importer.pack = Pack
 Importer.renderer = Renderer
+Importer.glb = GLB
+Importer.glbLoader = GLBLoader
+Importer.glbAssets = GLBAssets
 
 return Importer

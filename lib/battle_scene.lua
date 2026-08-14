@@ -155,7 +155,9 @@ end
 function Scene:modelMatrix(side,actor)
   actor=actor or self.actors[side]
   local metrics=actor.renderer:worldMetrics()
-  local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
+  local requestedHeight=actor.renderer.model and actor.renderer.model.battleDisplayHeight
+  local worldHeight=requestedHeight and clamp(requestedHeight,5,18)
+    or clamp(14*math.sqrt(metrics.height/52.25),5,18)
   local k=worldHeight/metrics.height*actor:scale()*self:picScale(side)
   local p=Stage.positions[side]
   local yaw=side=="player" and math.pi or 0

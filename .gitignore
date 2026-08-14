@@ -22,6 +22,11 @@
 
 # Legacy picker names and archives that could conceal ROM payloads.
 picked_rom.*
+
+# Developer-generated Blender exports and arbitrary drop-test models. Packaged
+# overrides under models/ remain trackable and can ship with the mod.
+/build/
+/build/**/*.[gG][lL][bB]
 picked_stadium2.*
 *.[zZ][iI][pP]
 *.[7][zZ]

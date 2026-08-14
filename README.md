@@ -86,9 +86,86 @@ If import does not start, confirm that:
 
 ## Rendering and compatibility
 
-The same renderer is used by the normal and Watercolor Manga styles on desktop and mobile. It supports animated textures, per-model effects, normal and shiny palettes, alpha materials, additive effects, model and ground shadows, and adaptive graphics fallbacks for mobile GPUs.
+Desktop uses the full Stadium and Watercolor Manga shaders. Android uses the
+simpler Stadium lighting path for stable model detail on GLES hardware. Both
+paths support animated textures, per-model effects, normal and shiny palettes,
+alpha materials, additive effects, and adaptive graphics fallbacks.
 
 Battle animations advance from presentation time, so fast-forward does not alter their intended speed. Changing shader style or enabling models does not require rebuilding the imported packs.
+
+## Blender GLB export
+
+The importer can convert parsed normal, shiny, Substitute, and Unown models to
+glTF 2.0 binary (`.glb`). Each file contains embedded PNG textures, mesh
+primitives, vertex colors, UVs, a standard glTF skin, and all named skeletal
+animation clips. Stadium material, texture-animation, callback, decal,
+billboard, and effect information is retained in `extras.stadium2`; the source
+DSM4 pack is also embedded so Stadium-specific data is not discarded.
+
+For repository development, run the dumper from the Gen1Recomp root:
+
+```text
+luajit mods/STADIUM2_IMPORTER/tests/dump_glb.lua \
+  --rom mods/STADIUM2_IMPORTER/baseroms/stadium2.z64 \
+  --output mods/STADIUM2_IMPORTER/build/glb \
+  --species 25 --variant normal
+```
+
+Omit `--species` to dump the complete bank. Use `--count 251` for Gen 2,
+`--variant normal`, `shiny`, or `both`, and `--validate-only` to encode without
+writing files. Generated files under `build/` are ignored by Git and never
+included in mod releases.
+
+Inside the sandbox, `exportGLB(species, variant, options)` and
+`exportSpecialGLB(name, options)` return the GLB bytes and an export summary.
+They do not attempt unrestricted filesystem access.
+
+### Using edited GLBs in-game
+
+Export the edited model from Blender as a binary glTF (`.glb`) with textures
+embedded, then place it in one of these mod paths:
+
+```text
+models/025-normal.glb
+models/025-shiny.glb
+models/normal/025.glb
+models/shiny/025.glb
+models/substitute.glb
+models/special/substitute.glb
+```
+
+The three-digit number is the Pokédex number. A packaged GLB overrides the
+matching model extracted from the Stadium 2 ROM. If no matching GLB is
+packaged, or no special-model override exists, the importer continues using
+its DSM4 cache normally.
+
+The runtime loader supports embedded PNG images, indexed triangle primitives,
+vertex colors, UVs, normals, four-joint weighted skins, inverse bind matrices,
+and translation, rotation, and scale animation channels. Blender may remove
+the exporter-specific `extras.stadium2` metadata when it writes a GLB; in that
+case the importer restores Stadium callbacks, material routing, and battle
+animation routing from the matching DSM4 cache while keeping the edited GLB's
+geometry, skin, textures, and animations. The Stadium 2 ROM is therefore still
+required for a normal in-game import.
+
+For quick development testing, place any binary GLB in:
+
+```text
+build/glb-drop/
+```
+
+The two-Pokémon visual test uses the first GLB in that directory as the enemy
+model, regardless of its filename. `STADIUM2_VISUAL_GLB=/path/to/model.glb`
+selects a specific file instead. Dropped models can be ordinary static Blender
+objects or skinned animated characters; Stadium-specific extras are optional.
+Images must be embedded in the GLB and mesh primitives must use triangles.
+
+Run the drop-in viewer from the Gen1Recomp root:
+
+```text
+GEN1RECOMP_ROOT=/opt/git/gen1recomp \
+love mods/STADIUM2_IMPORTER/tests/stadium2_koffing_croconaw_visual
+```
 
 ## Integration API
 
@@ -116,8 +193,11 @@ request()
 modelPath(species, variant)
 readPack(species, variant)
 parsePack(bytes)
+loadGLB(bytes, options)
 loadModel(species, variant)
 newRenderer(species, variant, options)
+exportGLB(species, variant, options)
+exportSpecialGLB(name, options)
 releaseModels()
 readHandlers(species, variant)
 handlerInfo(address)

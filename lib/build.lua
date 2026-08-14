@@ -28,6 +28,15 @@ local NONE16 = 0xFFFF
 
 
 local function quatBasis(r)
+  if r[4]~=nil then
+    local x,y,z,w=r[1] or 0,r[2] or 0,r[3] or 0,r[4] or 1
+    local n=math.sqrt(x*x+y*y+z*z+w*w)
+    if n<=0 then x,y,z,w,n=0,0,0,1,1 end
+    x,y,z,w=x/n,y/n,z/n,w/n
+    return {1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)},
+      {2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)},
+      {2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)}
+  end
   local sx, cx = sin(r[1] / 32768 * pi), cos(r[1] / 32768 * pi)
   local sy, cy = sin(r[2] / 32768 * pi), cos(r[2] / 32768 * pi)
   local sz, cz = sin(r[3] / 32768 * pi), cos(r[3] / 32768 * pi)

@@ -77,8 +77,11 @@ return function(mod)
   mod.exports.modelPath = Importer.modelPath
   mod.exports.readPack = Importer.readPack
   mod.exports.parsePack = Importer.parsePack
+  mod.exports.loadGLB = Importer.loadGLB
   mod.exports.loadModel = Importer.loadModel
   mod.exports.newRenderer = Importer.newRenderer
+  mod.exports.exportGLB = Importer.exportGLB
+  mod.exports.exportSpecialGLB = Importer.exportSpecialGLB
   mod.exports.releaseModels = Importer.releaseModels
   mod.exports.readHandlers = Importer.readHandlers
   mod.exports.handlerInfo = Importer.handlerInfo

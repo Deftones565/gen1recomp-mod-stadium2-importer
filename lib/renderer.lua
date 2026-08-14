@@ -505,15 +505,24 @@ local function samplePose(model, animIndex, frame)
     if not anim then return bone.t, bone.r, bone.s end
     local tr = anim.tracks[i]
     if not tr then return bone.t, bone.r, bone.s end
+    local rotation
+    if model.rotationFormat=="quaternion" then
+      rotation={
+        sampleComponent(tr.r[1],frame,bone.r[1]),
+        sampleComponent(tr.r[2],frame,bone.r[2]),
+        sampleComponent(tr.r[3],frame,bone.r[3]),
+        sampleComponent(tr.r[4],frame,bone.r[4]),
+      }
+    else rotation={
+      sampleComponent(tr.r[1], frame, bone.r[1]),
+      sampleComponent(tr.r[2], frame, bone.r[2]),
+      sampleComponent(tr.r[3], frame, bone.r[3]),
+    } end
     return {
       sampleComponent(tr.t[1], frame, bone.t[1]),
       sampleComponent(tr.t[2], frame, bone.t[2]),
       sampleComponent(tr.t[3], frame, bone.t[3]),
-    }, {
-      sampleComponent(tr.r[1], frame, bone.r[1]),
-      sampleComponent(tr.r[2], frame, bone.r[2]),
-      sampleComponent(tr.r[3], frame, bone.r[3]),
-    }, {
+    }, rotation, {
       sampleComponent(tr.s[1], frame, bone.s[1]),
       sampleComponent(tr.s[2], frame, bone.s[2]),
       sampleComponent(tr.s[3], frame, bone.s[3]),
@@ -576,20 +585,30 @@ local function samplePoseInterpolated(model, animIndex, frame, alpha, loop)
     -- Rotation is also one value conceptually: either all three Euler
     -- components blend, or none do.  Shortest-arc wrapping handles the +/-pi
     -- seam; the BREAK_ANGLE guard handles equivalent-Euler re-expression.
-    local rx, ry, rz = angleDelta(ar[1], br[1]), angleDelta(ar[2], br[2]),
-      angleDelta(ar[3], br[3])
-    local rotBlend = alpha
-    if math.abs(rx) > BREAK_ANGLE or math.abs(ry) > BREAK_ANGLE
-        or math.abs(rz) > BREAK_ANGLE then
-      rotBlend = 0
+    local rotation
+    if model.rotationFormat=="quaternion" then
+      local dot=ar[1]*br[1]+ar[2]*br[2]+ar[3]*br[3]+ar[4]*br[4]
+      local bx,by,bz,bw=br[1],br[2],br[3],br[4]
+      if dot<0 then bx,by,bz,bw=-bx,-by,-bz,-bw end
+      local x=lerp(ar[1],bx,alpha)
+      local y=lerp(ar[2],by,alpha)
+      local z=lerp(ar[3],bz,alpha)
+      local w=lerp(ar[4],bw,alpha)
+      local n=math.sqrt(x*x+y*y+z*z+w*w)
+      if n<=0 then rotation={0,0,0,1} else rotation={x/n,y/n,z/n,w/n} end
+    else
+      local rx, ry, rz = angleDelta(ar[1], br[1]), angleDelta(ar[2], br[2]),
+        angleDelta(ar[3], br[3])
+      local rotBlend = alpha
+      if math.abs(rx) > BREAK_ANGLE or math.abs(ry) > BREAK_ANGLE
+          or math.abs(rz) > BREAK_ANGLE then rotBlend = 0 end
+      rotation={ar[1]+rx*rotBlend,ar[2]+ry*rotBlend,ar[3]+rz*rotBlend}
     end
 
     return {
       lerp(at[1], bt[1], moveBlend), lerp(at[2], bt[2], moveBlend),
       lerp(at[3], bt[3], moveBlend),
-    }, {
-      ar[1] + rx * rotBlend, ar[2] + ry * rotBlend, ar[3] + rz * rotBlend,
-    }, {
+    }, rotation, {
       lerp(as[1], bs[1], alpha), lerp(as[2], bs[2], alpha),
       lerp(as[3], bs[3], alpha),
     }
@@ -959,6 +978,33 @@ function Renderer:updateHandlers()
     self:handlerValues(), self.handlerState)
 end
 
+local function skinMatrix(matrix,inverse)
+  if not inverse then return matrix end
+  local out={{0,0,0,0},{0,0,0,0},{0,0,0,0}}
+  for row=1,3 do
+    for col=1,4 do
+      local value=0
+      for k=1,4 do
+        local left=k==4 and matrix[row][4] or matrix[row][k]
+        value=value+left*inverse[k][col]
+      end
+      out[row][col]=value
+    end
+  end
+  return out
+end
+
+local function rootedSkinMatrix(root,matrix)
+  if not root then return matrix end
+  local out={{0,0,0,0},{0,0,0,0},{0,0,0,0}}
+  for row=1,3 do for column=1,4 do
+    local value=column==4 and (root[row][4] or 0) or 0
+    for k=1,3 do value=value+(root[row][k] or 0)*(matrix[k][column] or 0) end
+    out[row][column]=value
+  end end
+  return out
+end
+
 function Renderer:updatePose(force)
   local anim = self.animIndex and self.model.anims[self.animIndex] or nil
   local frame, finished = sourceFrame(anim, self.time, self.loop)
@@ -986,6 +1032,16 @@ function Renderer:updatePose(force)
       for row = 1, 3 do for col = 1, 3 do matrix[row][col] = matrix[row][col] * transform.scale end end
     end
   end
+  -- Callback transforms modify the live joint matrices. Build skin matrices
+  -- afterwards so GLB vertices receive those transforms too.
+  local weightedMatrices
+  if self.model.inverseBindMatrices then
+    weightedMatrices={}
+    for i,matrix in ipairs(mats) do
+      weightedMatrices[i]=rootedSkinMatrix(self.model.skinRootMatrix,
+        skinMatrix(matrix,self.model.inverseBindMatrices[i]))
+    end
+  end
   local root = self.model.rootScale or 1
   self.handlerBoneAnchors = {}
   for key, item in pairs(self.handlerState and self.handlerState.operations or {}) do
@@ -1004,21 +1060,45 @@ function Renderer:updatePose(force)
     local prim, rows = part.prim, part.rows
     for k = 1, prim.nverts do
       local bi = prim.skin[k] + 1
-      local m = mats[bi]
+      local m = weightedMatrices and weightedMatrices[bi] or mats[bi]
       local normalM=pivots and pivots[bi] or m
+      if weightedMatrices then normalM=m end
       local row = rows[k]
       local visible = not (hidden and hidden[prim.skin[k]] == false)
       part.visible[k] = m ~= nil and visible
       if m and visible then
         local x, y, z = prim.pos[k * 3 - 2], prim.pos[k * 3 - 1], prim.pos[k * 3]
-        row[1] = (m[1][1] * x + m[1][2] * y + m[1][3] * z + m[1][4]) * root
-        row[2] = (m[2][1] * x + m[2][2] * y + m[2][3] * z + m[2][4]) * root
-        row[3] = (m[3][1] * x + m[3][2] * y + m[3][3] * z + m[3][4]) * root
         local nx, ny, nz = prim.nrm[k * 3 - 2], prim.nrm[k * 3 - 1], prim.nrm[k * 3]
-        row[6], row[7], row[8] = normalize3(
-          normalM[1][1] * nx + normalM[1][2] * ny + normalM[1][3] * nz,
-          normalM[2][1] * nx + normalM[2][2] * ny + normalM[2][3] * nz,
-          normalM[3][1] * nx + normalM[3][2] * ny + normalM[3][3] * nz)
+        if prim.joints and prim.weights and weightedMatrices then
+          local px,py,pz,nnx,nny,nnz=0,0,0,0,0,0
+          for influence=1,4 do
+            local at=(k-1)*4+influence
+            local weight=prim.weights[at] or 0
+            local joint=(prim.joints[at] or 0)+1
+            local jointMatrix=weightedMatrices[joint]
+            if weight>0 and jointMatrix then
+              px=px+weight*(jointMatrix[1][1]*x+jointMatrix[1][2]*y
+                +jointMatrix[1][3]*z+jointMatrix[1][4])
+              py=py+weight*(jointMatrix[2][1]*x+jointMatrix[2][2]*y
+                +jointMatrix[2][3]*z+jointMatrix[2][4])
+              pz=pz+weight*(jointMatrix[3][1]*x+jointMatrix[3][2]*y
+                +jointMatrix[3][3]*z+jointMatrix[3][4])
+              nnx=nnx+weight*(jointMatrix[1][1]*nx+jointMatrix[1][2]*ny+jointMatrix[1][3]*nz)
+              nny=nny+weight*(jointMatrix[2][1]*nx+jointMatrix[2][2]*ny+jointMatrix[2][3]*nz)
+              nnz=nnz+weight*(jointMatrix[3][1]*nx+jointMatrix[3][2]*ny+jointMatrix[3][3]*nz)
+            end
+          end
+          row[1],row[2],row[3]=px*root,py*root,pz*root
+          row[6],row[7],row[8]=normalize3(nnx,nny,nnz)
+        else
+          row[1] = (m[1][1] * x + m[1][2] * y + m[1][3] * z + m[1][4]) * root
+          row[2] = (m[2][1] * x + m[2][2] * y + m[2][3] * z + m[2][4]) * root
+          row[3] = (m[3][1] * x + m[3][2] * y + m[3][3] * z + m[3][4]) * root
+          row[6], row[7], row[8] = normalize3(
+            normalM[1][1] * nx + normalM[1][2] * ny + normalM[1][3] * nz,
+            normalM[2][1] * nx + normalM[2][2] * ny + normalM[2][3] * nz,
+            normalM[3][1] * nx + normalM[3][2] * ny + normalM[3][3] * nz)
+        end
       else
         row[1], row[2], row[3] = 0, 0, 0
         row[6], row[7], row[8] = 0, 1, 0
