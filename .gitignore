@@ -2,6 +2,10 @@
 /baseroms/*
 !/baseroms/.gitkeep
 
+# Local agent and Codex workspace metadata must never be committed.
+**/.agents/
+**/.codex/
+
 # Cartridge and disc image formats (case-insensitive via bracket patterns).
 *.[gG][bB]
 *.[gG][bB][cC]
