@@ -25,6 +25,8 @@ local isolatePrimitive = math.max(0,
   math.floor(tonumber(os.getenv("STADIUM2_VISUAL_ISOLATE")) or 0))
 local autoCapture = os.getenv("STADIUM2_VISUAL_AUTOCAPTURE")
 local autoCaptureFrames = 0
+local autoCaptureAt = math.max(1,
+  math.floor(tonumber(os.getenv("STADIUM2_VISUAL_AUTOCAPTURE_FRAME")) or 8))
 local autoKeys = os.getenv("STADIUM2_VISUAL_AUTOKEYS")
 local autoKeysApplied = false
 local shaderStyle = os.getenv("STADIUM2_VISUAL_SHADER") == "cel" and "cel" or "stadium"
@@ -332,6 +334,14 @@ local function initialise()
     Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
     Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
     DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
+    local shadowBias=tonumber(os.getenv("STADIUM2_VISUAL_SHADOW_BIAS"))
+    if os.getenv("STADIUM2_VISUAL_DISABLE_SUN_SHADOW") == "1" or shadowBias then
+      local Shadow=require("mods.STADIUM2_IMPORTER.lib.battle_shadow")
+      if shadowBias then Shadow.bias=shadowBias end
+      if os.getenv("STADIUM2_VISUAL_DISABLE_SUN_SHADOW") == "1" then
+      Shadow.begin=function() return nil end
+      end
+    end
     Importer.configure({ count = 251 })
     if not Importer.available(251) then
       local started, err = Importer.autoImport()
@@ -415,9 +425,17 @@ function love.update(dt)
   end
   if autoCapture and not importing and scene and not loadError then
     autoCaptureFrames = autoCaptureFrames + 1
-    if autoCaptureFrames == 8 then
-      love.graphics.captureScreenshot(autoCapture)
-    elseif autoCaptureFrames >= 10 then
+    if autoCaptureFrames == autoCaptureAt then
+      if autoCapture:sub(1,1)=="/" then
+        love.graphics.captureScreenshot(function(imageData)
+          local encoded=imageData:encode("png")
+          local file=assert(io.open(autoCapture,"wb"))
+          file:write(encoded:getString());file:close()
+        end)
+      else
+        love.graphics.captureScreenshot(autoCapture)
+      end
+    elseif autoCaptureFrames >= autoCaptureAt + 2 then
       love.event.quit()
     end
   end

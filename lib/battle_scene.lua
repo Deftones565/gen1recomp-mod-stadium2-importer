@@ -15,6 +15,7 @@ local AA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
 local Scene = {}
 Scene.__index = Scene
 local unpack=table.unpack or unpack
+local DEPTH_FORMATS={"depth24stencil8","depth24","depth16","depth32f"}
 
 local function clamp(value,lo,hi)
   return math.max(lo,math.min(hi,tonumber(value) or lo))
@@ -66,7 +67,7 @@ function Scene:release()
   for _,actor in pairs(self.actors or {}) do
     if actor and actor.release then actor:release() end
   end
-  for _,value in ipairs({self.canvas,self.depth,self.compositeCanvas}) do
+  for _,value in ipairs({self.canvas,self.depth or false,self.compositeCanvas}) do
     if value and value.release then pcall(value.release,value) end
   end
   self.canvas,self.depth,self.presentCanvas,self.compositeCanvas=nil,nil,nil,nil
@@ -75,6 +76,23 @@ function Scene:release()
   Hud.invalidate()
   AA.release()
   Camera.reset()
+end
+
+local function newDepthCanvas(g,width,height)
+  for _,format in ipairs(DEPTH_FORMATS) do
+    local ok,depth=pcall(g.newCanvas,width,height,
+      {format=format,readable=false,dpiscale=1})
+    if ok and depth then return depth end
+  end
+  return nil
+end
+
+local function sceneTarget(self)
+  if self.depth then return {self.canvas,depthstencil=self.depth} end
+  -- LÖVE allocates a driver-compatible internal depth attachment. This is
+  -- preferable to silently drawing all model primitives without depth when
+  -- Android rejects every explicit depth Canvas format.
+  return {self.canvas,depth=true}
 end
 
 function Scene:ensureCanvas(width,height)
@@ -91,9 +109,7 @@ function Scene:ensureCanvas(width,height)
     if self.warn then pcall(self.warn,tostring(canvas)) end
     return false
   end
-  local depthOk,depth=pcall(g.newCanvas,width,height,
-    {format="depth24stencil8",readable=false,dpiscale=1})
-  self.canvas,self.depth=canvas,depthOk and depth or nil
+  self.canvas,self.depth=canvas,newDepthCanvas(g,width,height)
   self.renderWidth,self.renderHeight=width,height
   canvas:setFilter("nearest","nearest")
   return true
@@ -160,8 +176,7 @@ function Scene:render(requestedWidth,requestedHeight)
 
   local previous=g.getCanvas and {g.getCanvas()} or nil
   local ok,err=pcall(function()
-    if self.depth then g.setCanvas({self.canvas,depthstencil=self.depth})
-    else g.setCanvas(self.canvas) end
+    g.setCanvas(sceneTarget(self))
     self.environment=Sky.resolve(self:environmentGame())
     local frame=Camera.frame(width,height)
     Sky.draw(g,renderWidth,renderHeight,self.environment,frame)
@@ -196,8 +211,7 @@ function Scene:render(requestedWidth,requestedHeight)
       end
     end
     local shadow=lightVP and Shadow.finish() or nil
-    if self.depth then g.setCanvas({self.canvas,depthstencil=self.depth})
-    else g.setCanvas(self.canvas) end
+    g.setCanvas(sceneTarget(self))
 
     local marks,stageErr=Stage.draw(g,width,height,frame,self.actors,shadow,self.environment)
     if not marks then error(self.label.." stage draw failed: "..tostring(stageErr),0) end

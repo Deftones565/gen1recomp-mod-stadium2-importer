@@ -5,6 +5,7 @@ local color, depth, allocated
 local strength = 1
 local unpack = table.unpack or unpack
 local TO_UNIT = { .5,0,0,.5, 0,.5,0,.5, 0,0,.5,.5, 0,0,0,1 }
+local DEPTH_FORMATS = {"depth24stencil8","depth24","depth16","depth32f"}
 
 local function release(item)
   if item and item.release then pcall(item.release, item) end
@@ -18,9 +19,12 @@ local function ensure()
   local ok, c = pcall(g.newCanvas, Shadow.resolution, Shadow.resolution,
     {format="rgba8",readable=true,dpiscale=1})
   if not ok then return false end
-  local dok, d = pcall(g.newCanvas, Shadow.resolution, Shadow.resolution,
-    {format="depth24stencil8",readable=false,dpiscale=1})
-  if not dok then release(c); return false end
+  local d
+  for _,format in ipairs(DEPTH_FORMATS) do
+    local dok,made=pcall(g.newCanvas,Shadow.resolution,Shadow.resolution,
+      {format=format,readable=false,dpiscale=1})
+    if dok and made then d=made break end
+  end
   c:setFilter("nearest", "nearest")
   pcall(c.setWrap, c, "clamp", "clamp")
   color, depth, allocated = c, d, Shadow.resolution
@@ -31,7 +35,8 @@ function Shadow.begin(lightDir, shadowStrength)
   if not ensure() then return nil end
   local g = love.graphics
   Shadow.previous = g.getCanvas and {g.getCanvas()} or nil
-  g.setCanvas({color,depthstencil=depth})
+  if depth then g.setCanvas({color,depthstencil=depth})
+  else g.setCanvas({color,depth=true}) end
   g.clear(1,1,1,1,true,true)
   if g.setDepthMode then g.setDepthMode("less",true) end
   if g.setBlendMode then g.setBlendMode("replace","premultiplied") end

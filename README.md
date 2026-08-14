@@ -26,14 +26,30 @@ scan, index, model, animation, normal-pack, and shiny-pack progress. Gameplay
 remains paused behind it. Completion closes the screen automatically; a failed
 import displays the failing stage and offers retry or close controls.
 
-On Android, **OPTIONS -> STADIUM 2 ROM** uses Gen1Recomp's native system
-document picker through the native no-argument `love.system.pickFile()` ROM path. The selected document is
-handed back as `picked_rom.gb`, validated as the supported Stadium 2 US ROM,
-loaded into the normal importer, and the temporary handoff file is removed.
-Desktop Linux, Windows, and macOS keep their existing ROM discovery and file
-dialog paths.
+## Sandboxed engine builds
 
-The generated cache is stored under:
+On engine builds with the restricted mod environment, generated packs use
+`mod.storage` and are scoped to this mod and the current playthrough. The mod
+uses only scoped engine APIs and never names host paths.
+
+The sandbox API currently has no scoped external-file picker or ROM byte-stream
+handoff for mods. Until the engine adds one, automatic import can only read a
+legally dumped ROM packaged by the player inside their personal copy of this
+mod, using one of the supported filenames below at the mod root or under
+`baseroms/`. Release archives never include ROM files.
+
+```text
+Pokemon Stadium 2 (USA).z64
+Pokemon Stadium 2 (USA).n64
+Pokemon Stadium 2 (USA).v64
+pokemon_stadium_2.z64
+pokemonstadium2.z64
+stadium2.z64
+```
+
+The following logical pack names are retained by the public importer API, but
+their bytes are persisted as data-only `mod.storage` records rather than raw
+filesystem files:
 
 ```text
 stadium2_importer/normal/%03d.dsm

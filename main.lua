@@ -3,9 +3,11 @@ local Battle = require("mods.STADIUM2_IMPORTER.lib.battle_router")
 local BattleAA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
 local BattlePresentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
 local ImportScreen = require("mods.STADIUM2_IMPORTER.lib.import_screen")
+local Fx = require("mods.STADIUM2_IMPORTER.lib.fx")
 
 return function(mod)
   Importer.bind(mod)
+  Fx.bind(mod)
   Battle.bind(mod)
   BattleAA.bind(mod)
   local importScreen
@@ -56,7 +58,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.10.8"
+  mod.exports.version = "0.10.11"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.available = Importer.available

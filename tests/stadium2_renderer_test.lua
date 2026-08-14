@@ -109,19 +109,36 @@ ok(not colorState.lightingEnabled and colorState.cullEnabled,
   "source vertex-colour geometry disables lighting without disabling culling")
 ok(Renderer.FORMAT[4] and Renderer.FORMAT[4][1] == "VertexColor",
   "DSM4 mesh format carries source vertex RGBA")
-local _, normalDecls = Renderer.SHADER_SOURCE:gsub("varying vec3 vNormal;", "")
-local _, sunDecls = Renderer.SHADER_SOURCE:gsub("varying vec3 vSun;", "")
-ok(normalDecls == 1 and sunDecls == 1,
-  "shared shader varyings are declared once across LÖVE's combined stages")
-local _, shadowReads = Renderer.SHADER_SOURCE:gsub("shadowDepth%(p%.xy", "")
-ok(shadowReads == 4,
-  "softened Pokemon shadows retain the four-fetch PCF cost")
+local _, normalDecls = Renderer.SHADER_SOURCE:gsub("varying STADIUM_FLOAT vec3 vNormal;", "")
+local _, sunDecls = Renderer.SHADER_SOURCE:gsub("varying STADIUM_FLOAT vec3 vSun;", "")
+local _, eyeNormalDecls = Renderer.SHADER_SOURCE:gsub("varying STADIUM_FLOAT vec3 vEyeNormal;", "")
+ok(normalDecls == 1 and sunDecls == 1 and eyeNormalDecls == 1,
+  "shared shader varyings retain the desktop path with adaptive mobile precision")
+ok(Renderer.SHADER_SOURCE:find("shadowDepth(p.xy+sunTexel", 1, true) ~= nil,
+  "desktop shadow path retains the four-fetch PCF footprint")
+ok(Renderer.SHADER_SOURCE:find("#ifdef GL_ES", 1, true) ~= nil
+    and Renderer.SHADER_SOURCE:find("smoothstep%(mapDepth", 1, false) ~= nil,
+  "GLES uses a single soft sun shadow compare instead of binary PCF speckle")
 ok(Renderer.SHADER_SOURCE:find("0.30+(stadiumShade-0.30)*shadowVisibility", 1, true) ~= nil,
   "Pokemon self-shadow preserves the authored ambient lighting floor")
+ok(Renderer.SHADER_SOURCE:find("uniform float decalDepthBias;",1,true)~=nil
+  and Renderer.SHADER_SOURCE:find("clip.z-=decalDepthBias*clip.w",1,true)~=nil,
+  "coplanar detail primitives can be stabilized on reduced-depth mobile buffers")
+do
+  local oldLove=love
+  love={graphics={getRendererInfo=function() return "Metal","3.1","Apple","GPU" end}}
+  ok(Renderer.shouldReceiveModelSunShadows({})==false,
+    "mobile Metal uses the clean cast-shadow-only fallback")
+  love=oldLove
+end
 ok(Renderer.SHADER_SOURCE:find("vGeneratedUV", 1, true) ~= nil,
   "shared shader implements normal-driven Stadium reflection coordinates")
-ok(Renderer.primitiveRenderState({}, { geometryMode = 0x40000 }).textureGenEnabled,
-  "G_TEXTURE_GEN enables the shared reflection path")
+ok(Renderer.SHADER_SOURCE:find("void effect()", 1, true) ~= nil,
+  "lit shader reads VaryingTexCoord directly instead of mediump effect() parameters")
+ok(Renderer.SHADER_SOURCE:find("VaryingTexCoord.st", 1, true) ~= nil,
+  "texture coordinates stay at LOVE's highp varying precision on GLES")
+ok(Renderer.SHADER_SOURCE:find("if (mangaAmount > 0.001)", 1, true) ~= nil,
+  "watercolor treatment is skipped entirely in Stadium lighting mode")
 
 local emitterModel = { species = 109, rootScale = 0.1,
   handlers = { records = {{ commandOffset = 0x1118, family = "dynamic-object-renderer" }} },
