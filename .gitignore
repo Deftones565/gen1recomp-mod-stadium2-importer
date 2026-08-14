@@ -1,5 +1,6 @@
 # Never commit or publish user-provided ROM dumps.
-/baseroms/**
+/baseroms/*
+!/baseroms/.gitkeep
 
 # Cartridge and disc image formats (case-insensitive via bracket patterns).
 *.[gG][bB]
