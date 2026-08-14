@@ -681,8 +681,10 @@ local function installComposeHook()
     g.rectangle("fill",0,0,ctx.ww,ctx.wh)
     g.setColor(1,1,1,1)
     local major=love.getVersion and select(1,love.getVersion()) or 11
-    local ios=love.system and love.system.getOS and love.system.getOS()=="iOS"
-    if ios and major>=12 then
+    -- The only shipped mobile backend on LÖVE 12 uses the flipped canvas
+    -- convention this branch corrects. Platform identity is intentionally
+    -- unavailable inside the mod sandbox.
+    if major>=12 then
       g.draw(scene.composedWorld,0,ctx.wh,0,1/dpiX,-1/dpiY)
     else
       g.draw(scene.composedWorld,0,0,0,1/dpiX,1/dpiY)

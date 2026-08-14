@@ -16,11 +16,6 @@ local modelCache = {}
 local modelOrder = {}
 local MODEL_KEEP = 4
 local configuredCount = 151
-local NATIVE_PICKED = "picked_rom.gb"
-local nativePickPending = false
-local nativePickBefore = nil
-local nativePickLostFocus = false
-local nativePickPrevious = nil
 local status = {
   state = "idle",
   done = 0,
@@ -29,67 +24,6 @@ local status = {
   error = nil,
   rom = nil,
 }
-
-local function platformName()
-  local system = love and love.system
-  if not (system and type(system.getOS) == "function") then return nil end
-  local ok, platform = pcall(system.getOS)
-  return ok and platform or nil
-end
-
-local function nativePickerAvailable()
-  local system = love and love.system
-  return platformName() == "Android"
-    and system ~= nil and type(system.pickFile) == "function"
-end
-
-local function pickedFingerprint(path)
-  local fs = love and love.filesystem
-  if not (fs and type(fs.getInfo) == "function") then return nil end
-  local ok, info = pcall(fs.getInfo, path, "file")
-  if not (ok and info) then return nil end
-  return table.concat({ tostring(info.size or "?"), tostring(info.modtime or "?") }, ":")
-end
-
-local function clearNativePicker(restore)
-  nativePickPending = false
-  nativePickBefore = nil
-  nativePickLostFocus = false
-  if restore and nativePickPrevious then
-    status.state = nativePickPrevious.state
-    status.phase = nativePickPrevious.phase
-    status.error = nativePickPrevious.error
-    status.rom = nativePickPrevious.rom
-  end
-  nativePickPrevious = nil
-end
-
-local function openNativePicker()
-  if not nativePickerAvailable() then return false, "Android native picker unavailable" end
-  nativePickPrevious = {
-    state = status.state, phase = status.phase, error = status.error, rom = status.rom,
-  }
-  nativePickBefore = pickedFingerprint(NATIVE_PICKED)
-  nativePickLostFocus = false
-  -- Match Gen1Recomp 0.1.36's own Android ROM importer exactly: the ROM
-  -- picker is the no-argument form and the native bridge writes picked_rom.gb.
-  local ok, opened = pcall(love.system.pickFile)
-  if not (ok and opened) then
-    clearNativePicker(true)
-    return false, ok and "Android file picker did not open" or tostring(opened)
-  end
-  nativePickPending = true
-  status.state = "picking"
-  status.phase = "picker"
-  status.error = nil
-  status.rom = nil
-  return true
-end
-
-local function removePickedFile()
-  local fs = love and love.filesystem
-  if fs and type(fs.remove) == "function" then pcall(fs.remove, NATIVE_PICKED) end
-end
 
 local function fail(stage, reason)
   status.state = "failed"
@@ -115,6 +49,8 @@ end
 
 function Importer.bind(mod)
   modRef = mod
+  Cache.bind(mod)
+  Discovery.bind(mod)
   return Importer
 end
 
@@ -320,41 +256,13 @@ end
 local function beginCandidate(candidate, options)
   options = type(options) == "table" and options or {}
   local bytes, err = Discovery.read(candidate)
-  if not bytes then
-    if options.removeAfter then removePickedFile() end
-    return fail("reading ROM", err)
-  end
+  if not bytes then return fail("reading ROM", err) end
   local started, beginErr = Importer.beginFrom(bytes, options.label or candidate.path)
-  if options.removeAfter then removePickedFile() end
   return started, beginErr
 end
 
 function Importer.beginPath(path)
-  return beginCandidate({ kind = "host", path = path })
-end
-
-local function pollNativePicker()
-  if not nativePickPending then return false end
-  local current = pickedFingerprint(NATIVE_PICKED)
-  if current and current ~= nativePickBefore then
-    clearNativePicker(false)
-    local started = beginCandidate({ kind = "love", path = NATIVE_PICKED }, {
-      removeAfter = true, label = "Android file picker",
-    })
-    return started and true or false
-  end
-  local window = love and love.window
-  if window and type(window.hasFocus) == "function" then
-    local ok, focused = pcall(window.hasFocus)
-    if ok then
-      if focused == false then
-        nativePickLostFocus = true
-      elseif focused == true and nativePickLostFocus then
-        clearNativePicker(true)
-      end
-    end
-  end
-  return false
+  return beginCandidate({ kind = "mod", path = path })
 end
 
 function Importer.autoImport()
@@ -363,32 +271,22 @@ function Importer.autoImport()
     return true
   end
   local candidate = Discovery.find()
-  if not candidate then return false, "no Pokemon Stadium 2 US ROM found" end
+  if not candidate then
+    return false,"no Pokemon Stadium 2 US ROM is packaged inside this mod"
+  end
   return beginCandidate(candidate)
 end
 
 function Importer.request()
   if job then return false, "Stadium 2 import is already running" end
-  if nativePickPending then return false, "Android file picker already open" end
-
-  local platform = platformName()
-  if platform == "Android" then
-    if nativePickerAvailable() then
-      local opened, pickerErr = openNativePicker()
-      if opened then return true end
-      return fail("opening Android file picker", pickerErr)
-    end
-    return fail("opening Android file picker",
-      "Gen1Recomp Android picker bridge (love.system.pickFile) is unavailable")
-  end
-
-  local path = Discovery.choose()
-  if not path then return false, "cancelled" end
-  return Importer.beginPath(path)
+  local candidate=Discovery.find()
+  if candidate then return beginCandidate(candidate) end
+  return fail("selecting ROM","The new mod sandbox has no scoped external ROM "
+    .."picker. Package your legally dumped Stadium 2 ROM inside this mod, or "
+    .."use an engine release that provides a mod ROM-import API.")
 end
 
 function Importer.step()
-  if not job then pollNativePicker() end
   if not job then return false end
   local active = job
   local ok, more = pcall(active.step, active)
@@ -457,8 +355,6 @@ end
 
 Importer.US_MD5 = Rom.US_MD5
 Importer.FORMAT = Cache.FORMAT
-Importer.NATIVE_PICKED = NATIVE_PICKED
-Importer.nativePickerAvailable = nativePickerAvailable
 Importer.COUNT = function() return configuredCount end
 Importer.shinyPalettesFromTransformSource = Palette.fromTransformSource
 Importer.cache = Cache

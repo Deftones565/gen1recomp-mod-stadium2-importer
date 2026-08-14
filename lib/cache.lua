@@ -1,3 +1,6 @@
+-- Sandboxed, playthrough-scoped Stadium model cache. Binary DSM payloads are
+-- stored as strings inside mod.storage records; no raw filesystem path is
+-- exposed to this module.
 local Cache = {}
 
 Cache.FORMAT = "S2IMP32"
@@ -9,15 +12,53 @@ Cache.MARKER = Cache.ROOT .. "/pack.info"
 Cache.ERROR = Cache.ROOT .. "/import_error.log"
 Cache.UNOWN_FORMS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-local function fs()
-  return love and love.filesystem
+local modRef
+
+function Cache.bind(mod)
+  modRef = mod
+  return Cache
 end
 
-local function file(path)
-  local f = fs()
-  if not (f and f.getInfo) then return false end
-  local ok, info = pcall(f.getInfo, path, "file")
-  return ok and info and true or false
+local function storageContext()
+  local storage = modRef and modRef.storage
+  local game = modRef and modRef.game
+  if not (storage and game) then
+    return nil, nil, "sandbox storage unavailable before game.ready"
+  end
+  return storage, game
+end
+
+local function storageKey(path)
+  path = tostring(path or "")
+  if path == Cache.MARKER then return "cache/marker" end
+  if path == Cache.ERROR then return "cache/error" end
+  path = path:gsub("^" .. Cache.ROOT .. "/", ""):gsub("%.dsm$", "")
+  return "cache/" .. path
+end
+
+local function readRecord(path)
+  local storage, game = storageContext()
+  if not storage then return nil end
+  local ok, value = pcall(storage.read, storage, game, storageKey(path))
+  if not ok or type(value) ~= "table" then return nil end
+  return value
+end
+
+local function writeRecord(path, value)
+  local storage, game, unavailable = storageContext()
+  if not storage then return false, unavailable end
+  local ok, wrote, code, message = pcall(storage.write, storage, game,
+    storageKey(path), value)
+  if not ok then return false, tostring(wrote) end
+  if not wrote then return false, tostring(message or code or "storage write failed") end
+  return true
+end
+
+local function deleteRecord(path)
+  local storage, game = storageContext()
+  if not storage then return false end
+  pcall(storage.delete, storage, game, storageKey(path))
+  return true
 end
 
 function Cache.path(species, variant)
@@ -36,129 +77,85 @@ function Cache.unownPath(letter,variant)
 end
 
 function Cache.ensureDirectories()
-  local f = fs()
-  if not (f and f.createDirectory) then return false, "filesystem unavailable" end
-  for _, path in ipairs({ Cache.ROOT, Cache.NORMAL, Cache.SHINY, Cache.BATTLE }) do
-    local ok, err = pcall(f.createDirectory, path)
-    if not ok then return false, tostring(err) end
-  end
+  local storage, game, unavailable = storageContext()
+  if not storage then return false, unavailable end
+  local ok, context, code, message = pcall(storage.context, storage, game)
+  if not ok then return false, tostring(context) end
+  if not context then return false, tostring(message or code or "storage unavailable") end
   return true
 end
 
 function Cache.clear(count)
-  local f = fs()
-  if not f then return false, "filesystem unavailable" end
-  count = math.max(251, tonumber(count) or 251)
-  for species = 1, count do
-    if f.remove then
-      pcall(f.remove, Cache.path(species, "normal"))
-      pcall(f.remove, Cache.path(species, "shiny"))
-    end
-  end
-  if f.remove then pcall(f.remove, Cache.MARKER) end
-  if f.remove then pcall(f.remove,Cache.specialPath("substitute")) end
-  if f.remove then
-    for i=2,#Cache.UNOWN_FORMS do
-      local letter=Cache.UNOWN_FORMS:sub(i,i)
-      pcall(f.remove,Cache.unownPath(letter,"normal"))
-      pcall(f.remove,Cache.unownPath(letter,"shiny"))
-    end
-  end
-  return Cache.ensureDirectories()
-end
-
-function Cache.writeSpecial(name,bytes)
-  local f=fs()
-  if not (f and f.write) then return false,"filesystem unavailable" end
-  local ok,err=Cache.ensureDirectories()
-  if not ok then return false,err end
-  local wrote,writeErr=pcall(f.write,Cache.specialPath(name),bytes)
-  return wrote and true or false,wrote and nil or tostring(writeErr)
-end
-
-function Cache.writePair(species, normalBytes, shinyBytes)
-  local f = fs()
-  if not (f and f.write) then return false, "filesystem unavailable" end
   local ok, err = Cache.ensureDirectories()
   if not ok then return false, err end
-  local normalPath = Cache.path(species, "normal")
-  local shinyPath = Cache.path(species, "shiny")
-  local okNormal, normalErr = pcall(f.write, normalPath, normalBytes)
-  if not okNormal then return false, tostring(normalErr) end
-  local okShiny, shinyErr = pcall(f.write, shinyPath, shinyBytes)
-  if not okShiny then return false, tostring(shinyErr) end
+  local storage,game=storageContext()
+  if storage and type(storage.list)=="function" then
+    local listed,keys=pcall(storage.list,storage,game,"cache")
+    if listed and type(keys)=="table" then
+      for _,key in ipairs(keys) do pcall(storage.delete,storage,game,key) end
+      return true
+    end
+  end
+  count = math.max(251, tonumber(count) or 251)
+  for species = 1, count do
+    deleteRecord(Cache.path(species, "normal"))
+    deleteRecord(Cache.path(species, "shiny"))
+  end
+  deleteRecord(Cache.MARKER)
+  deleteRecord(Cache.ERROR)
+  deleteRecord(Cache.specialPath("substitute"))
+  for i=2,#Cache.UNOWN_FORMS do
+    local letter=Cache.UNOWN_FORMS:sub(i,i)
+    deleteRecord(Cache.unownPath(letter,"normal"))
+    deleteRecord(Cache.unownPath(letter,"shiny"))
+  end
   return true
 end
 
-local function parseMarker(text)
-  if type(text) ~= "string" then return nil end
-  local row = {}
-  for line in text:gmatch("[^\r\n]+") do
-    local key, value = line:match("^([^=]+)=(.*)$")
-    if key then row[key] = value end
-  end
-  row.count = tonumber(row.count)
-  return row
+function Cache.writeSpecial(name,bytes)
+  return writeRecord(Cache.specialPath(name), { bytes=bytes })
+end
+
+function Cache.writePair(species, normalBytes, shinyBytes)
+  local ok, err = writeRecord(Cache.path(species,"normal"), {bytes=normalBytes})
+  if not ok then return false, err end
+  return writeRecord(Cache.path(species,"shiny"), {bytes=shinyBytes})
 end
 
 function Cache.marker()
-  local f = fs()
-  if not (f and f.read and file(Cache.MARKER)) then return nil end
-  local ok, text = pcall(f.read, Cache.MARKER)
-  return ok and parseMarker(text) or nil
+  local record=readRecord(Cache.MARKER)
+  return record and record.marker or nil
 end
 
 function Cache.available(count)
   count = tonumber(count) or 151
   local marker = Cache.marker()
-  if not marker or marker.format ~= Cache.FORMAT or (marker.count or 0) < count then return false end
-  for species = 1, count do
-    if not file(Cache.path(species, "normal"))
-        or not file(Cache.path(species, "shiny")) then return false end
-  end
-  if not file(Cache.specialPath("substitute")) then return false end
-  for i=2,#Cache.UNOWN_FORMS do
-    local letter=Cache.UNOWN_FORMS:sub(i,i)
-    if not file(Cache.unownPath(letter,"normal"))
-        or not file(Cache.unownPath(letter,"shiny")) then return false end
-  end
-  return true
+  return marker ~= nil and marker.format == Cache.FORMAT
+    and (marker.count or 0) >= count
 end
 
 function Cache.finish(meta, count)
-  local f = fs()
-  if not (f and f.write) then return false, "filesystem unavailable" end
-  local text = table.concat({
-    "format=" .. Cache.FORMAT,
-    "count=" .. tostring(count),
-    "md5=" .. tostring(meta and meta.md5 or "unknown"),
-    "title=" .. tostring(meta and meta.title or "unknown"),
-    "byte_order=" .. tostring(meta and meta.byteOrder or "unknown"),
-  }, "\n") .. "\n"
-  local ok, err = pcall(f.write, Cache.MARKER, text)
-  return ok and true or false, ok and nil or tostring(err)
+  return writeRecord(Cache.MARKER, {marker={
+    format=Cache.FORMAT,
+    count=count,
+    md5=meta and meta.md5 or "unknown",
+    title=meta and meta.title or "unknown",
+    byteOrder=meta and meta.byteOrder or "unknown",
+  }})
 end
 
 function Cache.writeError(text)
-  local f = fs()
-  if f and f.createDirectory then pcall(f.createDirectory, Cache.ROOT) end
-  if f and f.write then pcall(f.write, Cache.ERROR, tostring(text or "unknown error") .. "\n") end
+  writeRecord(Cache.ERROR, {text=tostring(text or "unknown error")})
 end
 
 function Cache.read(species, variant)
-  local f = fs()
-  local path = Cache.path(species, variant)
-  if not (f and f.read and file(path)) then return nil end
-  local ok, bytes = pcall(f.read, path)
-  return ok and bytes or nil
+  local record=readRecord(Cache.path(species,variant))
+  return record and record.bytes or nil
 end
 
 function Cache.readSpecial(name)
-  local f=fs()
-  local path=Cache.specialPath(name)
-  if not (f and f.read and file(path)) then return nil end
-  local ok,bytes=pcall(f.read,path)
-  return ok and bytes or nil
+  local record=readRecord(Cache.specialPath(name))
+  return record and record.bytes or nil
 end
 
 return Cache

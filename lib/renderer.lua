@@ -18,10 +18,11 @@ Renderer.FORMAT = {
 }
 
 local SHADER = [[
-varying vec3 vNormal;
-varying vec3 vSun;
-varying vec2 vGeneratedUV;
-varying vec3 vEyeNormal;
+#define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
+varying STADIUM_FLOAT vec3 vNormal;
+varying STADIUM_FLOAT vec3 vSun;
+varying STADIUM_FLOAT vec2 vGeneratedUV;
+varying STADIUM_FLOAT vec3 vEyeNormal;
 #ifdef VERTEX
 uniform mat4 mvp;
 uniform mat4 modelMatrix;
@@ -34,6 +35,7 @@ uniform vec3 billboardCenter;
 uniform vec3 billboardRight;
 uniform vec3 billboardUp;
 uniform vec2 billboardSize;
+uniform float decalDepthBias;
 attribute vec3 VertexNormal;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
   if (billboardEnabled > 0.5) {
@@ -45,10 +47,16 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   vEyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
   vGeneratedUV=(vEyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
   vSun = (sunVP * (modelMatrix * vertex_position)).xyz;
-  return mvp*vertex_position;
+  vec4 clip=mvp*vertex_position;
+  // Coplanar eye/marking layers can alternate with their body primitive in
+  // a 16-bit mobile depth buffer. Move only authored decals a few depth units
+  // toward the camera; ordinary geometry keeps strict depth testing.
+  clip.z-=decalDepthBias*clip.w;
+  return clip;
 }
 #endif
 #ifdef PIXEL
+uniform Image MainTex;
 uniform vec3 lightDir;
 uniform vec3 ambient;
 uniform vec3 diffuse;
@@ -74,6 +82,9 @@ uniform float lightingEnabled;
 uniform float celShadingEnabled;
 uniform float textureGenEnabled;
 uniform vec2 textureCoordinateScale;
+uniform vec2 primaryWrapMode;
+uniform vec2 secondaryWrapMode;
+uniform float boundedUVEnabled;
 float shadowDepth(vec2 uv) {
   vec4 c=Texel(sunMap,uv);
   return c.r+c.g*(1.0/255.0);
@@ -81,6 +92,16 @@ float shadowDepth(vec2 uv) {
 float sunlight(vec3 p) {
   if (sunEnabled<0.5 || p.x<0.0 || p.x>1.0 || p.y<0.0 || p.y>1.0 || p.z>1.0) return 1.0;
   float z=p.z-sunBias;
+#ifdef GL_ES
+  // Packed 8-bit shadow depth plus mediump interpolation makes four binary
+  // PCF comparisons disagree within a primitive on mobile. One filtered,
+  // softly-thresholded comparison keeps the same shadow strength without the
+  // speckled surface noise.
+  float mapDepth=shadowDepth(p.xy);
+  float edge=max(sunBias,1.0/255.0);
+  float lit=smoothstep(mapDepth-edge,mapDepth+edge,z);
+  return 1.0-sunDark*lit;
+#else
   // Four taps, as before, but distributed as a rotated 3x3 footprint. This
   // widens the penumbra and avoids square stair-steps without another fetch.
   float lit=step(z,shadowDepth(p.xy+sunTexel*vec2(-1.5,-0.5)))
@@ -88,12 +109,28 @@ float sunlight(vec3 p) {
     +step(z,shadowDepth(p.xy+sunTexel*vec2(1.5,0.5)))
     +step(z,shadowDepth(p.xy+sunTexel*vec2(-0.5,1.5)));
   return 1.0-sunDark*(1.0-lit*0.25);
+#endif
 }
-vec4 sample3(Image image, vec2 uv, vec2 size) {
-  vec2 p = uv * size - vec2(0.5);
-  vec2 base = floor(p);
-  vec2 f = fract(p);
-  vec2 texel = vec2(1.0) / size;
+float foldTextureCoordinate(float value, float mode) {
+  if (mode < 0.5) return clamp(value, 0.0, 1.0);
+  if (mode < 1.5) return mod(value, 1.0);
+  float mirrored = mod(value, 2.0);
+  return mirrored <= 1.0 ? mirrored : 2.0 - mirrored;
+}
+STADIUM_FLOAT vec2 foldTextureUV(STADIUM_FLOAT vec2 uv, vec2 mode) {
+  return vec2(foldTextureCoordinate(uv.x, mode.x),
+    foldTextureCoordinate(uv.y, mode.y));
+}
+vec4 sample3(Image image, STADIUM_FLOAT vec2 uv, vec2 size, vec2 wrapMode) {
+  // Keep the 3-point filter's floor/fract work inside one texture tile.
+  // Mobile fragment shaders can use mediump arithmetic, where multiplying a
+  // large repeated/scrolled UV by the texture size destroys the fractional
+  // texel position and produces primitive-local crawling/noise.
+  if (boundedUVEnabled > 0.5) uv = foldTextureUV(uv, wrapMode);
+  STADIUM_FLOAT vec2 p = uv * size - vec2(0.5);
+  STADIUM_FLOAT vec2 base = floor(p);
+  STADIUM_FLOAT vec2 f = fract(p);
+  STADIUM_FLOAT vec2 texel = vec2(1.0) / size;
   if (f.x + f.y < 1.0) {
     vec2 o = (base + vec2(0.5)) * texel;
     return Texel(image, o) * (1.0-f.x-f.y)
@@ -105,11 +142,16 @@ vec4 sample3(Image image, vec2 uv, vec2 size) {
     + Texel(image, o - vec2(texel.x,0.0)) * (1.0-f.y)
     + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.x);
 }
-vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
-  vec2 uv=mix(texture_coords*textureCoordinateScale,vGeneratedUV,textureGenEnabled);
-  vec4 texel = sample3(texture, uv + textureScroll.xy, primarySize);
+void effect() {
+  vec4 color=VaryingColor;
+  STADIUM_FLOAT vec2 texture_coords=VaryingTexCoord.st;
+  STADIUM_FLOAT vec2 screen_coords=love_PixelCoord;
+  STADIUM_FLOAT vec2 uv=mix(texture_coords*textureCoordinateScale,
+    vGeneratedUV,textureGenEnabled);
+  vec4 texel = sample3(MainTex, uv + textureScroll.xy, primarySize, primaryWrapMode);
   if (secondaryEnabled > 0.5) {
-    vec4 other = sample3(secondaryTexture, uv + textureScroll.zw, secondarySize);
+    vec4 other = sample3(secondaryTexture, uv + textureScroll.zw, secondarySize,
+      secondaryWrapMode);
     texel = mix(texel, other, secondaryMix);
   }
   if (effectIntensityMode > 0.5) {
@@ -117,7 +159,8 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
     float gasAlpha = intensity * primitiveColor.a * color.a * sceneTint.a;
     if (gasAlpha <= alphaCutoff) discard;
     vec3 gasColor = mix(environmentColor.rgb, primitiveColor.rgb, intensity);
-    return vec4(gasColor * color.rgb * sceneTint.rgb, gasAlpha);
+    love_PixelColor=vec4(gasColor * color.rgb * sceneTint.rgb, gasAlpha);
+    return;
   }
   texel *= color * primitiveColor;
   if (texel.a <= alphaCutoff) discard;
@@ -134,31 +177,19 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
   litShade=mix(litShade,washShade,mangaAmount);
   vec3 lighting=mix(vec3(1.0),vec3(litShade),lightingEnabled);
   vec3 shaded=combined * lighting * sceneTint.rgb;
-  float watercolorScreenScale=max(1.0,1080.0/max(1.0,love_ScreenSize.y));
-  if(watercolorScreenScale<=1.0001){
+  if (mangaAmount > 0.001) {
     // Watercolor-manga mode stays in the existing material pass. A warm paper
     // lift, muted pigment and screen-stable irregularity suggest a physical
     // wash; the grazing-angle term lays ink inside the silhouette without a
     // second expanded-mesh outline draw.
-    float paperNoise=fract(sin(dot(floor(screen_coords.xy*0.5),
+    STADIUM_FLOAT float watercolorScreenScale=
+      max(1.0,1080.0/max(1.0,love_ScreenSize.y));
+    STADIUM_FLOAT vec2 watercolorCoords=
+      screen_coords.xy*watercolorScreenScale;
+    STADIUM_FLOAT float paperNoise=fract(sin(dot(floor(watercolorCoords*0.5),
       vec2(12.9898,78.233)))*43758.5453)-0.5;
-    float broadWash=sin(screen_coords.x*0.021+screen_coords.y*0.017)*0.5
-      +sin(screen_coords.x*0.009-screen_coords.y*0.013)*0.5;
-    float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
-    float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
-    vec3 watercolor=mix(vec3(pigmentGray),shaded,0.82)*pigmentVariation;
-    watercolor=mix(vec3(1.0,0.965,0.885),watercolor,0.94);
-    float ink=1.0-smoothstep(0.025,0.15,abs(vEyeNormal.z));
-    float hatch=smoothstep(0.58,0.76,
-      fract((screen_coords.x+screen_coords.y)*0.115+paperNoise*0.35));
-    float inkMark=ink*(0.22+0.78*hatch);
-    watercolor*=mix(1.0,0.18,inkMark);
-    shaded=mix(shaded,watercolor,mangaAmount);
-  }else{
-    vec2 watercolorCoords=screen_coords.xy*watercolorScreenScale;
-    float paperNoise=fract(sin(dot(floor(watercolorCoords*0.5),
-      vec2(12.9898,78.233)))*43758.5453)-0.5;
-    float broadWash=sin(watercolorCoords.x*0.021+watercolorCoords.y*0.017)*0.5
+    STADIUM_FLOAT float broadWash=
+      sin(watercolorCoords.x*0.021+watercolorCoords.y*0.017)*0.5
       +sin(watercolorCoords.x*0.009-watercolorCoords.y*0.013)*0.5;
     float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
     float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
@@ -172,7 +203,7 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
     shaded=mix(shaded,watercolor,mangaAmount);
   }
   shaded=mix(shaded,vec3(1.0),flashAmount);
-  return vec4(shaded,
+  love_PixelColor=vec4(shaded,
     texel.a * mix(1.0, environmentColor.a, environmentMix) * sceneTint.a);
 }
 #endif
@@ -211,13 +242,16 @@ uniform vec3 billboardCenter;
 uniform vec3 billboardRight;
 uniform vec3 billboardUp;
 uniform vec2 billboardSize;
+uniform float decalDepthBias;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
   if (billboardEnabled > 0.5) {
     vertex_position.xyz = billboardCenter
       + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
       + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
   }
-  return mvp * vertex_position;
+  vec4 clip=mvp*vertex_position;
+  clip.z-=decalDepthBias*clip.w;
+  return clip;
 }
 #endif
 #ifdef PIXEL
@@ -242,11 +276,18 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords) {
 Renderer.SHADER_SOURCE = SHADER
 Renderer.CAMERA_SHADER_SOURCE = CAMERA_SHADER
 
-function Renderer.compileShaderAudit()
+function Renderer.shaderSource(forceMediump)
+  if not forceMediump then return SHADER end
+  return (SHADER:gsub("#define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP",
+    "#define STADIUM_FLOAT mediump", 1))
+end
+
+function Renderer.compileShaderAudit(forceMediump)
   if not (love and love.graphics and love.graphics.newShader) then
     return false, "LÖVE shader compiler unavailable"
   end
-  local ok, shader = pcall(love.graphics.newShader, SHADER)
+  local ok, shader = pcall(love.graphics.newShader,
+    Renderer.shaderSource(forceMediump))
   if not ok or not shader then return false, tostring(shader) end
   if shader.release then pcall(shader.release, shader) end
   return true
@@ -474,15 +515,36 @@ local function sourceFrame(anim, time, loop)
   return start + ((raw - start) % span), false
 end
 
-local function makeMesh(prim)
+function Renderer.meshRows(prim)
   local rows = {}
   local us, vs = Sampler.uvScale(prim.sampler, prim.textureScale)
+  local minU,maxU,minV,maxV=math.huge,-math.huge,math.huge,-math.huge
+  for i=1,prim.nverts do
+    local u,v=(prim.uv[i*2-1] or 0)*us,(prim.uv[i*2] or 0)*vs
+    minU,maxU=math.min(minU,u),math.max(maxU,u)
+    minV,maxV=math.min(minV,v),math.max(maxV,v)
+  end
+  local anchorU,anchorV=0,0
+  -- Callback textures can have a different resolution and therefore a
+  -- non-integral coordinate scale. Their phase cannot use the source
+  -- texture's periodic origin safely.
+  if not prim.callbackOffset then
+    local wrapS,wrapT=Sampler.wrap(prim.sampler)
+    anchorU=Sampler.coordinateAnchor(minU,maxU,wrapS)
+    anchorV=Sampler.coordinateAnchor(minV,maxV,wrapT)
+  end
   for i = 1, prim.nverts do
     local color = prim.vertexSemantics == "color" and prim.color or nil
-    rows[i] = { 0, 0, 0, prim.uv[i * 2 - 1] * us, prim.uv[i * 2] * vs, 0, 1, 0,
+    rows[i] = { 0, 0, 0, prim.uv[i * 2 - 1] * us-anchorU,
+      prim.uv[i * 2] * vs-anchorV, 0, 1, 0,
       color and color[i * 4 - 3] / 255 or 1, color and color[i * 4 - 2] / 255 or 1,
       color and color[i * 4 - 1] / 255 or 1, color and color[i * 4] / 255 or 1 }
   end
+  return rows,anchorU,anchorV
+end
+
+local function makeMesh(prim)
+  local rows = Renderer.meshRows(prim)
   if not (love and love.graphics and love.graphics.newMesh) then return nil, rows end
   local ok, mesh = pcall(love.graphics.newMesh, Renderer.FORMAT, rows, "triangles", "dynamic")
   if not ok then return nil, rows end
@@ -540,10 +602,13 @@ local function makeCanvas(w, h, msaa)
   end
   if not okColor then return nil end
   local depth
-  local okDepth, d = pcall(love.graphics.newCanvas, w, h, { format = "depth24stencil8", readable = false, dpiscale = 1, msaa = msaa })
-  if okDepth then depth = d end
+  for _,format in ipairs({"depth24stencil8","depth24","depth16","depth32f"}) do
+    local okDepth,d=pcall(love.graphics.newCanvas,w,h,
+      {format=format,readable=false,dpiscale=1,msaa=msaa})
+    if okDepth and d then depth=d break end
+  end
   if color.setFilter then pcall(color.setFilter, color, "linear", "linear") end
-  return color, depth
+  return color, depth, depth == nil
 end
 
 local function imageDimensions(image, fallback)
@@ -552,6 +617,64 @@ local function imageDimensions(image, fallback)
     if ok and w and h then return w,h end
   end
   return (fallback and fallback.w) or 1,(fallback and fallback.h) or 1
+end
+
+local function resolvedTextureWrap(prim, material, set)
+  local wrapS, wrapT = Sampler.wrap(prim and prim.sampler)
+  if material then
+    wrapS = material.wrapS or wrapS
+    wrapT = material.wrapT or wrapT
+  end
+  if set and set.wrap then wrapS, wrapT = set.wrap, set.wrap end
+  return wrapS, wrapT
+end
+
+local function sendTextureWrapMode(shader, uniform, wrapS, wrapT)
+  if not (shader and shader.send) then return end
+  pcall(shader.send, shader, uniform,
+    {Sampler.wrapCode(wrapS), Sampler.wrapCode(wrapT)})
+end
+
+local function foldedTextureScroll(scroll, wrapS, wrapT, enabled)
+  if not enabled then
+    return scroll and scroll[1] or 0, scroll and scroll[2] or 0
+  end
+  return Sampler.foldOffset(scroll and scroll[1] or 0, wrapS),
+    Sampler.foldOffset(scroll and scroll[2] or 0, wrapT)
+end
+
+function Renderer.shouldBoundTextureUV(options)
+  if type(options) == "table" and options.boundedTextureUV ~= nil then
+    return options.boundedTextureUV == true
+  end
+  if Renderer.isMobileGraphics() then return true end
+  if love and love.graphics and love.graphics.getSupported then
+    local ok,supported=pcall(love.graphics.getSupported)
+    if ok and type(supported)=="table" and supported.pixelshaderhighp == false then
+      return true
+    end
+  end
+  return false
+end
+
+function Renderer.isMobileGraphics()
+  if not (love and love.graphics and love.graphics.getRendererInfo) then return false end
+  local ok,name,version,vendor,device=pcall(love.graphics.getRendererInfo)
+  if not ok then return false end
+  local label=table.concat({tostring(name or ""),tostring(version or ""),
+    tostring(vendor or ""),tostring(device or "")}," "):lower()
+  return label:find("opengl es",1,true)~=nil or label:find("gles",1,true)~=nil
+    or label:find("metal",1,true)~=nil
+end
+
+function Renderer.shouldReceiveModelSunShadows(options)
+  if type(options)=="table" and options.modelSunShadows~=nil then
+    return options.modelSunShadows==true
+  end
+  -- Android/iOS keep the shared cast-shadow pass for the arena, but packed
+  -- self-shadow depth is unstable across GLES tile renderers and obscures
+  -- texture details with acne. Desktop retains the reference self-shadow.
+  return not Renderer.isMobileGraphics()
 end
 
 function Renderer.new(model, options)
@@ -568,6 +691,9 @@ function Renderer.new(model, options)
     finished = false,
     yaw = tonumber(options.yaw) or 0,
     pitch = tonumber(options.pitch) or 0,
+    boundedTextureUV = Renderer.shouldBoundTextureUV(options),
+    receiveModelSunShadows = Renderer.shouldReceiveModelSunShadows(options),
+    decalDepthBias = math.max(0,tonumber(options.decalDepthBias) or (4/65535)),
     fov = tonumber(options.fov) or (35 * pi / 180),
     lightDir = options.lightDir or { 0.35, 0.7, 0.62 },
     ambient = options.ambient or { 0.46, 0.46, 0.46 },
@@ -593,7 +719,9 @@ function Renderer.new(model, options)
     self.parts[i] = { prim = prim, mesh = mesh, rows = rows, visible = {}, used = used }
   end
   if love and love.graphics and love.graphics.newShader then
-    local ok, shader = pcall(love.graphics.newShader, SHADER)
+    local forceMediump = options.forceMediumpShader == true
+    local ok, shader = pcall(love.graphics.newShader,
+      Renderer.shaderSource(forceMediump))
     if ok and shader then
       self.shader, self.shaderTier = shader, "lit"
     else
@@ -1083,6 +1211,10 @@ function Renderer:drawDynamicObjects(pass, model, options)
       if g.setBlendMode then g.setBlendMode("alpha", "alphamultiply") end
       pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
       pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
+      sendTextureWrapMode(self.shader, "primaryWrapMode", "clamp", "clamp")
+      sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
+      pcall(self.shader.send, self.shader, "boundedUVEnabled",
+        self.boundedTextureUV and 1 or 0)
       pcall(self.shader.send, self.shader, "environmentMix", 0)
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
       pcall(self.shader.send, self.shader, "effectIntensityMode", 1)
@@ -1174,8 +1306,14 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
     pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
     pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
+    pcall(self.shader.send, self.shader, "decalDepthBias", 0)
+    sendTextureWrapMode(self.shader, "primaryWrapMode", "clamp", "clamp")
+    sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
+    pcall(self.shader.send, self.shader, "boundedUVEnabled",
+      self.boundedTextureUV and 1 or 0)
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
-    pcall(self.shader.send, self.shader, "sunEnabled", options.sunMap and 1 or 0)
+    pcall(self.shader.send, self.shader, "sunEnabled",
+      options.sunMap and self.receiveModelSunShadows and 1 or 0)
     if options.sunMap then pcall(self.shader.send,self.shader,"sunMap",options.sunMap) end
     pcall(self.shader.send,self.shader,"sunDark",options.sunDark or 0.68)
     pcall(self.shader.send,self.shader,"sunBias",options.sunBias or 0.002)
@@ -1218,6 +1356,8 @@ function Renderer:drawScene(pass, model, options)
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
           g.setDepthMode(compare, write)
         end
+        pcall(self.shader.send,self.shader,"decalDepthBias",
+          part.prim.decal and self.decalDepthBias or 0)
         pcall(self.shader.send, self.shader, "environmentColor",
           material and material.environmentColor or {1,1,1,1})
         pcall(self.shader.send, self.shader, "environmentMix",
@@ -1227,6 +1367,8 @@ function Renderer:drawScene(pass, model, options)
         local set = self:callbackUsesMaterialFx(part.prim)
           and site and sets and sets[site] or nil
         local textureIndex = self:currentTexture(part.prim)
+        local wrapS, wrapT = resolvedTextureWrap(part.prim, material, set)
+        sendTextureWrapMode(self.shader, "primaryWrapMode", wrapS, wrapT)
         local uvScaleS, uvScaleT = 1, 1
         if set then
           uvScaleS, uvScaleT = Renderer.callbackTextureCoordinateScale(
@@ -1236,6 +1378,10 @@ function Renderer:drawScene(pass, model, options)
           {uvScaleS, uvScaleT})
         local secondary = set and Pack.image(self.model, set[2]) or nil
         if secondary then
+          local secondaryWrapS = set.wrap or "clamp"
+          local secondaryWrapT = set.wrap or "clamp"
+          sendTextureWrapMode(self.shader, "secondaryWrapMode",
+            secondaryWrapS, secondaryWrapT)
           if secondary.setWrap and set.wrap then
             pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
           end
@@ -1244,11 +1390,16 @@ function Renderer:drawScene(pass, model, options)
           pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
           pcall(self.shader.send, self.shader, "secondaryMix", set.mix or 100/255)
           local a, b = set.scroll and set.scroll[1], set.scroll and set.scroll[2]
+          local aS, aT = foldedTextureScroll(a, wrapS, wrapT,
+            self.boundedTextureUV)
+          local bS, bT = foldedTextureScroll(b, secondaryWrapS, secondaryWrapT,
+            self.boundedTextureUV)
           pcall(self.shader.send, self.shader, "textureScroll", {
-            a and a[1] or 0, a and a[2] or 0, b and b[1] or 0, b and b[2] or 0})
+            aS, aT, bS, bT})
           pcall(self.shader.send, self.shader, "secondaryEnabled", 1)
         else
           pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
+          sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
           pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
         end
         pcall(self.shader.send, self.shader, "alphaCutoff", additive and 0.001 or 0.01)
@@ -1256,9 +1407,6 @@ function Renderer:drawScene(pass, model, options)
           if texture.setFilter then pcall(texture.setFilter, texture, self.textureFilter,
             self.textureFilter, self.anisotropy) end
           if texture.setWrap then
-            local wrapS, wrapT = Sampler.wrap(part.prim.sampler)
-            if material then wrapS, wrapT = material.wrapS or wrapS, material.wrapT or wrapT end
-            if set and set.wrap then wrapS, wrapT = set.wrap, set.wrap end
             pcall(texture.setWrap, texture, wrapS, wrapT)
           end
           local tw, th = imageDimensions(texture,
@@ -1320,7 +1468,7 @@ function Renderer:renderToCanvas(width, height, options)
   if not self.canvas or self.canvasW ~= width or self.canvasH ~= height or self.canvasMSAA ~= msaa then
     if self.canvas and self.canvas.release then pcall(self.canvas.release, self.canvas) end
     if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
-    self.canvas, self.depth = makeCanvas(width, height, msaa)
+    self.canvas, self.depth, self.temporaryDepth = makeCanvas(width, height, msaa)
     self.canvasW, self.canvasH, self.canvasMSAA = width, height, msaa
   end
   if not self.canvas then return nil, "canvas unavailable" end
@@ -1334,11 +1482,9 @@ function Renderer:renderToCanvas(width, height, options)
   if g.getDepthMode then oldDepthCompare, oldDepthWrite = g.getDepthMode() end
   local oldCull = g.getMeshCullMode and g.getMeshCullMode() or nil
   local ok, err = pcall(function()
-    if self.depth then
-      g.setCanvas({ self.canvas, depthstencil = self.depth })
-    else
-      g.setCanvas(self.canvas)
-    end
+    if self.depth then g.setCanvas({self.canvas,depthstencil=self.depth})
+    elseif self.temporaryDepth then g.setCanvas({self.canvas,depth=true})
+    else g.setCanvas(self.canvas) end
     g.clear(0, 0, 0, 0, true, true)
     -- Match the scene renderer's per-primitive body/decal depth contract.
     if g.setDepthMode then g.setDepthMode(RenderContract.MODEL_DEPTH_COMPARE, true) end
@@ -1376,6 +1522,11 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
       pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
       pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
+      pcall(self.shader.send, self.shader, "decalDepthBias", 0)
+      sendTextureWrapMode(self.shader, "primaryWrapMode", "clamp", "clamp")
+      sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
+      pcall(self.shader.send, self.shader, "boundedUVEnabled",
+        self.boundedTextureUV and 1 or 0)
     end
 
     local function drawPass(additive)
@@ -1397,9 +1548,18 @@ function Renderer:renderToCanvas(width, height, options)
           local attribute = site and attributes and attributes[site]
           local primitiveColor = attribute and attribute.color
             or (material and material.primitiveColor) or { 1, 1, 1, 1 }
+          local sets = self.handlerState and self.handlerState.textureSetBySite
+          local set = self:callbackUsesMaterialFx(part.prim)
+            and site and sets and sets[site] or nil
+          local textureIndex = self:currentTexture(part.prim)
+          local wrapS,wrapT=resolvedTextureWrap(part.prim,material,set)
           if g.setDepthMode then
             local compare, write = RenderContract.depthState(part.prim, not additive)
             g.setDepthMode(compare, write)
+          end
+          if self.shader then
+            pcall(self.shader.send,self.shader,"decalDepthBias",
+              part.prim.decal and self.decalDepthBias or 0)
           end
           if self.shader then
             pcall(self.shader.send, self.shader, "effectIntensityMode",
@@ -1410,10 +1570,7 @@ function Renderer:renderToCanvas(width, height, options)
               material and material.environmentColor or { 1, 1, 1, 1 })
             pcall(self.shader.send, self.shader, "environmentMix",
               material and material.combine and (material.combine[1] ~= 0 or material.combine[2] ~= 0) and 1 or 0)
-            local sets = self.handlerState and self.handlerState.textureSetBySite
-            local set = self:callbackUsesMaterialFx(part.prim)
-              and site and sets and sets[site] or nil
-            local textureIndex = self:currentTexture(part.prim)
+            sendTextureWrapMode(self.shader,"primaryWrapMode",wrapS,wrapT)
             local uvScaleS,uvScaleT=1,1
             if set then
               uvScaleS,uvScaleT=Renderer.callbackTextureCoordinateScale(
@@ -1423,6 +1580,10 @@ function Renderer:renderToCanvas(width, height, options)
               {uvScaleS,uvScaleT})
             local secondary = set and Pack.image(model, set[2]) or nil
             if secondary then
+              local secondaryWrapS=set.wrap or "clamp"
+              local secondaryWrapT=set.wrap or "clamp"
+              sendTextureWrapMode(self.shader,"secondaryWrapMode",
+                secondaryWrapS,secondaryWrapT)
               if secondary.setWrap and set.wrap then
                 pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
               end
@@ -1431,13 +1592,17 @@ function Renderer:renderToCanvas(width, height, options)
               pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
               pcall(self.shader.send, self.shader, "secondaryMix", set.mix or (100 / 255))
               local a, b = set.scroll and set.scroll[1], set.scroll and set.scroll[2]
+              local aS,aT=foldedTextureScroll(a,wrapS,wrapT,
+                self.boundedTextureUV)
+              local bS,bT=foldedTextureScroll(b,secondaryWrapS,secondaryWrapT,
+                self.boundedTextureUV)
               pcall(self.shader.send, self.shader, "textureScroll", {
-                a and a[1] or 0, a and a[2] or 0,
-                b and b[1] or 0, b and b[2] or 0,
+                aS,aT,bS,bT,
               })
               pcall(self.shader.send, self.shader, "secondaryEnabled", 1)
             else
               pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
+              sendTextureWrapMode(self.shader,"secondaryWrapMode","clamp","clamp")
               pcall(self.shader.send, self.shader, "textureScroll", { 0, 0, 0, 0 })
             end
             pcall(self.shader.send, self.shader, "alphaCutoff", additive and 0.001 or 0.01)
@@ -1456,12 +1621,6 @@ function Renderer:renderToCanvas(width, height, options)
               renderState.textureGenEnabled and 1 or 0)
           end
           if texture and texture.setWrap then
-            local wrapS,wrapT=Sampler.wrap(part.prim.sampler)
-            if material then wrapS,wrapT=material.wrapS or wrapS,material.wrapT or wrapT end
-            local wrapSets=self.handlerState and self.handlerState.textureSetBySite
-            local wrapSet=self:callbackUsesMaterialFx(part.prim)
-              and site and wrapSets and wrapSets[site] or nil
-            if wrapSet and wrapSet.wrap then wrapS,wrapT=wrapSet.wrap,wrapSet.wrap end
             pcall(texture.setWrap,texture,wrapS,wrapT)
           end
           if texture and part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
@@ -1518,7 +1677,8 @@ function Renderer:release()
   if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
   if self.shader and self.shader.release then pcall(self.shader.release, self.shader) end
   if self.shadowShader and self.shadowShader.release then pcall(self.shadowShader.release,self.shadowShader) end
-  self.canvas, self.depth, self.shader, self.shadowShader = nil, nil, nil, nil
+  self.canvas, self.depth, self.temporaryDepth, self.shader, self.shadowShader =
+    nil, nil, nil, nil, nil
 end
 
 Renderer.sourceFrame = sourceFrame
