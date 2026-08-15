@@ -16,6 +16,7 @@ local modelCache = {}
 local modelOrder = {}
 local MODEL_KEEP = 4
 local configuredCount = 151
+local playthroughReady = false
 local status = {
   state = "idle",
   done = 0,
@@ -54,6 +55,29 @@ function Importer.bind(mod)
   return Importer
 end
 
+function Importer.setPlaythroughReady(value)
+  local ready = value == true
+  if not ready then
+    playthroughReady = false
+    if status.state == "ready" then
+      status.state = "idle"
+      status.done = 0
+      status.progress = 0
+      status.phase = nil
+      status.species = nil
+      status.error = nil
+    end
+    return Importer
+  end
+
+  playthroughReady = true
+  if Cache.available(configuredCount) and status.state ~= "building"
+      and status.state ~= "picking" then
+    setReady()
+  end
+  return Importer
+end
+
 function Importer.configure(options)
   options = type(options) == "table" and options or {}
   local requested = math.floor(tonumber(options.count) or configuredCount)
@@ -67,8 +91,10 @@ function Importer.configure(options)
     shinyPalettes = options.shinyPalettes,
     palettePairs = options.palettePairs,
   })
-  if Cache.available(configuredCount) and status.state ~= "building"
-      and status.state ~= "picking" then setReady() end
+  if playthroughReady and Cache.available(configuredCount)
+      and status.state ~= "building" and status.state ~= "picking" then
+    setReady()
+  end
   return Importer
 end
 
@@ -76,8 +102,17 @@ function Importer.status()
   return status
 end
 
+function Importer.cacheStatus()
+  if not playthroughReady then
+    return { state = "error", code = "not_in_playthrough",
+      message = "Start or continue a game before checking Stadium 2 cache" }
+  end
+  return Cache.inspect(configuredCount)
+end
+
 function Importer.available(count)
-  return Cache.available(count or configuredCount)
+  if not playthroughReady then return false end
+  return Cache.inspect(count or configuredCount).state == "valid"
 end
 
 function Importer.modelsEnabled()
@@ -227,8 +262,40 @@ function Importer.resolveHandlerPointer(extension, pointer, length)
   return Handlers.resolvePointer(extension, pointer, length)
 end
 
-function Importer.beginFrom(bytes, label)
+function Importer.beginFrom(bytes, label, options)
+  if not playthroughReady then
+    return false, "Start or continue a game before importing Stadium 2"
+  end
   if job then return false, "Stadium 2 import is already running" end
+  options = type(options) == "table" and options or {}
+
+  -- FINAL DESTRUCTIVE GUARD: no automatic/internal path is allowed to clear a
+  -- valid persistent cache.  Only the Options-row manual reimport passes
+  -- forceReimport=true.  This protects against any stray caller above us --
+  -- exported beginPath/autoImport, retry UI, or a future hook -- reaching the
+  -- destructive cache-clear boundary after the cache was already proven valid.
+  if not options.forceReimport then
+    local cache = Cache.inspect(configuredCount)
+    if cache.state == "valid" then
+      setReady()
+      if modRef and modRef.log then
+        local ctx = cache.context or {}
+        pcall(function()
+          modRef.log:info(
+            "stadium2 import suppressed: valid cache game=%s playthrough=%s count=%s",
+            tostring(ctx.gameVersion or "?"), tostring(ctx.playthroughId or "?"),
+            tostring(cache.marker and cache.marker.count or "?"))
+        end)
+      end
+      return true, "ready"
+    end
+    if cache.state == "error" then
+      return fail("checking persistent cache",
+        ("%s: %s"):format(tostring(cache.code or "storage_error"),
+          tostring(cache.message or "persistent cache unavailable")))
+    end
+  end
+
   if nativePickPending then clearNativePicker(false) end
   local normalized, metaOrErr = Rom.validate(bytes)
   if not normalized then return fail("validating ROM", metaOrErr) end
@@ -257,7 +324,8 @@ local function beginCandidate(candidate, options)
   options = type(options) == "table" and options or {}
   local bytes, err = Discovery.read(candidate)
   if not bytes then return fail("reading ROM", err) end
-  local started, beginErr = Importer.beginFrom(bytes, options.label or candidate.path)
+  local started, beginErr = Importer.beginFrom(
+    bytes, options.label or candidate.path, options)
   return started, beginErr
 end
 
@@ -266,24 +334,51 @@ function Importer.beginPath(path)
 end
 
 function Importer.autoImport()
-  if Importer.available() then
-    setReady()
-    return true
+  if not playthroughReady then
+    return false, "Start or continue a game before importing Stadium 2"
   end
+
+  local cache = Cache.inspect(configuredCount)
+  if cache.state == "valid" then
+    setReady()
+    return true, "ready"
+  end
+
+  -- A broken/unavailable persistence lookup is NOT evidence that the cache is
+  -- absent. Rebuilding in that situation causes the endless auto-import loop:
+  -- every failed read looks missing, so every gameplay entry extracts again.
+  if cache.state == "error" then
+    return fail("checking persistent cache",
+      ("%s: %s"):format(tostring(cache.code or "storage_error"),
+        tostring(cache.message or "persistent cache unavailable")))
+  end
+
+  -- missing / stale / incomplete are the only automatic rebuild states.
   local candidate = Discovery.find()
   if not candidate then
-    return false,"no Pokemon Stadium 2 US ROM is packaged inside this mod"
+    return fail("reading required ROM",
+      "the engine-managed Pokemon Stadium 2 required ROM is unavailable")
   end
   return beginCandidate(candidate)
 end
 
-function Importer.request()
+function Importer.request(options)
+  if not playthroughReady then
+    return false, "Start or continue a game before importing Stadium 2"
+  end
   if job then return false, "Stadium 2 import is already running" end
+  options = type(options) == "table" and options or {}
+
+  -- Generic request is SAFE by default: it cannot overwrite a valid cache.
+  -- A deliberate Options-row reimport supplies forceReimport=true below.
   local candidate=Discovery.find()
-  if candidate then return beginCandidate(candidate) end
-  return fail("selecting ROM","The new mod sandbox has no scoped external ROM "
-    .."picker. Package your legally dumped Stadium 2 ROM inside this mod, or "
-    .."use an engine release that provides a mod ROM-import API.")
+  if candidate then return beginCandidate(candidate, options) end
+  return fail("selecting ROM","The engine-managed Pokemon Stadium 2 ROM is unavailable. "
+    .."Open the mod's Imported Files panel and provide the required ROM.")
+end
+
+function Importer.reimport()
+  return Importer.request({ forceReimport = true, source = "options" })
 end
 
 function Importer.step()
@@ -338,7 +433,9 @@ function Importer.row()
     -- action rows an explicit `activate` callback on A.
     activate = function()
       if status.state == "building" or status.state == "picking" then return true end
-      Importer.request()
+      -- This is the one intentional destructive path: the player explicitly
+      -- selected STADIUM 2 ROM from Options while a valid cache may exist.
+      Importer.reimport()
       return true
     end,
   }

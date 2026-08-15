@@ -11,13 +11,46 @@ return function(mod)
   Battle.bind(mod)
   BattleAA.bind(mod)
   local importScreen
+  local activatedSave
+  local pendingAutoImport = false
+  local activatePlaythrough
 
-  local function showImportScreen(game)
+  local function gameplayActive(game)
+    if not (game and game.save) then return false end
+    -- Gen 2 owns a World service rather than Gen 1's overworld stack state.
+    if game.phase == "play" and game.world then return true end
+    -- Gen 1 (including overhaul mods such as Crystal 251) is ready once the
+    -- real overworld is the visible owner. At this point CONTINUE/New Game has
+    -- already replaced the temporary title save.
+    local stack = game.stack
+    return game.overworld ~= nil and stack ~= nil and type(stack.top) == "function"
+      and stack:top() == game.overworld
+  end
+
+  local function screenIsOnStack(game, screen)
+    local states = game and game.stack and game.stack.states
+    if type(states) ~= "table" or not screen then return false end
+    for _, state in ipairs(states) do
+      if state == screen then return true end
+    end
+    return false
+  end
+
+  local function showImportScreen(game, force)
     local state = Importer.status().state
-    if importScreen or not (game and game.stack)
-        or (state ~= "building" and state ~= "picking" and state ~= "failed") then
+    if not (game and game.stack) then return false end
+
+    -- A stale local reference must never suppress the UI.  If another engine
+    -- transition removed the screen, forget it and recreate it below.
+    if importScreen and not screenIsOnStack(game, importScreen) then
+      importScreen = nil
+    end
+
+    if importScreen then return true end
+    if not force and state ~= "building" and state ~= "picking" and state ~= "failed" then
       return false
     end
+
     importScreen = ImportScreen.new(game, Importer, function(screen)
       if importScreen == screen then importScreen = nil end
     end)
@@ -58,9 +91,10 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.10.11"
+  mod.exports.version = "0.10.12"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
+  mod.exports.cacheStatus = Importer.cacheStatus
   mod.exports.available = Importer.available
   mod.exports.modelsEnabled = Importer.modelsEnabled
   mod.exports.battleEnabled = Importer.battleEnabled
@@ -74,6 +108,7 @@ return function(mod)
   mod.exports.beginFrom = Importer.beginFrom
   mod.exports.beginPath = Importer.beginPath
   mod.exports.request = Importer.request
+  mod.exports.reimport = Importer.reimport
   mod.exports.modelPath = Importer.modelPath
   mod.exports.readPack = Importer.readPack
   mod.exports.parsePack = Importer.parsePack
@@ -92,7 +127,31 @@ return function(mod)
 
   mod.hooks:wrap("input.step", function(next, game, dt)
     local result = next(game, dt)
-    Importer.step()
+
+    -- Do not inspect or allocate playthrough-scoped storage at game.ready.
+    -- Wait until the actual world owner is running, matching the engine's
+    -- importer/cache pattern and working for both Gen 1 overhauls and Gen 2.
+    activatePlaythrough(game)
+
+    -- HARD UI ORDERING GUARANTEE: automatic recovery is queued by
+    -- activatePlaythrough(), but extraction does not start until its progress
+    -- screen has been pushed onto the live stack.  This prevents a background
+    -- auto-import from running before the player ever sees the importer UI.
+    if pendingAutoImport then
+      if showImportScreen(game, true) then
+        pendingAutoImport = false
+        Importer.autoImport()
+      end
+    else
+      -- Manual reimports transition to BUILDING from the Options row; surface
+      -- those on the following input boundary as before.
+      showImportScreen(game)
+    end
+
+    -- Only advance extraction after the import screen has been installed.
+    if not pendingAutoImport then Importer.step() end
+
+    -- A first-step failure transitions to FAILED; keep it visible immediately.
     showImportScreen(game)
     return result
   end, 5)
@@ -112,17 +171,48 @@ return function(mod)
     return out
   end, 95)
 
-  mod.events:on("game.ready", function(ev)
-    -- game.ready is the generation-neutral owner seam.  Requiring
-    -- src.core.Game here would bind Gold to Gen 1's unused singleton.
-    local game = (ev and ev.game) or mod.game
+  activatePlaythrough = function(game)
+    if not gameplayActive(game) or activatedSave == game.save then return false end
+
+    -- Configure from the final merged data only after the real playthrough is
+    -- live. Crystal 251 has already registered its overhaul by this point, so
+    -- the dex scan naturally resolves to 251 instead of the boot-time 151.
+    Importer.setPlaythroughReady(false)
     Battle.configureGame(game)
-    -- The active generation is only authoritative once the live game owner
-    -- exists. Installing earlier can patch Gen 1's dormant singleton on Gold.
+    Importer.setPlaythroughReady(true)
     Battle.install()
-    Importer.autoImport()
-    showImportScreen(game)
-  end)
+
+    activatedSave = game.save
+
+    -- Cache validity is decided only inside the real playthrough namespace.
+    -- A valid cache needs no work. Missing/stale/incomplete rebuilds; a storage
+    -- access error is surfaced and NEVER misclassified as a missing cache.
+    local cache = Importer.cacheStatus()
+    if mod.log and cache then
+      local ctx = cache.context or {}
+      pcall(function()
+        mod.log:info("stadium2 cache: state=%s code=%s game=%s playthrough=%s",
+          tostring(cache.state), tostring(cache.code),
+          tostring(ctx.gameVersion or "?"), tostring(ctx.playthroughId or "?"))
+      end)
+    end
+    if cache.state == "valid" then
+      -- setPlaythroughReady already marked the importer READY.
+      pendingAutoImport = false
+    elseif cache.state == "missing" or cache.state == "stale"
+        or cache.state == "incomplete" then
+      -- Queue the automatic recovery.  The input.step wrapper above MUST push
+      -- the importer screen first; only then is autoImport() allowed to begin.
+      pendingAutoImport = true
+    else
+      -- Storage/backend errors are not cache misses and must never rebuild.
+      pendingAutoImport = false
+      Importer.autoImport() -- turns the classified storage error into FAILED
+      showImportScreen(game)
+    end
+    return true
+  end
+
 
   mod.events:on("battle.started", function(ev)
     Battle.ensure(ev and ev.battle)
