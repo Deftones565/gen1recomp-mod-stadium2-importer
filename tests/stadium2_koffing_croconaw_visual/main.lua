@@ -106,27 +106,99 @@ local function packagedDataRoot()
 end
 
 local function hostReadFs(base)
+  local packRoot = os.getenv("STADIUM2_VISUAL_PACK_ROOT")
+  local tempRoot = os.getenv("STADIUM2_VISUAL_TEMP_ROOT")
+    or os.getenv("TMPDIR") or "/tmp"
+  tempRoot = tempRoot:gsub("[/\\]+$", "")
+  local tempPrefix = tempRoot .. "/stadium2-importer-visual-cache-"
+  local removed = {}
+  local function tempPath(path)
+    -- Storage keys are already sandboxed. Escape separators as well so the
+    -- visual cache remains a flat set of files and needs no host directories.
+    local token = tostring(path or ""):gsub("([^%w%._-])", function(char)
+      return ("_%02x"):format(char:byte())
+    end)
+    return tempPrefix .. token
+  end
+  local function readFile(path)
+    local file, err = io.open(path, "rb")
+    if not file then return nil, err end
+    local bytes = file:read("*a")
+    file:close()
+    return bytes
+  end
+  local function fileInfo(path)
+    local file = io.open(path, "rb")
+    if not file then return nil end
+    local size = file:seek("end")
+    file:close()
+    return { type = "file", size = size }
+  end
+  local function tempOwnsAlternateStorageType(path)
+    local stem = tostring(path or ""):match("^(.*)%.lua")
+    local alternate = ".bin"
+    if not stem then
+      stem = tostring(path or ""):match("^(.*)%.bin")
+      alternate = ".lua"
+    end
+    if not stem then return false end
+    for _, suffix in ipairs({ "", ".bak", ".tmp" }) do
+      if fileInfo(tempPath(stem .. alternate .. suffix)) then return true end
+    end
+    return false
+  end
+  local function packOverride(path)
+    if not packRoot or packRoot == "" then return nil end
+    local kind, species = tostring(path or ""):match(
+      "STADIUM2_IMPORTER/cache/(normal|shiny)/(%d+)%.lua$")
+    if not kind then return nil end
+    local file = io.open(("%s/%s/%s.dsm"):format(packRoot, kind, species), "rb")
+    if not file then return nil end
+    local bytes = file:read("*a")
+    file:close()
+    return "return { bytes = " .. string.format("%q", bytes) .. " }\n"
+  end
   local function absolute(path)
     return base .. "/" .. tostring(path or ""):gsub("^[/\\]+", "")
   end
   return {
     getInfo = function(path)
-      local file = io.open(absolute(path), "rb")
-      if not file then return nil end
-      local size = file:seek("end")
-      file:close()
-      return { type = "file", size = size }
+      local info = fileInfo(tempPath(path))
+      if info then return info end
+      if removed[path] then return nil end
+      -- A rebuilt opaque .bin record must hide the installed legacy .lua
+      -- record (and vice versa) across visual-harness process restarts.
+      if tempOwnsAlternateStorageType(path) then return nil end
+      local override = packOverride(path)
+      if override then return { type = "file", size = #override } end
+      return fileInfo(absolute(path))
     end,
     read = function(path)
-      local file, err = io.open(absolute(path), "rb")
-      if not file then return nil, err end
-      local bytes = file:read("*a")
-      file:close()
-      return bytes
+      local bytes = readFile(tempPath(path))
+      if bytes ~= nil then return bytes end
+      if removed[path] then return nil, "visual cache record was removed" end
+      if tempOwnsAlternateStorageType(path) then
+        return nil, "visual cache owns the alternate storage record type"
+      end
+      local override = packOverride(path)
+      if override then return override end
+      return readFile(absolute(path))
     end,
-    -- This visual harness consumes the player's cache but never mutates it.
-    write = function() return false, "visual cache adapter is read-only" end,
-    remove = function() return false end,
+    write = function(path, bytes)
+      local file, err = io.open(tempPath(path), "wb")
+      if not file then return false, err end
+      local ok, writeErr = file:write(bytes)
+      file:close()
+      if not ok then return false, writeErr end
+      removed[path] = nil
+      return true
+    end,
+    remove = function(path)
+      os.remove(tempPath(path))
+      removed[path] = true
+      return true
+    end,
+    createDirectory = function() return true end,
   }
 end
 
@@ -152,10 +224,11 @@ local function bindPlaythroughStorage(base)
     meta = { playthroughId = playthroughId },
   } }
   local storage = Storage.new("STADIUM2_IMPORTER", fs)
-  -- Storage:list normally walks through love.filesystem.  This harness uses a
-  -- read-only host adapter because a non-fused LOVE source run cannot mount
-  -- the packaged save root, so enumerate the fixed Stadium cache keys by
-  -- probing their verified main/backup records instead.
+  -- Storage:list normally walks through love.filesystem. This harness layers
+  -- a writable cache in the host temp directory over the packaged save root,
+  -- so enumerate fixed Stadium keys by probing main/backup records instead.
+  -- A stale cache can then rebuild for the visual test without modifying the
+  -- selected playthrough's installed cache.
   local storageBase = ("mod_storage/%s/%s/STADIUM2_IMPORTER/")
     :format(version, playthroughId)
   local function stored(key)
@@ -168,7 +241,13 @@ local function bindPlaythroughStorage(base)
     local keys = {}
     local function add(key) if stored(key) then keys[#keys + 1] = key end end
     add("cache/marker")
+    add("cache/error")
     add("cache/battle/substitute")
+    for byte = string.byte("b"), string.byte("z") do
+      local form = "cache/battle/unown_" .. string.char(byte)
+      add(form)
+      add(form .. "_shiny")
+    end
     for species = 1, 251 do
       add(("cache/normal/%03d"):format(species))
       add(("cache/shiny/%03d"):format(species))

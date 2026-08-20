@@ -121,6 +121,16 @@ ok(Renderer.SHADER_SOURCE:find("#ifdef GL_ES", 1, true) ~= nil
   "GLES uses a single soft sun shadow compare instead of binary PCF speckle")
 ok(Renderer.SHADER_SOURCE:find("0.30+(stadiumShade-0.30)*shadowVisibility", 1, true) ~= nil,
   "Pokemon self-shadow preserves the authored ambient lighting floor")
+ok(Renderer.SHADER_SOURCE:find(
+    "vec4(mix(texel.rgb, other.rgb, secondaryMix), texel.a)", 1, true) ~= nil
+  and Renderer.MOBILE_SHADER_SOURCE:find(
+    "vec4(mix(texel.rgb,other.rgb,secondaryMix),texel.a)", 1, true) ~= nil,
+  "dual-texture slime keeps opaque primary alpha on desktop and mobile")
+ok(Renderer.SHADER_SOURCE:find(
+    "texture_coords*secondaryCoordinateScale", 1, true) ~= nil
+  and Renderer.MOBILE_SHADER_SOURCE:find(
+    "VaryingTexCoord.st*secondaryCoordinateScale", 1, true) ~= nil,
+  "secondary callback tile preserves raw coordinates independently of authored detail UVs")
 ok(Renderer.SHADER_SOURCE:find("uniform float decalDepthBias;",1,true)~=nil
   and Renderer.SHADER_SOURCE:find("clip.z-=decalDepthBias*clip.w",1,true)~=nil,
   "coplanar detail primitives can be stabilized on reduced-depth mobile buffers")
@@ -183,9 +193,56 @@ ok(rig:currentTexture(model.prims[1]) == 2, "authored texture survives site call
 local savedHandlers = model.handlers
 model.handlers = { records = {{ commandOffset = 0x44, descriptor = 0x81000048 }} }
 model.textures[2].rgba = "\255\0\0\255\0\255\0\255\0\0\255\255\255\255\255\255"
-ok(rig:currentTexture(model.prims[1]) == 3,
-  "dual-texture material builder replaces every non-decal owned body input")
+ok(rig:currentTexture(model.prims[1]) == 2,
+  "dual-texture material builder preserves authored nonuniform detail inputs")
+ok(rig:callbackUsesMaterialFx(model.prims[1]),
+  "authored detail retains the ROM two-texture color combiner")
+local detailPrimaryScroll, detailSecondaryScroll = Renderer.callbackTextureScroll({
+  scroll = {{0.25, 0.5}, {0.75, 1}},
+}, false)
+ok(detailPrimaryScroll == nil and detailSecondaryScroll[1] == 0.75,
+  "authored detail stays fixed while the secondary slime tile scrolls")
+local detailWrapS, detailWrapT = Renderer.callbackPrimaryWrap({},
+  { wrapS = "clamp", wrapT = "clamp" }, { wrap = "repeat" }, false)
+ok(detailWrapS == "clamp" and detailWrapT == "clamp",
+  "authored detail retains its ROM clamp modes under the slime callback")
+model.textures[3] = { w = model.textures[2].w, h = model.textures[2].h,
+  rgba = model.textures[2].rgba }
+ok(rig:currentTexture(model.prims[1]) == 3
+    and rig:callbackUsesMaterialFx(model.prims[1]),
+  "an authored copy of the callback primary tile remains a scrolling body input")
+local bodyPrimaryScroll = Renderer.callbackTextureScroll({
+  scroll = {{0.25, 0.5}, {0.75, 1}},
+}, true)
+ok(bodyPrimaryScroll[1] == 0.25,
+  "callback-owned body primary retains its ROM tile scroll")
+local bodyWrapS, bodyWrapT = Renderer.callbackPrimaryWrap({},
+  { wrapS = "clamp", wrapT = "clamp" }, { wrap = "repeat" }, true)
+ok(bodyWrapS == "repeat" and bodyWrapT == "repeat",
+  "callback-owned body primary uses the generated tile repeat mode")
+ok(require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+    .ownsAuthoredTexture(model.prims[1],
+      { w = 32, h = 64, rgba = string.rep("\255\255\255\255", 32 * 64) },
+      { w = 32, h = 32, rgba = string.rep("\0\0\0\255", 32 * 32) },
+      0x81000048),
+  "ROM pale carrier atlas is replaced by the generated slime body material")
+local DualTexture = require(
+  "mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+local sharedEyeAtlas = { w = 64, h = 32,
+  rgba = "\0\0\0\255" .. string.rep("\255\255\255\255", 64 * 32 - 1) }
+local slimeTile = { w = 32, h = 32,
+  rgba = string.rep("\0\0\0\255", 32 * 32) }
+ok(DualTexture.ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+      nverts = 97 }, sharedEyeAtlas, slimeTile, 0x81000048),
+  "large Grimer arm geometry does not retain the eye atlas inherited before command 0x08")
+ok(not DualTexture.ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+      nverts = 53 }, sharedEyeAtlas, slimeTile, 0x81000048),
+  "Muk's complete authored eye and pupil mesh retains its local atlas")
+ok(DualTexture.ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+      nverts = 28 }, sharedEyeAtlas, slimeTile, 0x81000048),
+  "Muk's small inherited head shell uses the generated body material")
 model.textures[2].rgba = string.rep("\255\255\255\255", 4)
+model.textures[3].rgba = "\0\0\0\255"
 ok(rig:currentTexture(model.prims[1]) == 3,
   "dual-texture material builder replaces a uniform body fill")
 model.prims[1].decal = false

@@ -4,7 +4,7 @@
 -- existing valid cache is not invalidated merely by upgrading this mod.
 local Cache = {}
 
-Cache.FORMAT = "S2IMP32"
+Cache.FORMAT = "S2IMP34"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"

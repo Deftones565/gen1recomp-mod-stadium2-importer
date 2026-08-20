@@ -6,6 +6,7 @@ local Extract = require("mods.STADIUM2_IMPORTER.lib.extract")
 local Fragment = require("mods.STADIUM2_IMPORTER.lib.fragment")
 local Fragment26 = require("mods.STADIUM2_IMPORTER.lib.fragment26")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
+local Materials = require("mods.STADIUM2_IMPORTER.lib.materials")
 local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
 local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
 
@@ -39,8 +40,16 @@ file:close()
 -- lock allocation size, both argument loads, the two independent scroll
 -- calculations, and the fixed two-cycle material used by the ROM builder.
 local romWords = {
+  [0x81005B68] = 0x3C18DE00, -- call fixed material display list
+  [0x81005B7C] = 0x273961B0,
+  [0x81005B84] = 0xAC590004,
+  [0x81005B88] = 0xAC580000,
   [0x81005DCC] = 0x240400F0, -- allocate 0xF0 bytes
   [0x81005DE4] = 0x0C4016D4, -- jal func_81005B50
+  [0x81005DB8] = 0x24010002, -- callback runs only in render phase 2
+  [0x81005DC0] = 0x1481000A,
+  [0x81005DE0] = 0xAF020018, -- publish generated display-list pointer
+  [0x81005DE8] = 0x8FA50018, -- pass the callback's two-texture argument
   [0x81005B74] = 0x95084904, -- global display-frame counter
   [0x81005BA4] = 0x8DF80000, -- arg[0]
   [0x81005BFC] = 0x00084023, -- negate global frame
@@ -79,8 +88,10 @@ local callbacks, consumers, bodyPrims, decalPrims, routes = 0, 0, 0, 0, 0
 local missingPayloads = {}
 local missingCachePairs = {}
 local targets = {
-  [88] = { callbacks = 0, consumers = 0, body = 0, decals = 0, textureKinds = {}, uvConverted = false },
-  [89] = { callbacks = 0, consumers = 0, body = 0, decals = 0, textureKinds = {}, uvConverted = false },
+  [88] = { callbacks = 0, consumers = 0, body = 0, decals = 0, carriers = 0,
+    details = 0, localEyes = 0, textureKinds = {}, uvConverted = false },
+  [89] = { callbacks = 0, consumers = 0, body = 0, decals = 0, carriers = 0,
+    details = 0, eyeAtlas = false, textureKinds = {}, uvConverted = false },
 }
 
 for dex = 1, 251 do
@@ -105,11 +116,17 @@ for dex = 1, 251 do
     { species = dex, materialFrame = 37, sourceFrame = 3 }, {})) or {}
   local primsBySite = {}
   for _, prim in ipairs(model.prims or {}) do
+    local source = model.textures and model.textures[(prim.tex or -1) + 1]
+    local target = targets[dex]
+    if target and source and source.w == 64 and source.h == 32
+        and prim.callbackDescriptor ~= DualTexture.DESCRIPTOR then
+      target.localEyes = target.localEyes + 1
+    end
     if prim.callbackDescriptor == DualTexture.DESCRIPTOR then
       primsBySite[prim.callbackOffset] = true
       if DualTexture.ownsPrimitive(prim) then bodyPrims = bodyPrims + 1
       else decalPrims = decalPrims + 1 end
-      local target = targets[dex]
+      target = targets[dex]
       if target then
         if DualTexture.ownsPrimitive(prim) then target.body = target.body + 1
         else target.decals = target.decals + 1 end
@@ -174,17 +191,46 @@ for dex = 1, 251 do
             :format(dex, record.commandOffset or 0))
         local target = targets[dex]
         if target and set and set[1] then
-          for _, prim in ipairs(model.prims or {}) do
+          for primIndex, prim in ipairs(model.prims or {}) do
             local source = model.textures and model.textures[(prim.tex or -1) + 1]
+            local callbackTexture = model.textures and model.textures[set[1]]
             if prim.callbackOffset == record.commandOffset
                 and DualTexture.ownsPrimitive(prim)
-                and source and source.w == 4 and source.h == 4 then
-              local s, t = Renderer.callbackTextureCoordinateScale(model, {
-                tex = prim.tex + 1, sampler = prim.sampler,
-                textureScale = prim.textureScale,
-              }, set[1])
-              if close(s, 1 / 8) and close(t, 1 / 8) then
-                target.uvConverted = true
+                and source then
+              local owned = DualTexture.ownsAuthoredTexture(prim, source,
+                callbackTexture, record.descriptor)
+              local primaryScroll, secondaryScroll = Renderer.callbackTextureScroll(
+                set, owned)
+              check(secondaryScroll == set.scroll[2]
+                  and ((owned and primaryScroll == set.scroll[1])
+                    or (not owned and primaryScroll == nil)),
+                ("dex %03d callback 0x%X has incorrect carrier/detail scroll ownership")
+                  :format(dex, record.commandOffset or 0))
+              local materialOffset = extension.render
+                and extension.render.primitiveMaterials
+                and extension.render.primitiveMaterials[primIndex]
+              local authoredMaterial = materialOffset
+                and Materials.parse(extension, materialOffset) or nil
+              local primaryWrapS, primaryWrapT = Renderer.callbackPrimaryWrap(
+                prim, authoredMaterial, set, owned)
+              check((owned and primaryWrapS == "repeat" and primaryWrapT == "repeat")
+                  or (not owned and primaryWrapS == "clamp" and primaryWrapT == "clamp"),
+                ("dex %03d callback 0x%X has incorrect carrier/detail wrap ownership")
+                  :format(dex, record.commandOffset or 0))
+              if owned then target.carriers = target.carriers + 1
+              else target.details = target.details + 1 end
+              if dex == 89 and source.w == 64 and source.h == 32
+                  and not owned then
+                target.eyeAtlas = true
+              end
+              if source.w == 4 and source.h == 4 then
+                local s, t = Renderer.callbackTextureCoordinateScale(model, {
+                  tex = prim.tex + 1, sampler = prim.sampler,
+                  textureScale = prim.textureScale,
+                }, set[1])
+                if close(s, 1 / 8) and close(t, 1 / 8) then
+                  target.uvConverted = true
+                end
               end
             end
           end
@@ -198,13 +244,21 @@ check(callbacks == 36 and consumers == 35 and routes == 35,
   ("family coverage callbacks/consumers/routes=%d/%d/%d expected 36/35/35")
     :format(callbacks, consumers, routes))
 check(targets[88].callbacks == 16 and targets[88].consumers == 16
-    and targets[88].body == 21 and targets[88].decals == 1
+    and targets[88].body == 18 and targets[88].decals == 1
+    and targets[88].carriers == 18 and targets[88].details == 0
+    and targets[88].localEyes == 2
     and targets[88].textureKinds[2] and targets[88].uvConverted,
   "Grimer callback topology or distinct-pointer dual-tile contract changed")
 check(targets[89].callbacks == 20 and targets[89].consumers == 19
-    and targets[89].body == 23 and targets[89].decals == 1
+    and targets[89].body == 20 and targets[89].decals == 1
+    and targets[89].carriers == 19 and targets[89].details == 1
+    and targets[89].eyeAtlas
     and targets[89].textureKinds[2] and targets[89].uvConverted,
   "Muk callback topology or distinct-image dual-tile contract changed")
+
+print(("Grimer carriers/details=%d/%d; Muk carriers/details=%d/%d eyeAtlas=%s")
+  :format(targets[88].carriers, targets[88].details,
+    targets[89].carriers, targets[89].details, tostring(targets[89].eyeAtlas)))
 
 print(("dual-texture material audit: callbacks=%d consumers=%d routes=%d body=%d decals=%d failures=%d")
   :format(callbacks, consumers, routes, bodyPrims, decalPrims, #failures))

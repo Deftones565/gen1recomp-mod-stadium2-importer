@@ -65,4 +65,56 @@ function DualTexture.ownsPrimitive(prim, descriptor)
     and prim.decal ~= true
 end
 
+local function uniformTexture(texture)
+  local rgba = texture and texture.rgba
+  if type(rgba) ~= "string" or #rgba < 4 then return false end
+  local first = rgba:sub(1, 4)
+  for pixel = 5, #rgba, 4 do
+    if rgba:sub(pixel, pixel + 3) ~= first then return false end
+  end
+  return true
+end
+
+local function sameTexture(a, b)
+  return a ~= nil and b ~= nil
+    and tonumber(a.w) == tonumber(b.w) and tonumber(a.h) == tonumber(b.h)
+    and type(a.rgba) == "string" and a.rgba == b.rgba
+end
+
+local function generatedCarrierAtlas(authored, callback)
+  -- Grimer and Muk's 0x48 draws include a 32x64 pale carrier atlas before
+  -- the generated 32x32 body material replaces it. Their actual authored
+  -- eyes are the separate 64x32 atlases and must remain local.
+  return authored ~= nil and callback ~= nil
+    and tonumber(authored.w) == 32 and tonumber(authored.h) == 64
+    and tonumber(callback.w) == DualTexture.WIDTH
+    and tonumber(callback.h) == DualTexture.HEIGHT
+end
+
+local function generatedCarrierGeometry(prim, authored, callback)
+  -- The current 64x32 eye-texture state also reaches Grimer's large arm
+  -- meshes and Muk's two small head shells before command 0x08 replaces it.
+  -- Muk's medium-sized 53-vertex eye/pupil mesh is the authored exception.
+  local vertices = tonumber(prim and prim.nverts) or 0
+  return authored ~= nil and callback ~= nil
+    and tonumber(authored.w) == 64 and tonumber(authored.h) == 32
+    and tonumber(callback.w) == DualTexture.WIDTH
+    and tonumber(callback.h) == DualTexture.HEIGHT
+    and (vertices < 32 or vertices > 64)
+end
+
+-- A 0x48 callback owns the model's uniform carrier, or an authored image
+-- which is byte-identical to its first generated tile. Other authored images
+-- are local detail atlases, not either texture argument passed to the ROM
+-- builder. Their primary UVs remain authored; the renderer may still apply
+-- the callback's secondary tile through the ROM combiner.
+function DualTexture.ownsAuthoredTexture(prim, authoredTexture, callbackTexture,
+    descriptor)
+  return DualTexture.ownsPrimitive(prim, descriptor)
+    and (uniformTexture(authoredTexture)
+      or sameTexture(authoredTexture, callbackTexture)
+      or generatedCarrierAtlas(authoredTexture, callbackTexture)
+      or generatedCarrierGeometry(prim, authoredTexture, callbackTexture))
+end
+
 return DualTexture

@@ -82,6 +82,7 @@ uniform float lightingEnabled;
 uniform float celShadingEnabled;
 uniform float textureGenEnabled;
 uniform vec2 textureCoordinateScale;
+uniform vec2 secondaryCoordinateScale;
 uniform vec2 primaryWrapMode;
 uniform vec2 secondaryWrapMode;
 uniform float boundedUVEnabled;
@@ -148,11 +149,17 @@ void effect() {
   STADIUM_FLOAT vec2 screen_coords=love_PixelCoord;
   STADIUM_FLOAT vec2 uv=mix(texture_coords*textureCoordinateScale,
     vGeneratedUV,textureGenEnabled);
+  STADIUM_FLOAT vec2 secondaryUV=mix(texture_coords*secondaryCoordinateScale,
+    vGeneratedUV,textureGenEnabled);
   vec4 texel = sample3(MainTex, uv + textureScroll.xy, primarySize, primaryWrapMode);
   if (secondaryEnabled > 0.5) {
-    vec4 other = sample3(secondaryTexture, uv + textureScroll.zw, secondarySize,
+    vec4 other = sample3(secondaryTexture, secondaryUV + textureScroll.zw, secondarySize,
       secondaryWrapMode);
-    texel = mix(texel, other, secondaryMix);
+    // The slime display list uses an opaque framebuffer blend. Its combiner
+    // still lerps both RGB layers, but its generated alpha must not make the
+    // body translucent in LOVE's alpha-blended model pass. Keep TEXEL0 alpha,
+    // which retains any authored cutout while matching the opaque body draw.
+    texel = vec4(mix(texel.rgb, other.rgb, secondaryMix), texel.a);
   }
   if (effectIntensityMode > 0.5) {
     float intensity = texel.r;
@@ -259,14 +266,17 @@ uniform float effectIntensityMode;
 uniform float lightingEnabled;
 uniform float textureGenEnabled;
 uniform vec2 textureCoordinateScale;
+uniform vec2 secondaryCoordinateScale;
 void effect() {
   vec4 color=VaryingColor;
   STADIUM_FLOAT vec2 uv=mix(VaryingTexCoord.st*textureCoordinateScale,
     vGeneratedUV,textureGenEnabled);
+  STADIUM_FLOAT vec2 secondaryUV=mix(VaryingTexCoord.st*secondaryCoordinateScale,
+    vGeneratedUV,textureGenEnabled);
   vec4 texel=Texel(MainTex,uv+textureScroll.xy);
   if (secondaryEnabled > 0.5) {
-    vec4 other=Texel(secondaryTexture,uv+textureScroll.zw);
-    texel=mix(texel,other,secondaryMix);
+    vec4 other=Texel(secondaryTexture,secondaryUV+textureScroll.zw);
+    texel=vec4(mix(texel.rgb,other.rgb,secondaryMix),texel.a);
   }
   if (effectIntensityMode > 0.5) {
     float intensity=texel.r;
@@ -721,6 +731,10 @@ local function resolvedTextureWrap(prim, material, set)
   return wrapS, wrapT
 end
 
+function Renderer.callbackPrimaryWrap(prim, material, set, primaryOwned)
+  return resolvedTextureWrap(prim, material, primaryOwned and set or nil)
+end
+
 local function sendTextureWrapMode(shader, uniform, wrapS, wrapT)
   if not (shader and shader.send) then return end
   pcall(shader.send, shader, uniform,
@@ -1152,10 +1166,17 @@ function Renderer:callbackOwnsTexture(prim)
   if not record then return false end
   if record.descriptor == 0x81000050 then return true end
   if record.descriptor == DualTexture.DESCRIPTOR then
-    -- Command 0x08 decorates the complete preceding draw. Its generated
-    -- material replaces body inputs; alpha face decals establish a local
-    -- authored material and remain outside the callback.
-    return DualTexture.ownsPrimitive(prim, record.descriptor)
+    -- The callback replaces a uniform body carrier (or an authored copy of
+    -- its primary tile). Detailed local atlases at the same site contain
+    -- features such as Muk's eyes and mouth and remain outside both scrollers.
+    local authored = Pack.textureIndex(self.model, prim, self.animIndex,
+      self.frame, self.auxIndex,
+      self.handlerRuntime and self.handlerRuntime.callbackFrame)
+    local dynamic = self.handlerState and self.handlerState.textureBySite
+    local callback = dynamic and dynamic[prim.callbackOffset]
+    return DualTexture.ownsAuthoredTexture(prim,
+      self.model.textures and self.model.textures[authored],
+      self.model.textures and self.model.textures[callback], record.descriptor)
   end
   return false
 end
@@ -1163,11 +1184,22 @@ end
 function Renderer:callbackUsesMaterialFx(prim)
   if not prim or prim.decal or not prim.callbackOffset then return false end
   local record = callbackRecord(self.model, prim.callbackOffset)
-  -- Texture ownership and material ownership are intentionally separate.
-  -- The slime builder's second scrolling layer affects body surfaces even
-  -- when their authored primary texture contains detail. Alpha eye/mouth
-  -- decals remain outside the body material.
+  -- Authored eye UVs remain fixed, but the ROM callback still supplies the
+  -- color combiner and independently scrolling secondary slime tile.
   return record ~= nil and record.descriptor == DualTexture.DESCRIPTOR
+end
+
+function Renderer:currentMaterial(prim)
+  local site = prim and prim.callbackOffset
+  local dynamic = self.handlerState and self.handlerState.materialBySite
+  local material = site and dynamic and dynamic[site] or nil
+  return material or (prim and prim.material)
+end
+
+function Renderer.callbackTextureScroll(set, primaryOwned)
+  if type(set) ~= "table" then return nil, nil end
+  return primaryOwned and set.scroll and set.scroll[1] or nil,
+    set.scroll and set.scroll[2] or nil
 end
 
 function Renderer:currentTexture(prim)
@@ -1460,8 +1492,7 @@ function Renderer:drawScene(pass, model, options)
         end
         local texture = Pack.image(self.model, self:currentTexture(part.prim))
         local site = part.prim.callbackOffset
-        local dynamic = self.handlerState and self.handlerState.materialBySite
-        local material = site and dynamic and dynamic[site] or part.prim.material
+        local material = self:currentMaterial(part.prim)
         local attributes = self.handlerState and self.handlerState.attributesBySite
         local attribute = site and attributes and attributes[site]
         local color = attribute and attribute.color or
@@ -1486,7 +1517,9 @@ function Renderer:drawScene(pass, model, options)
         local set = self:callbackUsesMaterialFx(part.prim)
           and site and sets and sets[site] or nil
         local textureIndex = self:currentTexture(part.prim)
-        local wrapS, wrapT = resolvedTextureWrap(part.prim, material, set)
+        local primaryOwned = set and self:callbackOwnsTexture(part.prim) or false
+        local wrapS, wrapT = Renderer.callbackPrimaryWrap(part.prim, material,
+          set, primaryOwned)
         sendTextureWrapMode(self.shader, "primaryWrapMode", wrapS, wrapT)
         local uvScaleS, uvScaleT = 1, 1
         if set then
@@ -1495,6 +1528,13 @@ function Renderer:drawScene(pass, model, options)
         end
         pcall(self.shader.send, self.shader, "textureCoordinateScale",
           {uvScaleS, uvScaleT})
+        local secondaryScaleS, secondaryScaleT = 1, 1
+        if set and set[2] then
+          secondaryScaleS, secondaryScaleT = Renderer.callbackTextureCoordinateScale(
+            self.model, part.prim, set[2])
+        end
+        pcall(self.shader.send, self.shader, "secondaryCoordinateScale",
+          {secondaryScaleS, secondaryScaleT})
         local secondary = set and Pack.image(self.model, set[2]) or nil
         if secondary then
           local secondaryWrapS = set.wrap or "clamp"
@@ -1508,7 +1548,7 @@ function Renderer:drawScene(pass, model, options)
           local sw, sh = imageDimensions(secondary,self.model.textures[set[2]])
           pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
           pcall(self.shader.send, self.shader, "secondaryMix", set.mix or 100/255)
-          local a, b = set.scroll and set.scroll[1], set.scroll and set.scroll[2]
+          local a, b = Renderer.callbackTextureScroll(set, primaryOwned)
           local aS, aT = foldedTextureScroll(a, wrapS, wrapT,
             self.boundedTextureUV)
           local bS, bT = foldedTextureScroll(b, secondaryWrapS, secondaryWrapT,
@@ -1661,8 +1701,7 @@ function Renderer:renderToCanvas(width, height, options)
           end
           local texture = Pack.image(model, self:currentTexture(part.prim))
           local site = part.prim.callbackOffset
-          local dynamic = self.handlerState and self.handlerState.materialBySite
-          local material = site and dynamic and dynamic[site] or part.prim.material
+          local material = self:currentMaterial(part.prim)
           local attributes = self.handlerState and self.handlerState.attributesBySite
           local attribute = site and attributes and attributes[site]
           local primitiveColor = attribute and attribute.color
@@ -1671,7 +1710,9 @@ function Renderer:renderToCanvas(width, height, options)
           local set = self:callbackUsesMaterialFx(part.prim)
             and site and sets and sets[site] or nil
           local textureIndex = self:currentTexture(part.prim)
-          local wrapS,wrapT=resolvedTextureWrap(part.prim,material,set)
+          local primaryOwned=set and self:callbackOwnsTexture(part.prim) or false
+          local wrapS,wrapT=Renderer.callbackPrimaryWrap(part.prim,material,
+            set,primaryOwned)
           if g.setDepthMode then
             local compare, write = RenderContract.depthState(part.prim, not additive)
             g.setDepthMode(compare, write)
@@ -1697,6 +1738,13 @@ function Renderer:renderToCanvas(width, height, options)
             end
             pcall(self.shader.send,self.shader,"textureCoordinateScale",
               {uvScaleS,uvScaleT})
+            local secondaryScaleS,secondaryScaleT=1,1
+            if set and set[2] then
+              secondaryScaleS,secondaryScaleT=Renderer.callbackTextureCoordinateScale(
+                model,part.prim,set[2])
+            end
+            pcall(self.shader.send,self.shader,"secondaryCoordinateScale",
+              {secondaryScaleS,secondaryScaleT})
             local secondary = set and Pack.image(model, set[2]) or nil
             if secondary then
               local secondaryWrapS=set.wrap or "clamp"
@@ -1710,7 +1758,7 @@ function Renderer:renderToCanvas(width, height, options)
               local sw,sh=imageDimensions(secondary,model.textures[set[2]])
               pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
               pcall(self.shader.send, self.shader, "secondaryMix", set.mix or (100 / 255))
-              local a, b = set.scroll and set.scroll[1], set.scroll and set.scroll[2]
+              local a,b=Renderer.callbackTextureScroll(set,primaryOwned)
               local aS,aT=foldedTextureScroll(a,wrapS,wrapT,
                 self.boundedTextureUV)
               local bS,bT=foldedTextureScroll(b,secondaryWrapS,secondaryWrapT,

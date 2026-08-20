@@ -301,6 +301,8 @@ function Model:walk(o, depth)
         end
       end
       self.callbackForBone = self.callbackForBone or {}
+      -- The generated RDP state remains available to following body draws
+      -- until an explicit 0x23 authored material blocks inheritance below.
       self.callbackForBone[bone] = { offset = o, descriptor = handler }
       self.fx[#self.fx + 1] = {
         bone = bone,
@@ -332,6 +334,22 @@ function Model:walk(o, depth)
       self.curTlut = f:s16(o + 0xA)
       self.curMat = f:ptr(o + 4)
       self.curTexAnim = f:s16(o + 2)
+      -- A local texture/material command supersedes callback RDP state for
+      -- this node and its descendants. The slime models' 32x64 atlas is the
+      -- exception: it is a body carrier consumed by the inherited 0x48
+      -- builder, not a local eye/detail material. Keep the blocked callback's
+      -- identity so a later carrier command on the same bone can restore it.
+      local inherited = self:nodeCallbackState(self:curBone())
+      local texture = self.textures and self.textures[self.curTex + 1]
+      local slimeCarrier = texture and texture.w == 32 and texture.h == 64
+      if inherited and inherited.descriptor == 0x81000048 then
+        self.callbackForBone = self.callbackForBone or {}
+        self.callbackForBone[self:curBone()] = {
+          offset = inherited.offset,
+          descriptor = inherited.descriptor,
+          blocked = not slimeCarrier,
+        }
+      end
     elseif cmd == 0x22 then                           
       self:runNodeDL(f:ptr(o + 4), self:curBone())
     elseif cmd == 0x1E then                           
@@ -344,14 +362,19 @@ function Model:walk(o, depth)
   end
 end
 
-function Model:nodeCallback(bone)
+function Model:nodeCallbackState(bone)
   local callbacks = self.callbackForBone
   while callbacks and bone and bone >= 0 do
-    if callbacks[bone] then return callbacks[bone] end
+    if callbacks[bone] ~= nil then return callbacks[bone] end
     local row = self.bones[bone + 1]
     bone = row and row.parent or -1
   end
   return nil
+end
+
+function Model:nodeCallback(bone)
+  local callback = self:nodeCallbackState(bone)
+  return callback and not callback.blocked and callback or nil
 end
 
 function Model:runNodeDL(offset, bone)
