@@ -11,7 +11,8 @@
   "profile": "content",
   "category": "VISUAL",
   "permissions": [
-    "engine_internals"
+    "engine_internals",
+    "compute"
   ],
   "game_version": ">=0.1.86 <1.0.0",
   "priority": 105,

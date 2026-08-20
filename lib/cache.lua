@@ -4,7 +4,7 @@
 -- existing valid cache is not invalidated merely by upgrading this mod.
 local Cache = {}
 
-Cache.FORMAT = "S2IMP37"
+Cache.FORMAT = "S2IMP38"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"
@@ -14,6 +14,53 @@ Cache.ERROR = Cache.ROOT .. "/import_error.log"
 Cache.UNOWN_FORMS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 local modRef
+
+local COMPRESSED_MAGIC = "S2Z1"
+
+local function u32le(v)
+  return string.char(v % 256, math.floor(v / 256) % 256,
+    math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+end
+
+local function readU32le(s, p)
+  local a, b, c, d = s:byte(p, p + 3)
+  if not d then return nil end
+  return a + b * 256 + c * 65536 + d * 16777216
+end
+
+-- Storage is an implementation detail of the importer API. Compress DSM
+-- payloads before the engine's transactional write (tmp/main/backup plus
+-- verification reads), then unwrap them before returning from Cache.read.
+-- Existing raw caches and non-DSM test payloads remain valid.
+local function encodeBlob(bytes)
+  if type(bytes) ~= "string" or #bytes < 1024 or bytes:sub(1, 4) ~= "DSM4" then
+    return bytes
+  end
+  local data = love and love.data
+  if not (data and type(data.compress) == "function") then return bytes end
+  local ok, packed = pcall(data.compress, "string", "lz4", bytes, 0)
+  if ok and type(packed) == "string" and #packed + 8 < #bytes then
+    return COMPRESSED_MAGIC .. u32le(#bytes) .. packed
+  end
+  return bytes
+end
+
+local function decodeBlob(bytes)
+  if type(bytes) ~= "string" or bytes:sub(1, 4) ~= COMPRESSED_MAGIC then
+    return bytes
+  end
+  local rawLength = readU32le(bytes, 5)
+  local data = love and love.data
+  if not rawLength or not (data and type(data.decompress) == "function") then
+    return nil, "compressed cache payload cannot be decoded"
+  end
+  local ok, raw = pcall(data.decompress, "string", "lz4", bytes:sub(9))
+  if not ok or type(raw) ~= "string" or #raw ~= rawLength
+      or raw:sub(1, 4) ~= "DSM4" then
+    return nil, "compressed cache payload is corrupt"
+  end
+  return raw
+end
 
 function Cache.bind(mod)
   modRef = mod
@@ -82,7 +129,7 @@ local function readBlob(path)
   if type(storage.readBytes) == "function" then
     local bytes, readCode, readMessage =
       callStorage(storage.readBytes, storage, game, key)
-    if type(bytes) == "string" then return bytes end
+    if type(bytes) == "string" then return decodeBlob(bytes) end
 
     -- A pre-fix Stadium cache stored DSM bytes inside {bytes=...} table
     -- records. A type mismatch is therefore a migration signal, not a bad
@@ -95,7 +142,9 @@ local function readBlob(path)
   local legacy, legacyCode, legacyMessage =
     callStorage(storage.read, storage, game, key)
   if type(legacy) == "table" and type(legacy.bytes) == "string" then
-    return legacy.bytes, "legacy"
+    local bytes, decodeErr = decodeBlob(legacy.bytes)
+    if not bytes then return nil, "invalid_record", decodeErr end
+    return bytes, "legacy"
   end
   if legacy == nil then
     return nil, legacyCode or "not_found", legacyMessage
@@ -109,6 +158,7 @@ local function writeBlob(path, bytes)
   local key = storageKey(path)
 
   if type(storage.writeBytes) == "function" then
+    bytes = encodeBlob(bytes)
     local wrote, writeCode, writeMessage =
       callStorage(storage.writeBytes, storage, game, key, bytes)
     if wrote == true then return true end

@@ -34,8 +34,8 @@ ok(Extract.unownLetter(254)=="B" and Extract.unownLetter(278)=="Z",
 ok(Cache.unownPath("B","normal")=="stadium2_importer/battle/unown_b.dsm"
   and Cache.unownPath("Z","shiny")=="stadium2_importer/battle/unown_z_shiny.dsm",
   "normal and shiny Unown form packs have stable cache paths")
-ok(Cache.FORMAT=="S2IMP37",
-  "slime placeholder and tongue routing invalidates older model packs")
+ok(Cache.FORMAT=="S2IMP38",
+  "compressed fast-export storage invalidates incompatible older caches")
 local runtimeFixture = string.rep("\0", 8) .. "FRAGMENT"
   .. string.rep("\0", 4) .. string.char(0,0,0,32, 0,0,0,40, 0,0,0,48)
   .. string.rep("\255", 8)

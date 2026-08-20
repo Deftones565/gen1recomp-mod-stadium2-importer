@@ -1,5 +1,6 @@
 local Rom = require("mods.STADIUM2_IMPORTER.lib.rom")
 local Extract = require("mods.STADIUM2_IMPORTER.lib.extract")
+local ExportPool = require("mods.STADIUM2_IMPORTER.lib.export_pool")
 local Cache = require("mods.STADIUM2_IMPORTER.lib.cache")
 local Discovery = require("mods.STADIUM2_IMPORTER.lib.discovery")
 local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
@@ -354,11 +355,26 @@ function Importer.beginFrom(bytes, label, options)
   status.phase = "scan"
   status.error = nil
   status.rom = label or "Pokemon Stadium 2 (US)"
-  job = Extract.newJob(normalized,
-    function(species, normalBytes, shinyBytes)
-      return Cache.writePair(species, normalBytes, shinyBytes)
-    end,
-    function(name,bytes) return Cache.writeSpecial(name,bytes) end)
+  local function writePack(species, normalBytes, shinyBytes)
+    return Cache.writePair(species, normalBytes, shinyBytes)
+  end
+  local function writeSpecial(name, bytes)
+    return Cache.writeSpecial(name, bytes)
+  end
+  -- Thread creation is capability/platform dependent. The serial job remains
+  -- a transparent fallback and produces the exact same cache/API surface.
+  if not options.serialExport then
+    local workerSource
+    if modRef and type(modRef.read) == "function" then
+      local okRead, source = pcall(modRef.read, modRef, "workers/export_worker.lua")
+      if okRead and type(source) == "string" then workerSource = source end
+    end
+    job = ExportPool.new(normalized, configuredCount, writePack, writeSpecial,
+      { root = modRef and modRef.path, workerSource = workerSource })
+  end
+  if not job then
+    job = Extract.newJob(normalized, writePack, writeSpecial)
+  end
   job.label = status.rom
   job.md5 = romMeta.md5
   return true

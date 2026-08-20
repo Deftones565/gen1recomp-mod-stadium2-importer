@@ -387,7 +387,12 @@ local function labelAnimations(data, rows, nAux)
 end
 
 
-function StadiumBuild.pack(data, species, moveRows, ctx)
+-- Build the variant-independent portions of a DSM pack once. Normal and
+-- shiny exports have identical geometry, skeletons, animation streams and
+-- handler metadata; only their RGBA texture payloads differ. Keeping the
+-- two byte ranges separate lets packPair avoid serialising the expensive
+-- shared model data twice while still returning two ordinary DSM4 strings.
+local function preparePack(data, species, moveRows, ctx)
   local w = newWriter()
   local bones, prims = data.bones, data.prims
   local textures, anims, aux = data.textures, data.anims, data.auxAnims
@@ -487,13 +492,8 @@ function StadiumBuild.pack(data, species, moveRows, ctx)
     for k = 1, p.nidx do w:u16(p.idx[k]) end
   end
 
-  for i = 1, #textures do
-    local t = textures[i]
-    w:u16(t.w)
-    w:u16(t.h)
-    w:u32(#t.rgba)
-    w:raw(t.rgba)
-  end
+  local prefix = w:bytes()
+  w = newWriter()
 
   local REST = { t = { 0, 0, 0 }, r = { 0, 0, 0 }, s = { 1.0, 1.0, 1.0 } }
   for i = 1, #anims do
@@ -535,7 +535,55 @@ function StadiumBuild.pack(data, species, moveRows, ctx)
 
   w:raw(Handlers.packExtension(data.handlerOps, data.handlerSourceBase, data.handlerFragment,
     { prims = prims, handlerTextures = data.handlerTextures }))
-  return w:bytes(), height, floorY, radius
+  return {
+    prefix = prefix,
+    suffix = w:bytes(),
+    height = height,
+    floorY = floorY,
+    radius = radius,
+    textureCount = #textures,
+  }
+end
+
+local function textureBytes(textures, expected)
+  local w = newWriter()
+  if #textures ~= expected then
+    error("DSM texture count changed while packing variants", 2)
+  end
+  for i = 1, #textures do
+    local t = textures[i]
+    w:u16(t.w)
+    w:u16(t.h)
+    w:u32(#t.rgba)
+    w:raw(t.rgba)
+  end
+  return w:bytes()
+end
+
+local function finishPack(prepared, textures)
+  return prepared.prefix .. textureBytes(textures, prepared.textureCount)
+    .. prepared.suffix
+end
+
+function StadiumBuild.pack(data, species, moveRows, ctx)
+  local prepared = preparePack(data, species, moveRows, ctx)
+  return finishPack(prepared, data.textures), prepared.height,
+    prepared.floorY, prepared.radius
+end
+
+-- Internal fast path used by the ROM exporter. `makeShiny` mutates only the
+-- model's texture pixels, exactly as the old two-call path did. The returned
+-- values remain independent, byte-for-byte normal DSM4 packs, so Cache.read,
+-- Pack.parse and the public model API require no changes.
+function StadiumBuild.packPair(data, species, moveRows, ctx, makeShiny)
+  local prepared = preparePack(data, species, moveRows, ctx)
+  local normal = finishPack(prepared, data.textures)
+  if makeShiny then
+    local ok, err = makeShiny()
+    if ok == false or ok == nil then return nil, err or "shiny texture build failed" end
+  end
+  local shiny = finishPack(prepared, data.textures)
+  return normal, shiny, prepared.height, prepared.floorY, prepared.radius
 end
 
 
