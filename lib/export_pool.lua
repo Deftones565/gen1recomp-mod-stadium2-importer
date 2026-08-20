@@ -14,6 +14,14 @@ local function supportedPlatform()
   return not (ok and (name == "Android" or name == "iOS" or name == "Web"))
 end
 
+local function processorCount()
+  local ok, count = pcall(function()
+    return love and love.system and love.system.getProcessorCount
+      and love.system.getProcessorCount()
+  end)
+  return ok and math.max(1, math.floor(tonumber(count) or 1)) or 1
+end
+
 local function workerPath(root)
   root = tostring(root or "mods/STADIUM2_IMPORTER"):gsub("/+$", "")
   return root .. "/workers/export_worker.lua"
@@ -39,7 +47,14 @@ function ExportPool.new(data, count, writePack, writeSpecial, options)
   if output.clear then output:clear() end
 
   local workers, acks, commands = {}, {}, {}
-  local workerCount = 2
+  -- Stadium model/animation decoding is CPU-heavy. Cap at four because every
+  -- worker receives the imported 64 MiB ROM and higher counts trade too much
+  -- memory for diminishing throughput. Lower-core desktops retain the proven
+  -- two-worker path.
+  local cores = processorCount()
+  local lowMemoryArch = jit and (jit.arch == "arm" or jit.arch == "arm64")
+  local workerCount = not lowMemoryArch and cores >= 8 and 4
+    or (not lowMemoryArch and cores >= 4 and 3 or 2)
   for worker = 1, workerCount do
     local commandName = token .. "_cmd_" .. worker
     local ackName = token .. "_ack_" .. worker
@@ -80,6 +95,41 @@ function ExportPool.new(data, count, writePack, writeSpecial, options)
     return false
   end
 
+  local function handle(message)
+    if message.kind == "pair" then
+      local ok, err = writePack(message.species, message.normal, message.shiny)
+      acks[message.worker or ((message.species - 1) % workerCount + 1)]:push(ok == true)
+      if not ok then return fail(err) end
+      job.done = job.done + 1
+      job.species = message.species
+    elseif message.kind == "special" then
+      local ok, err = writeSpecial(message.name, message.bytes)
+      -- Specials are assigned to worker one.
+      acks[1]:push(ok == true)
+      if not ok then return fail(err) end
+      if not tostring(message.name):find("_shiny$", 1, false) then
+        job.done = job.done + 1
+      end
+    elseif message.kind == "complete" then
+      job.completed = job.completed + 1
+      job.builtCount = job.builtCount + (message.builtCount or 0)
+      job.animatedBuilt = job.animatedBuilt + (message.animatedBuilt or 0)
+      job.animationClips = job.animationClips + (message.animationClips or 0)
+      job.unownBuilt = job.unownBuilt + (message.unownBuilt or 0)
+      job.specialBuilt = job.specialBuilt or message.specialBuilt
+      if job.completed == workerCount then
+        job.success = job.builtCount == count and job.specialBuilt
+          and job.unownBuilt == 25
+        if not job.success then return fail("parallel export completed with missing models") end
+        job.phase, job.buildStage = "done", nil
+        return false
+      end
+    elseif message.kind == "error" then
+      return fail(message.error)
+    end
+    return true
+  end
+
   function job:step()
     if self.error or self.success then return false end
     local message = output:pop()
@@ -90,37 +140,21 @@ function ExportPool.new(data, count, writePack, writeSpecial, options)
       end
       return true
     end
-    if message.kind == "pair" then
-      local ok, err = writePack(message.species, message.normal, message.shiny)
-      acks[message.worker or ((message.species - 1) % workerCount + 1)]:push(ok == true)
-      if not ok then return fail(err) end
-      self.done = self.done + 1
-      self.species = message.species
-    elseif message.kind == "special" then
-      local ok, err = writeSpecial(message.name, message.bytes)
-      -- Specials are assigned to worker one.
-      acks[1]:push(ok == true)
-      if not ok then return fail(err) end
-      if not tostring(message.name):find("_shiny$", 1, false) then
-        self.done = self.done + 1
-      end
-    elseif message.kind == "complete" then
-      self.completed = self.completed + 1
-      self.builtCount = self.builtCount + (message.builtCount or 0)
-      self.animatedBuilt = self.animatedBuilt + (message.animatedBuilt or 0)
-      self.animationClips = self.animationClips + (message.animationClips or 0)
-      self.unownBuilt = self.unownBuilt + (message.unownBuilt or 0)
-      self.specialBuilt = self.specialBuilt or message.specialBuilt
-      if self.completed == workerCount then
-        self.success = self.builtCount == count and self.specialBuilt
-          and self.unownBuilt == 25
-        if not self.success then return fail("parallel export completed with missing models") end
-        self.phase, self.buildStage = "done", nil
-        return false
-      end
-    elseif message.kind == "error" then
-      return fail(message.error)
-    end
+
+    -- Workers wait for an acknowledgement after handing a completed pack to
+    -- the main thread. Drain everything already queued during this update so
+    -- one worker is not held for an extra 60 Hz frame merely because the
+    -- other worker's result was popped first. The small time/message budget
+    -- keeps the import screen responsive when a burst is ready.
+    local timer = love and love.timer
+    local now = timer and timer.getTime or os.clock
+    local started, processed = now(), 0
+    repeat
+      processed = processed + 1
+      if handle(message) == false then return false end
+      if processed >= 16 or now() - started >= 0.006 then break end
+      message = output:pop()
+    until not message
     return true
   end
 

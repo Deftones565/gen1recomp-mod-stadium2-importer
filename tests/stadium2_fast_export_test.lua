@@ -76,9 +76,11 @@ mod.storage = {
 }
 Cache.bind(mod)
 local large = "DSM4" .. string.rep("A", 4096)
+ok(Cache.beginBuild(1), "compressed cache begins a one-species build")
 ok(Cache.writePair(1, large, large), "compressed cache accepts ordinary DSM4 pair")
-ok(records["cache/normal/001"]:sub(1, 4) == "S2Z1",
-  "export storage uses internal LZ4 envelope")
+ok(records["cache/battle/shard_001"]:sub(1, 4) == "S2B1"
+    and records["cache/battle/shard_001"]:find("S2Z1", 1, true),
+  "export storage shards independently compressed DSM payloads")
 ok(Cache.read(1, "normal") == large and Cache.read(1, "shiny") == large,
   "cache API returns original DSM4 bytes after transparent decompression")
 love = savedLove

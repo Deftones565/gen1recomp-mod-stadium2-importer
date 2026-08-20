@@ -242,6 +242,12 @@ local function bindPlaythroughStorage(base)
     local function add(key) if stored(key) then keys[#keys + 1] = key end end
     add("cache/marker")
     add("cache/error")
+    add("cache/battle/specials")
+    for index = 1, math.ceil(251 / 8) do
+      add(("cache/battle/shard_%03d"):format(index))
+    end
+    -- Retain legacy enumeration so an S2IMP38 cache is recognized as stale
+    -- and can be rebuilt into the current sharded representation.
     add("cache/battle/substitute")
     for byte = string.byte("b"), string.byte("z") do
       local form = "cache/battle/unown_" .. string.char(byte)

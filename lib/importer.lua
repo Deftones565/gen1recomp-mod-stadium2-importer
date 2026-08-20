@@ -347,6 +347,8 @@ function Importer.beginFrom(bytes, label, options)
   Importer.releaseModels()
   local ok, clearErr = Cache.clear(configuredCount)
   if not ok then return fail("preparing cache", clearErr) end
+  local began, beginErr = Cache.beginBuild(configuredCount)
+  if not began then return fail("preparing cache", beginErr) end
   romMeta = metaOrErr
   status.state = "building"
   status.done = 0

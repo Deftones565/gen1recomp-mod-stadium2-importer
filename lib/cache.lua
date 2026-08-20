@@ -1,10 +1,10 @@
 -- Sandboxed, playthrough-scoped Stadium model cache.
--- Metadata is stored as data-only records; DSM model packs use the engine's
--- opaque byte storage. Legacy { bytes = ... } records remain readable so an
--- existing valid cache is not invalidated merely by upgrading this mod.
+-- Metadata is stored as data-only records. Independently compressed DSM packs
+-- are grouped into small opaque shards so the engine's transactional storage
+-- does not rewrite and verify hundreds of separate records during import.
 local Cache = {}
 
-Cache.FORMAT = "S2IMP38"
+Cache.FORMAT = "S2IMP39"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"
@@ -12,10 +12,19 @@ Cache.BATTLE = Cache.ROOT .. "/battle"
 Cache.MARKER = Cache.ROOT .. "/pack.info"
 Cache.ERROR = Cache.ROOT .. "/import_error.log"
 Cache.UNOWN_FORMS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+Cache.SHARD_SIZE = 8
 
 local modRef
+local buildState
 
 local COMPRESSED_MAGIC = "S2Z1"
+local SHARD_MAGIC = "S2B1"
+local SHARD_CACHE_LIMIT = 4
+local shardCache, shardOrder = {}, {}
+
+local function u16le(v)
+  return string.char(v % 256, math.floor(v / 256) % 256)
+end
 
 local function u32le(v)
   return string.char(v % 256, math.floor(v / 256) % 256,
@@ -26,6 +35,12 @@ local function readU32le(s, p)
   local a, b, c, d = s:byte(p, p + 3)
   if not d then return nil end
   return a + b * 256 + c * 65536 + d * 16777216
+end
+
+local function readU16le(s, p)
+  local a, b = s:byte(p, p + 1)
+  if not b then return nil end
+  return a + b * 256
 end
 
 -- Storage is an implementation detail of the importer API. Compress DSM
@@ -60,6 +75,53 @@ local function decodeBlob(bytes)
     return nil, "compressed cache payload is corrupt"
   end
   return raw
+end
+
+local function shardPath(index)
+  return ("%s/shard_%03d.dsm"):format(Cache.BATTLE, index)
+end
+
+local function specialShardPath()
+  return Cache.BATTLE .. "/specials.dsm"
+end
+
+local function packShard(entries)
+  local keys = {}
+  for key in pairs(entries) do keys[#keys + 1] = key end
+  table.sort(keys)
+  local out = { SHARD_MAGIC, u16le(#keys) }
+  for _, key in ipairs(keys) do
+    local bytes = entries[key]
+    if #key > 65535 then return nil, "cache shard key is too long" end
+    out[#out + 1] = u16le(#key)
+    out[#out + 1] = u32le(#bytes)
+    out[#out + 1] = key
+    out[#out + 1] = bytes
+  end
+  return table.concat(out)
+end
+
+local function unpackShard(bytes)
+  if type(bytes) ~= "string" or bytes:sub(1, 4) ~= SHARD_MAGIC then
+    return nil, "cache shard header is invalid"
+  end
+  local count = readU16le(bytes, 5)
+  if not count then return nil, "cache shard entry count is missing" end
+  local entries, cursor = {}, 7
+  for _ = 1, count do
+    local keyLength = readU16le(bytes, cursor)
+    local byteLength = readU32le(bytes, cursor + 2)
+    if not keyLength or not byteLength then return nil, "cache shard index is truncated" end
+    cursor = cursor + 6
+    local key = bytes:sub(cursor, cursor + keyLength - 1)
+    cursor = cursor + keyLength
+    local last = cursor + byteLength - 1
+    if #key ~= keyLength or last > #bytes then return nil, "cache shard payload is truncated" end
+    entries[key] = bytes:sub(cursor, last)
+    cursor = last + 1
+  end
+  if cursor ~= #bytes + 1 then return nil, "cache shard has trailing data" end
+  return entries
 end
 
 function Cache.bind(mod)
@@ -120,7 +182,7 @@ local function writeRecord(path, value)
     writeMessage or "storage write failed"
 end
 
-local function readBlob(path)
+local function readStoredBlob(path)
   local storage, game, code, message = storageContext()
   if not storage then return nil, code, message end
   local key = storageKey(path)
@@ -170,6 +232,70 @@ local function writeBlob(path, bytes)
   return writeRecord(path, { bytes = bytes })
 end
 
+local function touchShard(path, entries)
+  for i = #shardOrder, 1, -1 do
+    if shardOrder[i] == path then table.remove(shardOrder, i) end
+  end
+  shardCache[path] = entries
+  shardOrder[#shardOrder + 1] = path
+  while #shardOrder > SHARD_CACHE_LIMIT do
+    shardCache[table.remove(shardOrder, 1)] = nil
+  end
+end
+
+local function readShard(path)
+  local entries = shardCache[path]
+  if entries then
+    touchShard(path, entries)
+    return entries
+  end
+  local bytes, code, message = readStoredBlob(path)
+  if not bytes then return nil, code, message end
+  entries, message = unpackShard(bytes)
+  if not entries then return nil, "invalid_record", message end
+  touchShard(path, entries)
+  return entries
+end
+
+local function logicalShard(path)
+  local text = tostring(path)
+  local species = tonumber(text:match("/normal/(%d+)%.dsm$")
+    or text:match("/shiny/(%d+)%.dsm$"))
+  if species then
+    return shardPath(math.floor((species - 1) / Cache.SHARD_SIZE) + 1)
+  end
+  if tostring(path):find("/battle/", 1, true) then return specialShardPath() end
+  return nil
+end
+
+local function readBlob(path)
+  if buildState then
+    local container = logicalShard(path)
+    local staged
+    if container == specialShardPath() then
+      staged = buildState.specials[path]
+    else
+      local species = tonumber(tostring(path):match("/(%d+)%.dsm$"))
+      local index = species and math.floor((species - 1) / Cache.SHARD_SIZE) + 1
+      staged = index and buildState.shards[index] and buildState.shards[index][path]
+    end
+    if staged then
+      local decoded, decodeErr = decodeBlob(staged)
+      if not decoded then return nil, "invalid_record", decodeErr end
+      return decoded
+    end
+  end
+  local container = logicalShard(path)
+  if not container then return nil, "not_found", "cache path has no shard" end
+  local entries, code, message = readShard(container)
+  if not entries then return nil, code, message end
+  local bytes = entries[path]
+  if not bytes then return nil, "not_found", "cache shard entry is unavailable" end
+  local decoded, decodeErr = decodeBlob(bytes)
+  if not decoded then return nil, "invalid_record", decodeErr end
+  return decoded
+end
+
 local function deleteKey(key)
   local storage, game, code, message = storageContext()
   if not storage then return false, code, message end
@@ -217,6 +343,8 @@ function Cache.ensureDirectories()
 end
 
 function Cache.clear(count)
+  buildState = nil
+  shardCache, shardOrder = {}, {}
   local context, contextCode, contextMessage = Cache.context()
   if not context then return false, contextMessage or contextCode end
 
@@ -239,6 +367,10 @@ function Cache.clear(count)
   end
 
   count = math.max(251, tonumber(count) or 251)
+  for index = 1, math.ceil(count / Cache.SHARD_SIZE) do
+    deleteRecord(shardPath(index))
+  end
+  deleteRecord(specialShardPath())
   for species = 1, count do
     deleteRecord(Cache.path(species, "normal"))
     deleteRecord(Cache.path(species, "shiny"))
@@ -254,15 +386,63 @@ function Cache.clear(count)
   return true
 end
 
+local function entryCount(entries)
+  local count = 0
+  for _ in pairs(entries) do count = count + 1 end
+  return count
+end
+
+local function persistShard(path, entries)
+  local bytes, packErr = packShard(entries)
+  if not bytes then return false, packErr end
+  local ok, code, message = writeBlob(path, bytes)
+  if not ok then return false, message or code end
+  touchShard(path, entries)
+  return true
+end
+
+local function flushSpeciesShard(index)
+  local entries = buildState and buildState.shards[index]
+  if not entries then return true end
+  local ok, err = persistShard(shardPath(index), entries)
+  if not ok then return false, err end
+  buildState.shards[index] = nil
+  return true
+end
+
+function Cache.beginBuild(count)
+  count = math.max(1, math.floor(tonumber(count) or 251))
+  buildState = { count = count, pairs = 0, seenPairs = {}, shards = {}, specials = {} }
+  shardCache, shardOrder = {}, {}
+  return true
+end
+
 function Cache.writeSpecial(name, bytes)
-  return writeBlob(Cache.specialPath(name), bytes)
+  if not buildState then Cache.beginBuild(251) end
+  local path = Cache.specialPath(name)
+  buildState.specials[path] = encodeBlob(bytes)
+  return true
 end
 
 function Cache.writePair(species, normalBytes, shinyBytes)
-  local ok, code, message = writeBlob(Cache.path(species, "normal"), normalBytes)
-  if not ok then return false, message or code end
-  ok, code, message = writeBlob(Cache.path(species, "shiny"), shinyBytes)
-  if not ok then return false, message or code end
+  if not buildState then Cache.beginBuild(251) end
+  species = math.floor(tonumber(species) or 0)
+  if species < 1 or species > buildState.count then
+    return false, "cache species is outside the active build"
+  end
+  local index = math.floor((species - 1) / Cache.SHARD_SIZE) + 1
+  local entries = buildState.shards[index]
+  if not entries then entries = {}; buildState.shards[index] = entries end
+  entries[Cache.path(species, "normal")] = encodeBlob(normalBytes)
+  entries[Cache.path(species, "shiny")] = encodeBlob(shinyBytes)
+  if not buildState.seenPairs[species] then
+    buildState.seenPairs[species] = true
+    buildState.pairs = buildState.pairs + 1
+  end
+
+  local first = (index - 1) * Cache.SHARD_SIZE + 1
+  local expected = (math.min(buildState.count, first + Cache.SHARD_SIZE - 1) - first + 1) * 2
+  if entryCount(entries) == expected then return flushSpeciesShard(index) end
   return true
 end
 
@@ -352,27 +532,21 @@ function Cache.inspect(count)
     }
   end
 
-  for species = 1, count do
-    local normal = storageKey(Cache.path(species, "normal"))
-    local shiny = storageKey(Cache.path(species, "shiny"))
-    if not keys[normal] then
+  local shardCount = math.ceil(count / Cache.SHARD_SIZE)
+  for index = 1, shardCount do
+    local key = storageKey(shardPath(index))
+    if not keys[key] then
       return {
         state = "incomplete", code = "missing_blob",
-        message = "missing " .. normal, marker = marker, context = context,
-      }
-    end
-    if not keys[shiny] then
-      return {
-        state = "incomplete", code = "missing_blob",
-        message = "missing " .. shiny, marker = marker, context = context,
+        message = "missing " .. key, marker = marker, context = context,
       }
     end
   end
-  local substitute = storageKey(Cache.specialPath("substitute"))
-  if not keys[substitute] then
+  local specials = storageKey(specialShardPath())
+  if not keys[specials] then
     return {
       state = "incomplete", code = "missing_blob",
-      message = "missing " .. substitute, marker = marker, context = context,
+      message = "missing " .. specials, marker = marker, context = context,
     }
   end
 
@@ -389,6 +563,17 @@ function Cache.available(count)
 end
 
 function Cache.finish(meta, count)
+  if not buildState then return false, "cache build has not begun" end
+  count = math.max(1, math.floor(tonumber(count) or buildState.count))
+  if buildState.pairs ~= count then
+    return false, ("cache staged %d/%d species pairs"):format(buildState.pairs, count)
+  end
+  for index = 1, math.ceil(count / Cache.SHARD_SIZE) do
+    local ok, err = flushSpeciesShard(index)
+    if not ok then return false, err end
+  end
+  local specialsOk, specialsErr = persistShard(specialShardPath(), buildState.specials)
+  if not specialsOk then return false, specialsErr end
   local ok, code, message = writeRecord(Cache.MARKER, { marker = {
     format = Cache.FORMAT,
     count = count,
@@ -397,6 +582,7 @@ function Cache.finish(meta, count)
     byteOrder = meta and meta.byteOrder or "unknown",
   } })
   if not ok then return false, message or code end
+  buildState = nil
   return true
 end
 
