@@ -21,6 +21,7 @@ end
 local volatile={}
 local battle={volatile=function(_,mon) return volatile[mon] or {} end}
 local scene=Gen2.Scene.new(battle)
+scene.readyFrame=true
 local mon={hp=20,species="PIKACHU",name="PIKACHU"}
 battle.player=mon
 local rig={finished=false,frame=0,

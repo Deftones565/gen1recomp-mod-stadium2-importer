@@ -108,6 +108,10 @@ end
 -- Trainer art is the sole native pic allowed through because it is not a
 -- Pokemon sprite.
 function Scene:ownsSlot(side, screen)
+  if not self.readyFrame or self.defect then return false end
+  local providerMode=self.battlerMode and self:battlerMode(side) or "host"
+  if providerMode=="native" then return false end
+  if providerMode=="provider" then return true end
   screen = screen or self.screen
   if not screen then return false end
   if side == "player" and screen.showPlayerTrainer then return false end
@@ -428,16 +432,12 @@ local function installScreenHooks()
     end
     local picture=scene.presentCanvas or scene.canvas
     local g = love.graphics
-    if picture and scene.readyFrame then
+    if picture and scene.readyFrame and not scene.defect then
       g.setColor(1,1,1,1)
       g.draw(picture, 0, 0, 0,
         width / picture:getWidth(), height / picture:getHeight())
     else
-      -- Even a first-frame renderer defect remains an owned battle frame.
-      -- Never expose the complete native 2D scene underneath it.
-      g.clear(0,0,0,1)
-      scene.width,scene.height=width,height
-      scene.hudBox=Camera.frame(width,height).letterbox
+      return originalWide(self,width,height)
     end
     -- The native OBJ animation layer (Pokeballs, hit sparks, beams, etc.) must
     -- not be baked into the three HUD bands: those bands are snapped to
@@ -801,6 +801,10 @@ function Gen2.status()
     visual=session and {
       player=session:visualState("player"),enemy=session:visualState("enemy")
     } or nil }
+end
+
+function Gen2.currentScene()
+  return session
 end
 
 function Gen2.resetForTests()

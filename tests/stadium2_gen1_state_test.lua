@@ -37,7 +37,7 @@ local scene=setmetatable({
   battle=battle,actors={player=player,enemy=enemy},
   substituteActors={player=subPlayer,enemy=subEnemy},
   lastGrow={player=false,enemy=false},lastFainted={player=false,enemy=false},
-  lastPicKind={player=nil,enemy=nil},animWasPlaying=false,
+  lastPicKind={player=nil,enemy=nil},animWasPlaying=false,readyFrame=true,
 },Scene)
 
 ok(scene:ownsSlot("player") and scene:ownsSlot("enemy"),

@@ -23,12 +23,24 @@ function mod.storage:context(game)
 end
 function mod.storage:write(game,key,value) records[key]=value;return true end
 function mod.storage:read(game,key) return records[key] end
+function mod.storage:list(game,prefix)
+  local out={}
+  prefix=prefix or ""
+  for key in pairs(records) do
+    if prefix=="" or key==prefix or key:sub(1,#prefix+1)==prefix.."/" then
+      out[#out+1]=key
+    end
+  end
+  table.sort(out)
+  return out
+end
 function mod.storage:delete(game,key)
   if records[key]==nil then return false,"not_found" end
   records[key]=nil;return true
 end
 
 Importer.bind(mod)
+Importer.setPlaythroughReady(true)
 ok(Cache.writePair(1,"normal-pack","shiny-pack"),
   "binary model packs write through scoped mod.storage")
 ok(Cache.read(1,"normal")=="normal-pack" and Cache.read(1,"shiny")=="shiny-pack",
@@ -36,6 +48,10 @@ ok(Cache.read(1,"normal")=="normal-pack" and Cache.read(1,"shiny")=="shiny-pack"
 ok(Cache.writeSpecial("substitute","special-pack")
   and Cache.readSpecial("substitute")=="special-pack",
   "special model packs use the same scoped storage")
+for species=2,151 do
+  ok(Cache.writePair(species,"normal-pack","shiny-pack"),
+    "complete sandbox cache includes species "..species)
+end
 ok(Cache.finish({md5="fixture",title="fixture",byteOrder="z64"},151),
   "completion marker writes after model records")
 ok(Cache.available(151) and not Cache.available(251),
@@ -55,8 +71,8 @@ ok(Importer.nativePickerAvailable==nil and Importer.NATIVE_PICKED==nil,
 
 mod.read=function() return nil end
 local missing,missingErr=Importer.request()
-ok(not missing and tostring(missingErr):find("no scoped external ROM picker",1,true),
-  "missing engine picker API fails explicitly without filesystem escape")
+ok(not missing and tostring(missingErr):find("Imported Files panel",1,true),
+  "missing required import points to the engine-managed ROM panel")
 
 ok(Cache.clear(251),"sandbox cache can be cleared through mod.storage")
 ok(not Cache.available(151),"clearing removes the completion marker")

@@ -118,6 +118,10 @@ function Scene:hostHidden(side)
 end
 
 function Scene:ownsSlot(side)
+  if not self.readyFrame or self.defect then return false end
+  local providerMode=self.battlerMode and self:battlerMode(side) or "host"
+  if providerMode=="native" then return false end
+  if providerMode=="provider" then return true end
   local battle=self.battle
   if not battle then return false end
   if side=="enemy" and battle.showEnemyTrainer and battle.trainerPic then return false end
@@ -407,6 +411,9 @@ local function installHooks()
     scene.game=self.game
     scene:sync()
     if not scene.readyFrame then scene:render() end
+    if not scene.readyFrame or scene.defect then
+      return originals.draw(self,unpack(args))
+    end
 
     local world=scene:composeWorld()
     scene.composedWorld=world
@@ -790,6 +797,10 @@ function Gen1.status()
       player=session:visualState("player"),enemy=session:visualState("enemy"),
     } or nil,
   }
+end
+
+function Gen1.currentScene()
+  return session
 end
 
 function Gen1.resetForTests()

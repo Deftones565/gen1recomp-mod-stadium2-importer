@@ -66,17 +66,140 @@ local function findRoot()
   return nil
 end
 
-local function installModLoader(base)
+local function installRepoLoader(base)
   local loaders = package.searchers or package.loaders
   table.insert(loaders, 2, function(name)
-    local prefix = "mods.STADIUM2_IMPORTER"
-    if name ~= prefix and name:sub(1, #prefix + 1) ~= prefix .. "." then return nil end
+    local modPrefix = "mods.STADIUM2_IMPORTER"
+    local isImporter = name == modPrefix
+      or name:sub(1, #modPrefix + 1) == modPrefix .. "."
+    local isEngine = name == "src" or name:sub(1, 4) == "src."
+    if not isImporter and not isEngine then return nil end
     local path = base .. "/" .. name:gsub("%.", "/") .. ".lua"
     if not fileExists(path) then return "\n\tmissing " .. path end
     local chunk, err = loadfile(path)
     if not chunk then return "\n\t" .. tostring(err) end
     return chunk
   end)
+end
+
+local function packagedDataRoot()
+  local supplied = os.getenv("STADIUM2_VISUAL_DATA_ROOT")
+  if supplied and supplied ~= "" then return supplied:gsub("[/\\]+$", "") end
+  local osName = love.system and love.system.getOS and love.system.getOS() or ""
+  if osName == "Windows" then
+    local appData = os.getenv("APPDATA")
+    if appData and appData ~= "" then return appData .. "/pokemon-love2d" end
+  elseif osName == "OS X" then
+    local home = os.getenv("HOME")
+    if home and home ~= "" then
+      return home .. "/Library/Application Support/pokemon-love2d"
+    end
+  else
+    local data = os.getenv("XDG_DATA_HOME")
+    if not data or data == "" then
+      local home = os.getenv("HOME")
+      if home and home ~= "" then data = home .. "/.local/share" end
+    end
+    if data and data ~= "" then return data .. "/pokemon-love2d" end
+  end
+  return love.filesystem.getSaveDirectory()
+end
+
+local function hostReadFs(base)
+  local function absolute(path)
+    return base .. "/" .. tostring(path or ""):gsub("^[/\\]+", "")
+  end
+  return {
+    getInfo = function(path)
+      local file = io.open(absolute(path), "rb")
+      if not file then return nil end
+      local size = file:seek("end")
+      file:close()
+      return { type = "file", size = size }
+    end,
+    read = function(path)
+      local file, err = io.open(absolute(path), "rb")
+      if not file then return nil, err end
+      local bytes = file:read("*a")
+      file:close()
+      return bytes
+    end,
+    -- This visual harness consumes the player's cache but never mutates it.
+    write = function() return false, "visual cache adapter is read-only" end,
+    remove = function() return false end,
+  }
+end
+
+local function bindPlaythroughStorage(base)
+  local SaveData = require("src.core.SaveData")
+  local Storage = require("src.mods.Storage")
+  local version = tostring(os.getenv("STADIUM2_VISUAL_GAME") or "gold"):lower()
+  local dataRoot = packagedDataRoot()
+  local fs = hostReadFs(dataRoot)
+  local options = SaveData.loadOptions(fs)
+  local registry = options.saveSlots and options.saveSlots[version]
+  local slot = registry and registry.active or "legacy"
+  local ids = options.playthroughIds and options.playthroughIds[version]
+  local playthroughId = ids and ids[slot]
+  if type(playthroughId) ~= "string" or playthroughId == "" then
+    return nil, ("no selected %s Stadium cache under %s; set "
+      .. "STADIUM2_VISUAL_DATA_ROOT if the packaged game uses another location")
+      :format(version, dataRoot)
+  end
+
+  local game = { save = {
+    version = version,
+    meta = { playthroughId = playthroughId },
+  } }
+  local storage = Storage.new("STADIUM2_IMPORTER", fs)
+  -- Storage:list normally walks through love.filesystem.  This harness uses a
+  -- read-only host adapter because a non-fused LOVE source run cannot mount
+  -- the packaged save root, so enumerate the fixed Stadium cache keys by
+  -- probing their verified main/backup records instead.
+  local storageBase = ("mod_storage/%s/%s/STADIUM2_IMPORTER/")
+    :format(version, playthroughId)
+  local function stored(key)
+    local path = storageBase .. key
+    return fs.getInfo(path .. ".bin") or fs.getInfo(path .. ".bin.bak")
+      or fs.getInfo(path .. ".lua") or fs.getInfo(path .. ".lua.bak")
+  end
+  storage.list = function(_, _, prefix)
+    if prefix ~= nil and prefix ~= "" and prefix ~= "cache" then return {} end
+    local keys = {}
+    local function add(key) if stored(key) then keys[#keys + 1] = key end end
+    add("cache/marker")
+    add("cache/battle/substitute")
+    for species = 1, 251 do
+      add(("cache/normal/%03d"):format(species))
+      add(("cache/shiny/%03d"):format(species))
+    end
+    return keys
+  end
+  local context, code, message = storage:context(game)
+  if not context then
+    return nil, message or code or "could not resolve Stadium cache scope"
+  end
+
+  local handle = {
+    game = game,
+    storage = storage,
+    options = { get = function(_, key)
+      if key == "stadium2_shader" then return shaderStyle end
+    end },
+    -- Cache reuse does not need the ROM.  Keep a scoped development fallback
+    -- for an explicitly extracted local install without teaching the harness
+    -- to search arbitrary host paths or release archives.
+    read = function(_, path)
+      local filename = base .. "/mods/STADIUM2_IMPORTER/" .. tostring(path)
+      local file = io.open(filename, "rb")
+      if not file then return nil end
+      local bytes = file:read("*a")
+      file:close()
+      return bytes
+    end,
+  }
+  context.dataRoot = dataRoot
+  return handle, context
 end
 
 local function warn(message)
@@ -320,17 +443,28 @@ local function cycleSelectedAnimation(delta)
 end
 
 local function initialise()
+  -- LOVE's distro boot scripts do not all honor conf.lua's appendidentity
+  -- field.  Select it explicitly before SaveData or Storage touches the
+  -- filesystem so a source-launched harness shares the packaged game cache.
+  if love.filesystem and love.filesystem.setIdentity then
+    love.filesystem.setIdentity("pokemon-love2d",
+      os.getenv("STADIUM2_VISUAL_APPEND_IDENTITY") == "1")
+  end
   root = findRoot()
   if not root then
     loadError = "could not find the gen1recomp root; run this from the gen1recomp directory or set GEN1RECOMP_ROOT"
     return
   end
-  installModLoader(root)
+  installRepoLoader(root)
   local ok, result = pcall(function()
     Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
-    Importer.bind({ options={ get=function(_, key)
-      if key == "stadium2_shader" then return shaderStyle end
-    end } })
+    local handle, contextOrError = bindPlaythroughStorage(root)
+    if not handle then error(contextOrError, 0) end
+    Importer.bind(handle)
+    Importer.setPlaythroughReady(true)
+    warn(("CACHE_SCOPE game=%s playthrough=%s root=%s")
+      :format(tostring(contextOrError.gameVersion),
+        tostring(contextOrError.playthroughId), tostring(contextOrError.dataRoot)))
     Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
     Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
     DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")

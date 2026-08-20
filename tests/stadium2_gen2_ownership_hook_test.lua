@@ -71,7 +71,12 @@ local screen=setmetatable({battle=battle,game={data=battle.data},
   drawScene=function() calls.scene=calls.scene+1 end,phase="resolving"}, {__index=BattleState})
 
 screen:drawPic(mon,true)
-assert(calls.pic==0,"native Pokemon pic ran before the first owned 3D frame")
+assert(calls.pic==1,"native Pokemon pic did not fail open before the first valid 3D frame")
+local ownedScene=Gen2.currentScene()
+ownedScene.readyFrame=true
+ownedScene.width,ownedScene.height=1280,720
+ownedScene.hudBox={lx=0,ly=0,scale=1}
+ownedScene.presentCanvas={getWidth=function() return 1280 end,getHeight=function() return 720 end}
 screen:drawWidescreen(1280,720)
 assert(calls.wide==0,"native widescreen battle ran during an owned session")
 screen.anim={}

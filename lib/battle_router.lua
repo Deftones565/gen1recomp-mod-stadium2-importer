@@ -58,6 +58,11 @@ function Router.status()
     or {enabled=false,ready=false,active=false}
 end
 
+function Router.currentScene()
+  local impl=implementation
+  return impl and impl.currentScene and impl.currentScene() or nil
+end
+
 function Router.enabled()
   local impl = implementation
   return impl and impl.enabled and impl.enabled() or false

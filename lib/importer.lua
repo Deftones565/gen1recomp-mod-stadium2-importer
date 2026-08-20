@@ -14,6 +14,7 @@ local job
 local romMeta
 local modelCache = {}
 local modelOrder = {}
+local ownedModels = setmetatable({}, {__mode="k"})
 local MODEL_KEEP = 4
 local configuredCount = 151
 local playthroughReady = false
@@ -205,6 +206,47 @@ function Importer.newRenderer(species, variant, options)
   return Renderer.new(model, rendererOptions(options))
 end
 
+-- Return an independently owned model. Unlike loadModel(), this instance is
+-- never placed in the importer's small shared LRU and may be freely mutated by
+-- the caller. The caller must eventually pass it to releaseModel().
+function Importer.createModel(species, variant)
+  species = math.floor(tonumber(species) or 0)
+  if species < 1 or species > configuredCount then return nil, "species out of range" end
+  variant = variant == "shiny" and "shiny" or "normal"
+  local bytes = Cache.read(species, variant)
+  if not bytes then return nil, "model pack unavailable" end
+  local model, err = Pack.parse(bytes)
+  if not model then return nil, err end
+  model.variant = variant
+  ownedModels[model] = true
+  return model
+end
+
+function Importer.releaseModel(model)
+  if type(model) ~= "table" or not ownedModels[model] then
+    return false, "model is not owned by the caller"
+  end
+  ownedModels[model] = nil
+  Pack.release(model)
+  return true
+end
+
+-- Build a renderer from either an owned model or a compatible caller-created
+-- model table. Releasing the renderer does not release the model.
+function Importer.newRendererFromModel(model, options)
+  return Renderer.new(model, rendererOptions(options))
+end
+
+function Importer.createSpecialModel(name)
+  local bytes=Cache.readSpecial(name)
+  if not bytes then return nil,"special battle pack unavailable" end
+  local model,err=Pack.parse(bytes)
+  if not model then return nil,err end
+  model.variant="normal"
+  ownedModels[model]=true
+  return model
+end
+
 function Importer.loadSpecial(name)
   local key="special:"..tostring(name)
   local hit=modelCache[key]
@@ -231,7 +273,9 @@ function Importer.releaseModels()
 end
 
 function Importer.parsePack(bytes)
-  return Pack.parse(bytes)
+  local model,err=Pack.parse(bytes)
+  if model then ownedModels[model]=true end
+  return model,err
 end
 
 function Importer.readHandlers(species, variant)

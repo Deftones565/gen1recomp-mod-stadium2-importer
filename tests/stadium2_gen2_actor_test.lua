@@ -56,6 +56,7 @@ ok(handlerRuntime and handlerRuntime.species==109 and handlerRuntime.dynamicObje
 local scene=Gen2.Scene.new({})
 scene.actors.player=actor
 scene.screen={picHidden={player=false},animPicState=function() return nil end}
+scene.readyFrame=true
 actor.mon={hp=0}
 ok(scene:covered("player"),"finished faint continues suppressing the native 2D pic")
 ok(not scene:modelVisible("player"),"finished faint leaves an empty 3D platform")

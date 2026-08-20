@@ -4,12 +4,16 @@ local BattleAA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
 local BattlePresentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
 local ImportScreen = require("mods.STADIUM2_IMPORTER.lib.import_screen")
 local Fx = require("mods.STADIUM2_IMPORTER.lib.fx")
+local BattleSceneApi = require("mods.STADIUM2_IMPORTER.lib.battle_scene_api")
+local ModelApi = require("mods.STADIUM2_IMPORTER.lib.model_api")
 
 return function(mod)
   Importer.bind(mod)
   Fx.bind(mod)
   Battle.bind(mod)
   BattleAA.bind(mod)
+  BattleSceneApi.bind(Battle)
+  local Models = ModelApi.new(Importer)
   local importScreen
   local activatedSave
   local pendingAutoImport = false
@@ -91,7 +95,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.10.12"
+  mod.exports.version = "0.10.14"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
@@ -113,7 +117,11 @@ return function(mod)
   mod.exports.readPack = Importer.readPack
   mod.exports.parsePack = Importer.parsePack
   mod.exports.loadModel = Importer.loadModel
+  mod.exports.createModel = Importer.createModel
+  mod.exports.createSpecialModel = Importer.createSpecialModel
+  mod.exports.releaseModel = Importer.releaseModel
   mod.exports.newRenderer = Importer.newRenderer
+  mod.exports.newRendererFromModel = Importer.newRendererFromModel
   mod.exports.releaseModels = Importer.releaseModels
   mod.exports.readHandlers = Importer.readHandlers
   mod.exports.handlerInfo = Importer.handlerInfo
@@ -124,6 +132,12 @@ return function(mod)
   mod.exports.shinyPalettesFromTransformSource = Importer.shinyPalettesFromTransformSource
   mod.exports.US_MD5 = Importer.US_MD5
   mod.exports.FORMAT = Importer.FORMAT
+  mod.exports.scene = BattleSceneApi
+  mod.exports.getActiveBattleScene = BattleSceneApi.current
+  mod.exports.registerBattleSceneExtension = BattleSceneApi.register
+  mod.exports.battleSceneCapabilities = BattleSceneApi.capabilities()
+  mod.exports.models = Models
+  mod.exports.modelCapabilities = Models.capabilities()
 
   mod.hooks:wrap("input.step", function(next, game, dt)
     local result = next(game, dt)
