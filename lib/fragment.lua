@@ -335,13 +335,13 @@ function Model:walk(o, depth)
       self.curMat = f:ptr(o + 4)
       self.curTexAnim = f:s16(o + 2)
       -- A local texture/material command supersedes callback RDP state for
-      -- this node and its descendants. The slime models' 32x64 atlas is the
-      -- exception: it is a body carrier consumed by the inherited 0x48
-      -- builder, not a local eye/detail material. Keep the blocked callback's
-      -- identity so a later carrier command on the same bone can restore it.
+      -- this node and its descendants. The slime models' uniform 4x4 input is
+      -- the exception: it is a body placeholder consumed by the inherited
+      -- 0x48 builder, not a local detail material. Keep the blocked callback's
+      -- identity so a later placeholder command on the same bone restores it.
       local inherited = self:nodeCallbackState(self:curBone())
       local texture = self.textures and self.textures[self.curTex + 1]
-      local slimeCarrier = texture and texture.w == 32 and texture.h == 64
+      local slimeCarrier = texture and texture.w == 4 and texture.h == 4
       if inherited and inherited.descriptor == 0x81000048 then
         self.callbackForBone = self.callbackForBone or {}
         self.callbackForBone[self:curBone()] = {
@@ -378,25 +378,44 @@ function Model:nodeCallback(bone)
 end
 
 function Model:runNodeDL(offset, bone)
-  local oldOffset, oldDescriptor = self.curCallbackOffset, self.curCallbackDescriptor
-  local callback = self:nodeCallback(bone)
-  if callback then
+  local oldOffset, oldDescriptor, oldBlocked = self.curCallbackOffset,
+    self.curCallbackDescriptor, self.curBlockedCallback
+  local callback = self:nodeCallbackState(bone)
+  if callback and callback.blocked then
+    self.curBlockedCallback = callback
+  elseif callback then
     self.curCallbackOffset = callback.offset
     self.curCallbackDescriptor = callback.descriptor
+    self.curBlockedCallback = nil
   end
   self:runDL(offset, bone, 0)
-  self.curCallbackOffset, self.curCallbackDescriptor = oldOffset, oldDescriptor
+  self.curCallbackOffset, self.curCallbackDescriptor, self.curBlockedCallback =
+    oldOffset, oldDescriptor, oldBlocked
 end
 
 function Model:primFor(tex, tlut, mat, texAnim, cull)
+  local callbackOffset, callbackDescriptor = self.curCallbackOffset,
+    self.curCallbackDescriptor
+  local blocked = self.curBlockedCallback
+  local texture = self.textures and self.textures[tex + 1]
+  -- A blocked detail node can switch back to the uniform body placeholder
+  -- inside its display list without another geo-layout 0x23 command. Restore
+  -- the saved 0x48 callback for that primitive only; nonuniform tongue/eye
+  -- inputs remain local details.
+  local slimeInput = texture and ((texture.w == 4 and texture.h == 4)
+    or (texture.w == 32 and texture.h == 64))
+  if callbackOffset == nil and blocked and blocked.descriptor == 0x81000048
+      and slimeInput then
+    callbackOffset, callbackDescriptor = blocked.offset, blocked.descriptor
+  end
   local key = tex .. "," .. tlut .. "," .. tostring(mat) .. ","
-              .. texAnim .. "," .. cull .. "," .. tostring(self.curCallbackOffset)
+              .. texAnim .. "," .. cull .. "," .. tostring(callbackOffset)
               .. "," .. tostring(self.drawSerial)
   local p = self.primsByKey[key]
   if p == nil then
     p = { tex = tex, tlut = tlut, mat = mat, texAnim = texAnim, cull = cull,
-          callbackOffset = self.curCallbackOffset,
-          callbackDescriptor = self.curCallbackDescriptor,
+          callbackOffset = callbackOffset,
+          callbackDescriptor = callbackDescriptor,
           verts = {}, nverts = 0, tris = {}, ntris = 0, remap = {} }
     self.primsByKey[key] = p
     self.prims[#self.prims + 1] = p

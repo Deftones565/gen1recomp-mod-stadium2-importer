@@ -81,14 +81,22 @@ local function sameTexture(a, b)
     and type(a.rgba) == "string" and a.rgba == b.rgba
 end
 
-local function generatedCarrierAtlas(authored, callback)
-  -- Grimer and Muk's 0x48 draws include a 32x64 pale carrier atlas before
-  -- the generated 32x32 body material replaces it. Their actual authored
-  -- eyes are the separate 64x32 atlases and must remain local.
-  return authored ~= nil and callback ~= nil
-    and tonumber(authored.w) == 32 and tonumber(authored.h) == 64
-    and tonumber(callback.w) == DualTexture.WIDTH
-    and tonumber(callback.h) == DualTexture.HEIGHT
+local function generatedCarrierAtlas(prim, authored, callback)
+  if not (authored ~= nil and callback ~= nil
+      and tonumber(authored.w) == 32 and tonumber(authored.h) == 64
+      and tonumber(callback.w) == DualTexture.WIDTH
+      and tonumber(callback.h) == DualTexture.HEIGHT) then
+    return false
+  end
+  -- Muk reuses its tongue atlas as the source state for two rear-head shells.
+  -- Those shells extend high through model space; the actual Muk tongue and
+  -- every Grimer tongue segment remain low around the mouth/base. This is the
+  -- stable geometry distinction produced by the ROM display lists.
+  local maxY = -math.huge
+  for at = 2, #(prim and prim.pos or {}), 3 do
+    maxY = math.max(maxY, tonumber(prim.pos[at]) or -math.huge)
+  end
+  return maxY > 80
 end
 
 local function generatedCarrierGeometry(prim, authored, callback)
@@ -113,7 +121,7 @@ function DualTexture.ownsAuthoredTexture(prim, authoredTexture, callbackTexture,
   return DualTexture.ownsPrimitive(prim, descriptor)
     and (uniformTexture(authoredTexture)
       or sameTexture(authoredTexture, callbackTexture)
-      or generatedCarrierAtlas(authoredTexture, callbackTexture)
+      or generatedCarrierAtlas(prim, authoredTexture, callbackTexture)
       or generatedCarrierGeometry(prim, authoredTexture, callbackTexture))
 end
 

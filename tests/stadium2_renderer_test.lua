@@ -220,12 +220,22 @@ local bodyWrapS, bodyWrapT = Renderer.callbackPrimaryWrap({},
   { wrapS = "clamp", wrapT = "clamp" }, { wrap = "repeat" }, true)
 ok(bodyWrapS == "repeat" and bodyWrapT == "repeat",
   "callback-owned body primary uses the generated tile repeat mode")
-ok(require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
-    .ownsAuthoredTexture(model.prims[1],
-      { w = 32, h = 64, rgba = string.rep("\255\255\255\255", 32 * 64) },
+ok(not require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+    .ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+          pos = { 0, 0, 0, 0, 40, 0 } },
+      { w = 32, h = 64, rgba = "\0\0\0\255"
+          .. string.rep("\255\255\255\255", 32 * 64 - 1) },
       { w = 32, h = 32, rgba = string.rep("\0\0\0\255", 32 * 32) },
       0x81000048),
-  "ROM pale carrier atlas is replaced by the generated slime body material")
+  "authored 32x64 tongue atlas remains a local primary detail")
+ok(require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+    .ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+          pos = { 0, 30, 0, 0, 200, 0 } },
+      { w = 32, h = 64, rgba = "\0\0\0\255"
+          .. string.rep("\255\255\255\255", 32 * 64 - 1) },
+      { w = 32, h = 32, rgba = string.rep("\0\0\0\255", 32 * 32) },
+      0x81000048),
+  "Muk rear-head geometry replaces the reused tongue atlas with body material")
 local DualTexture = require(
   "mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
 local sharedEyeAtlas = { w = 64, h = 32,

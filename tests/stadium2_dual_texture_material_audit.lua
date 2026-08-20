@@ -244,21 +244,23 @@ check(callbacks == 36 and consumers == 35 and routes == 35,
   ("family coverage callbacks/consumers/routes=%d/%d/%d expected 36/35/35")
     :format(callbacks, consumers, routes))
 check(targets[88].callbacks == 16 and targets[88].consumers == 16
-    and targets[88].body == 18 and targets[88].decals == 1
-    and targets[88].carriers == 18 and targets[88].details == 0
+    and targets[88].body == 19 and targets[88].decals == 1
+    and targets[88].carriers == 12 and targets[88].details == 7
     and targets[88].localEyes == 2
     and targets[88].textureKinds[2] and targets[88].uvConverted,
   "Grimer callback topology or distinct-pointer dual-tile contract changed")
 check(targets[89].callbacks == 20 and targets[89].consumers == 19
-    and targets[89].body == 20 and targets[89].decals == 1
-    and targets[89].carriers == 19 and targets[89].details == 1
+    and targets[89].body == 22 and targets[89].decals == 1
+    and targets[89].carriers == 20 and targets[89].details == 2
     and targets[89].eyeAtlas
     and targets[89].textureKinds[2] and targets[89].uvConverted,
   "Muk callback topology or distinct-image dual-tile contract changed")
 
-print(("Grimer carriers/details=%d/%d; Muk carriers/details=%d/%d eyeAtlas=%s")
-  :format(targets[88].carriers, targets[88].details,
-    targets[89].carriers, targets[89].details, tostring(targets[89].eyeAtlas)))
+print(("Grimer body/carriers/details=%d/%d/%d; "
+    .. "Muk body/carriers/details=%d/%d/%d eyeAtlas=%s")
+  :format(targets[88].body, targets[88].carriers, targets[88].details,
+    targets[89].body, targets[89].carriers, targets[89].details,
+    tostring(targets[89].eyeAtlas)))
 
 print(("dual-texture material audit: callbacks=%d consumers=%d routes=%d body=%d decals=%d failures=%d")
   :format(callbacks, consumers, routes, bodyPrims, decalPrims, #failures))
