@@ -77,4 +77,17 @@ ok(Fresh.readSpecial("substitute") == "DSM4substitute", "fresh process reads Sub
 ok(Fresh.readSpecial("unown_z_shiny") == "DSM4shiny-unown-z",
   "fresh process reads shiny Unown Z")
 
+storage.list = function()
+  return nil, "storage_unavailable",
+    "The persistence backend cannot enumerate keys."
+end
+ok(Fresh.inspect(151).state == "valid",
+  "portable backend trusts the completion marker without enumeration")
+ok(Fresh.clear(151),
+  "portable backend clears deterministic cache keys without enumeration")
+ok(records["cache/marker"] == nil
+    and records["cache/battle/shard_001"] == nil
+    and records["cache/battle/specials"] == nil,
+  "portable fallback removes marker, model shards and special shard")
+
 print(("%d checks passed (Stadium 2 sharded cache)"):format(checks))

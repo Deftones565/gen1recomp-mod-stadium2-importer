@@ -359,29 +359,47 @@ function Cache.clear(count)
       end
       return true
     end
-    -- A real enumeration error must not silently fall through and pretend the
-    -- cache was cleared. The fallback below is only for engines with no list.
-    if listCode and listCode ~= "not_found" then
+    -- Portable persistence deliberately exposes read/write/delete without
+    -- directory enumeration. Fall through to the deterministic key list in
+    -- that case; other storage errors must still abort the rebuild.
+    if listCode and listCode ~= "not_found" and listCode ~= "storage_unavailable" then
       return false, listMessage or listCode
     end
   end
 
   count = math.max(251, tonumber(count) or 251)
+  local function removeKnown(path)
+    local ok, code, message = deleteRecord(path)
+    if ok then return true end
+    return false, message or code
+  end
+  -- Portable validation uses this last-written marker as its completeness
+  -- contract, so invalidate it before removing any payload. A terminated
+  -- rebuild can then only look missing, never valid-but-partially-deleted.
+  local ok, err = removeKnown(Cache.MARKER)
+  if not ok then return false, err end
   for index = 1, math.ceil(count / Cache.SHARD_SIZE) do
-    deleteRecord(shardPath(index))
+    ok, err = removeKnown(shardPath(index))
+    if not ok then return false, err end
   end
-  deleteRecord(specialShardPath())
+  ok, err = removeKnown(specialShardPath())
+  if not ok then return false, err end
   for species = 1, count do
-    deleteRecord(Cache.path(species, "normal"))
-    deleteRecord(Cache.path(species, "shiny"))
+    ok, err = removeKnown(Cache.path(species, "normal"))
+    if not ok then return false, err end
+    ok, err = removeKnown(Cache.path(species, "shiny"))
+    if not ok then return false, err end
   end
-  deleteRecord(Cache.MARKER)
-  deleteRecord(Cache.ERROR)
-  deleteRecord(Cache.specialPath("substitute"))
+  ok, err = removeKnown(Cache.ERROR)
+  if not ok then return false, err end
+  ok, err = removeKnown(Cache.specialPath("substitute"))
+  if not ok then return false, err end
   for i = 2, #Cache.UNOWN_FORMS do
     local letter = Cache.UNOWN_FORMS:sub(i, i)
-    deleteRecord(Cache.unownPath(letter, "normal"))
-    deleteRecord(Cache.unownPath(letter, "shiny"))
+    ok, err = removeKnown(Cache.unownPath(letter, "normal"))
+    if not ok then return false, err end
+    ok, err = removeKnown(Cache.unownPath(letter, "shiny"))
+    if not ok then return false, err end
   end
   return true
 end
@@ -523,6 +541,18 @@ function Cache.inspect(count)
   -- trees without reading hundreds of large DSM blobs into memory.
   local keys, listCode, listMessage = listCacheKeys()
   if not keys then
+    -- A completion marker is committed only after every shard. Portable mode
+    -- cannot enumerate its io-backed directory, so the marker is the durable
+    -- completeness contract there. Individual reads still validate shard and
+    -- DSM envelopes when a model is requested.
+    if listCode == "storage_unavailable" then
+      return {
+        state = "valid",
+        code = "ok",
+        marker = marker,
+        context = context,
+      }
+    end
     return {
       state = "error",
       code = listCode or "storage_unavailable",
