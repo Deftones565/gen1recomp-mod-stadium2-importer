@@ -63,6 +63,12 @@ derived from the user's ROM and must not be distributed with the mod.
 - `MODEL SHADER` selects the original `STADIUM` lighting or the `WATERCOLOR MANGA` style. Changes apply to existing battle models immediately.
 - `BATTLE AA` selects `OFF`, `2X`, or `4X` supersampling for the 3D arena while keeping the native interface crisp. The selected level is limited automatically by the device's texture support.
 - `DRAW HUD PANELS` enables or hides the frosted panels behind the Stadium status cards.
+- `BETA ARENA TEST` is disabled by default. When enabled, each new encounter
+  selects one random Stadium 2 battle field and uses its arena placement,
+  camera, lighting, materials, and animated effects for that encounter. Arena
+  rendering is still experimental; turn this option off at any time to keep
+  using the established classic battle scene. If a field cannot be loaded,
+  the encounter safely falls back to the classic scene.
 
 ## Battle camera controls
 

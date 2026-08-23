@@ -75,6 +75,8 @@ return function(mod)
       help="Back the Stadium 2 status cards with the frosted glass plate. Turn OFF for a bare HUD on the 3D scene." },
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
+    { key="stadium2_beta_arena_test", label="BETA ARENA TEST", type="toggle", default=false,
+      help="Experimental: use one random unfinished Stadium 2 field for each new encounter. Turn OFF to use the established classic battle scene." },
   })
 
   -- Hand the mod handle to the HUD module so its panels can read the
@@ -106,6 +108,7 @@ return function(mod)
   mod.exports.battleEnabled = Importer.battleEnabled
   mod.exports.shaderStyle = Importer.shaderStyle
   mod.exports.rapidashCutEffectEnabled = Importer.rapidashCutEffectEnabled
+  mod.exports.betaArenaEnabled = Importer.betaArenaEnabled
   mod.exports.battleStatus = Battle.status
   mod.exports.configureGame = Battle.configureGame
   mod.exports.presentation = BattlePresentation

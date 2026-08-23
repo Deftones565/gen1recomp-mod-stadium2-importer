@@ -62,6 +62,9 @@ function Scene.init(self,opts)
   self.defect=nil
   self.warn=opts.warn or self.warn
   self.label=opts.label or self.label or "Stadium battle"
+  self.arena=type(opts.arena)=="table" and opts.arena or nil
+  self.arenaRenderer=self.arena and self.arena.renderer or nil
+  self.arenaIndex=self.arena and self.arena.index or nil
   -- Opt-in only: the ordinary Gen 1/Gen 2 presentation keeps its established
   -- normalized-height placement. Arena viewers can instead keep Stadium's
   -- model and field coordinates in the same world-unit conversion.
@@ -70,10 +73,13 @@ function Scene.init(self,opts)
   -- Compatibility alias for API consumers that adopted arenaMode before the
   -- two scene compositions were formally separated.
   self.arenaMode=self.sceneMode==Scene.MODE_ARENA
-  self.arenaScale=tonumber(opts.arenaScale) or .05
-  self.arenaGroundY=tonumber(opts.arenaGroundY) or 0
+  self.arenaScale=tonumber(opts.arenaScale)
+    or tonumber(self.arena and self.arena.scale) or .05
+  self.arenaGroundY=tonumber(opts.arenaGroundY)
+    or tonumber(self.arena and self.arena.groundY) or 0
   self.arenaEnvironment=type(opts.arenaEnvironment)=="table"
-    and opts.arenaEnvironment or Scene.ARENA_ENVIRONMENT
+    and opts.arenaEnvironment
+    or (self.arena and self.arena.environment) or Scene.ARENA_ENVIRONMENT
   return self
 end
 
@@ -103,12 +109,49 @@ function Scene:release()
     if value and value.release then pcall(value.release,value) end
   end
   self.canvas,self.depth,self.presentCanvas,self.compositeCanvas=nil,nil,nil,nil
+  if self.arena and self.arena.release then pcall(self.arena.release,self.arena) end
+  self.arena,self.arenaRenderer=nil,nil
   self.providerBattlerModes=nil
   Stage.invalidate()
   Shadow.release()
   Hud.invalidate()
   AA.release()
   Camera.reset()
+end
+
+function Scene:stepArena(dt)
+  local renderer=self.arenaRenderer
+  if renderer and renderer.step then return renderer:step(dt) end
+  return false
+end
+
+function Scene:drawArena(context,marks)
+  local renderer=self.arenaRenderer
+  if not renderer then return marks end
+  local environment=context and context.environment or self.environment or {}
+  local shadow=context and context.shadow or {}
+  local scale=self.arenaScale
+  local matrix={
+    scale,0,0,0,
+    0,scale,0,self.arenaGroundY,
+    0,0,scale,0,
+    0,0,0,1,
+  }
+  local camera=context and context.camera or {}
+  local options={
+    viewProjection=camera.viewProjection or camera.vp,
+    viewMatrix=camera.view,
+    normalMatrix={1,0,0,0,1,0,0,0,1},
+    lightDir=environment.light,ambient=environment.ambient,
+    diffuse=environment.diffuse,modernLighting=true,
+    tint={1,1,1,1},flipWinding=true,
+    sunMap=shadow.map,sunVP=shadow.sunVP,
+    sunDark=shadow.sunDark,sunBias=shadow.sunBias,sunTexel=shadow.sunTexel,
+  }
+  local drawn,drawError=renderer:drawScene("opaque",matrix,options)
+  if drawn then drawn,drawError=renderer:drawScene("additive",matrix,options) end
+  if not drawn then return nil,drawError end
+  return marks
 end
 
 local function newDepthCanvas(g,width,height)
@@ -425,7 +468,7 @@ function Scene:render(requestedWidth,requestedHeight)
     g.setCanvas(sceneTarget(self))
 
     local providerMarks,stageErr=Extensions.environment(ext,function()
-      if self.sceneMode==Scene.MODE_ARENA then return marks end
+      if self.sceneMode==Scene.MODE_ARENA then return self:drawArena(ext,marks) end
       return Stage.draw(g,width,height,frame,self.actors,shadow,self.environment)
     end)
     if type(providerMarks)=="table" and providerMarks.player and providerMarks.enemy then

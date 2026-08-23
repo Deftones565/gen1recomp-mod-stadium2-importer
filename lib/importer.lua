@@ -149,6 +149,15 @@ function Importer.rapidashCutEffectEnabled()
   return true
 end
 
+function Importer.betaArenaEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok, value = pcall(modRef.options.get, modRef.options,
+      "stadium2_beta_arena_test")
+    if ok then return value == true end
+  end
+  return false
+end
+
 local function rendererOptions(options)
   local out = {}
   for key, value in pairs(type(options) == "table" and options or {}) do

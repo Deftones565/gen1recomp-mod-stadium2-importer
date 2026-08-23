@@ -11,6 +11,7 @@ local Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
 local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
 local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
+local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 
 local Gen1={COUNT=251}
 local modRef,installed,session
@@ -57,9 +58,17 @@ end
 function Scene.new(battle)
   local opts=actorOptions()
   local self=setmetatable({},Scene)
+  local arena,arenaError
+  if Importer.betaArenaEnabled() then
+    arena,arenaError=ArenaRuntime.random(battle,Importer)
+    if not arena then
+      warn("BETA ARENA TEST could not load a field; using the classic scene: "
+        ..tostring(arenaError))
+    end
+  end
   Presentation.init(self,{
     actors={player=Actor.new("player",opts),enemy=Actor.new("enemy",opts)},
-    warn=warn,label="Gen 1 battle",
+    warn=warn,label="Gen 1 battle",arena=arena,arenaMode=arena~=nil,
   })
   self.battle=battle
   self.game=battle and battle.game
@@ -236,6 +245,7 @@ end
 function Scene:update(dt)
   self:sync()
   self:syncPresentationState()
+  self:stepArena(dt)
   Camera.stickOrbit(self.stickX,dt)
   Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
@@ -790,6 +800,8 @@ function Gen1.status()
   return {
     enabled=Gen1.enabled(),ready=Gen1.ready(),count=configured,generation=1,
     active=session~=nil,
+    betaArena=session and session.arenaMode or false,
+    arenaIndex=session and session.arenaIndex or nil,
     shot=session and (session.compositeCanvas or session.presentCanvas or session.canvas) or nil,
     defect=session and session.defect or nil,
     cameraInput=session and {stickX=session.stickX or 0,stickY=session.stickY or 0} or nil,
@@ -805,6 +817,7 @@ end
 
 function Gen1.resetForTests()
   Gen1.finish()
+  ArenaRuntime.resetForTests()
   installed=false
   modRef=nil
   gameRef=nil

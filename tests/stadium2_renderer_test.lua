@@ -517,6 +517,13 @@ ok(not phase5Rig:callbackUsesMaterialFx(localEye)
 ok(phase5Rig:callbackUsesMaterialFx(callbackSurface)
     and phase5Rig:currentMaterial(callbackSurface) == generatedPhase5Material,
   "phase-5 mode 2 still supplies its generated callback surface and animated FX")
+local arenaPhase5Rig = setmetatable({
+  model = { species = 0, staticPose = true, handlers = phase5Rig.model.handlers },
+  handlerState = phase5Rig.handlerState,
+}, Renderer)
+ok(arenaPhase5Rig:callbackUsesMaterialFx(localEye)
+    and arenaPhase5Rig:currentMaterial(localEye) == generatedPhase5Material,
+  "arena phase-5 combines its locally textured floor carrier with the callback mask")
 phase5Rig.model.handlers.records[1].descriptor = 0x81000140
 ok(not phase5Rig:callbackUsesMaterialFx(localEye)
     and phase5Rig:currentMaterial(localEye) == localEyeMaterial,

@@ -1924,13 +1924,13 @@ function Renderer:callbackUsesMaterialFx(prim)
   -- color combiner and independently scrolling secondary slime tile.
   if not record then return false end
   if record.descriptor == DualTexture.DESCRIPTOR then return true end
-  -- Both phase-5 descriptors have the ROM contract "replace untextured".
-  -- Their generated material belongs only to the callback-owned surface;
-  -- opaque local eye atlases can share the same graph node and callback site.
-  -- Applying the phase-5 combiner to those local textures corrupts Unown,
-  -- Steelix, Slugma and Magcargo while making the callback FX itself appear.
+  -- Pokemon phase-5 nodes have the ROM contract "replace untextured": their
+  -- generated material belongs only to the callback-owned surface, while an
+  -- opaque local eye atlas at the same node keeps its display-list material.
+  -- Field phase-5 nodes are different: their locally textured floor carrier
+  -- is TEXEL0 and must still receive the callback's TEXEL1 mask/combiner.
   if record.descriptor == 0x81000140 or record.descriptor == 0x81000148 then
-    return prim.callbackTextureRequired == true
+    return isArenaModel(self.model) or prim.callbackTextureRequired == true
   end
   return false
 end
@@ -1940,7 +1940,8 @@ function Renderer:currentMaterial(prim)
   local dynamic = self.handlerState and self.handlerState.materialBySite
   local material = site and dynamic and dynamic[site] or nil
   local record = site and callbackRecord(self.model, site) or nil
-  if material and record and (record.descriptor == 0x81000140
+  if material and not isArenaModel(self.model) and record
+      and (record.descriptor == 0x81000140
       or record.descriptor == 0x81000148)
       and not (prim and prim.callbackTextureRequired == true) then
     -- func_810033DC/func_8100343C submit generated phase-5 state only for the

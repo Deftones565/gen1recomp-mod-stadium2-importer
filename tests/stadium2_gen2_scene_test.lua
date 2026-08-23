@@ -169,6 +169,33 @@ for side,point in pairs(Stage.positions) do
 end
 Camera.recentre()
 
+local arenaSteps,arenaPasses,arenaReleased=0,{},0
+local arenaRuntime={index=12,scale=.05,groundY=1,environment={
+  light={0,1,0},ambient=.5,diffuse=.5,
+},renderer={
+  step=function(_,dt) arenaSteps=arenaSteps+dt return true end,
+  drawScene=function(_,pass,matrix,options)
+    arenaPasses[#arenaPasses+1]={pass=pass,matrix=matrix,options=options}
+    return true
+  end,
+}}
+function arenaRuntime:release() arenaReleased=arenaReleased+1 end
+local ownedArenaScene=Scene.new({actors={},arena=arenaRuntime,arenaMode=true})
+ok(ownedArenaScene.arenaIndex==12 and ownedArenaScene.arenaRenderer==arenaRuntime.renderer,
+  "encounter scene owns its selected Stadium field")
+ok(ownedArenaScene:stepArena(.25) and arenaSteps==.25,
+  "encounter presentation advances arena material and water effects")
+local arenaMarks={player={x=1,y=2},enemy={x=3,y=4}}
+ok(ownedArenaScene:drawArena({camera={vp={}},environment=arenaRuntime.environment},arenaMarks)
+    ==arenaMarks,
+  "encounter presentation draws its internally owned arena")
+ok(#arenaPasses==2 and arenaPasses[1].pass=="opaque"
+    and arenaPasses[2].pass=="additive"
+    and arenaPasses[1].options.modernLighting==true,
+  "runtime arena submits both field passes with modern Stadium lighting")
+ownedArenaScene:release()
+ok(arenaReleased==1,"selected arena is released exactly once with its encounter")
+
 local sourceFile=assert(io.open("mods/STADIUM2_IMPORTER/lib/gen2_battle.lua","rb"))
 local source=sourceFile:read("*a")
 sourceFile:close()
