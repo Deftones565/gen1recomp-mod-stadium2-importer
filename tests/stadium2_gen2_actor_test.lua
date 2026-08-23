@@ -44,13 +44,16 @@ rig.finished=true
 rig.frame=12
 rig.animIndex=3
 actor.dex=109
+actor.variant="shiny"
 actor.dynamicObjectIndex=1
 actor:update(1/30)
 ok(actor.faintFinished and actor.context=="faint","faint holds its terminal pose")
 ok(handlerRuntime and handlerRuntime.species==109 and handlerRuntime.dynamicObjectIndex==1
   and handlerRuntime.animationState==3
   and handlerRuntime.animationFrame==12 and handlerRuntime.dynamicObjectEnabled==true
-  and handlerRuntime.dynamicObjectUpdateEnabled==true,
+  and handlerRuntime.dynamicObjectUpdateEnabled==true
+  and handlerRuntime.modelAlphaByte==255
+  and handlerRuntime.dynamicObjectGastlyAlternate==true,
   "battle actor supplies the fragment-26 dynamic-object runtime")
 
 local scene=Gen2.Scene.new({})

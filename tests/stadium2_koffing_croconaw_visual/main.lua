@@ -30,6 +30,8 @@ local autoCaptureAt = math.max(1,
 local autoKeys = os.getenv("STADIUM2_VISUAL_AUTOKEYS")
 local autoKeysApplied = false
 local shaderStyle = os.getenv("STADIUM2_VISUAL_SHADER") == "cel" and "cel" or "stadium"
+local rapidashCutEffect = os.getenv("STADIUM2_VISUAL_RAPIDASH_CUT_FX") ~= "0"
+local rapidashButtonHeld = false
 
 local function fileExists(path)
   local handle = io.open(path, "rb")
@@ -270,6 +272,7 @@ local function bindPlaythroughStorage(base)
     storage = storage,
     options = { get = function(_, key)
       if key == "stadium2_shader" then return shaderStyle end
+      if key == "stadium2_rapidash_cut_fx" then return rapidashCutEffect end
     end },
     -- Cache reuse does not need the ROM.  Keep a scoped development fallback
     -- for an explicitly extracted local install without teaching the harness
@@ -527,6 +530,34 @@ local function cycleSelectedAnimation(delta)
   return renderer:setAnimation(index, true)
 end
 
+local function toggleRapidashCutEffect()
+  rapidashCutEffect = not rapidashCutEffect
+  for _, actor in pairs(scene and scene.actors or {}) do
+    local renderer = actor and actor.renderer
+    if renderer and renderer.setRapidashCutEffect then
+      renderer:setRapidashCutEffect(rapidashCutEffect)
+    end
+  end
+  warn("RAPIDASH_CUT_FX " .. (rapidashCutEffect and "ON" or "OFF"))
+  return rapidashCutEffect
+end
+
+local function rapidashButtonBounds()
+  local width, height = love.graphics.getDimensions()
+  local buttonWidth = math.min(240, math.max(120, width - 24))
+  return width - buttonWidth - 12, height - 50, buttonWidth, 36
+end
+
+local function drawRapidashButton(g)
+  local x, y, width, height = rapidashButtonBounds()
+  if rapidashCutEffect then g.setColor(.18, .55, .28, .94)
+  else g.setColor(.12, .14, .19, .94) end
+  g.rectangle("fill", x, y, width, height, 6, 6)
+  g.setColor(.9, .93, 1, 1)
+  g.printf("RAPIDASH CUT FX: " .. (rapidashCutEffect and "ON" or "OFF"),
+    x, y + 9, width, "center")
+end
+
 local function initialise()
   -- LOVE's distro boot scripts do not all honor conf.lua's appendidentity
   -- field.  Select it explicitly before SaveData or Storage touches the
@@ -597,7 +628,7 @@ local function drawText(g)
     g.print("TAB select side   LEFT/RIGHT species   UP/DOWN +/-10", 24, 62)
     g.print("Drag mouse orbit/pitch   Wheel zoom", 24, 80)
     g.print("Q/E animation   R recenter   SPACE pause", 24, 98)
-    g.print("G force selected FX   [ / ] age   X suppress FX draw", 24, 116)
+    g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 116)
     g.print("0 all primitives   1-9 isolate   V shader   S shot   H/D/P debug", 24, 134)
   end
   if debugPanel then
@@ -630,6 +661,7 @@ local function drawText(g)
     g.setColor(1, 1, 1, 1)
     g.print(screenshotMessage, 24, g.getHeight() - 34)
   end
+  drawRapidashButton(g)
 end
 
 function love.load()
@@ -746,6 +778,8 @@ function love.keypressed(key)
   elseif key == "g" then
     forceGas = not forceGas
     printGasSnapshot()
+  elseif key == "f" then
+    toggleRapidashCutEffect()
   elseif key == "[" then
     forceGasAge = math.max(0, forceGasAge - 1)
     printGasSnapshot()
@@ -777,8 +811,21 @@ function love.keypressed(key)
   end
 end
 
+function love.mousepressed(x, y, button)
+  if button ~= 1 then return end
+  local bx, by, width, height = rapidashButtonBounds()
+  if x >= bx and y >= by and x <= bx + width and y <= by + height then
+    rapidashButtonHeld = true
+    toggleRapidashCutEffect()
+  end
+end
+
+function love.mousereleased(_, _, button)
+  if button == 1 then rapidashButtonHeld = false end
+end
+
 function love.mousemoved(x, y, dx, dy)
-  if Camera and love.mouse.isDown(1) then
+  if Camera and not rapidashButtonHeld and love.mouse.isDown(1) then
     Camera.mouseOrbit(dx)
     Camera.mousePitch(dy)
   end

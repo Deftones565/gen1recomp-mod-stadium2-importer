@@ -42,6 +42,7 @@ function Actor.new(side, opts)
     side=side, mon=nil, dex=nil, variant=nil, renderer=nil,
     context="idle", callbackFrame=0, grow=nil, flash=0,
     dynamicObjectIndex=nil,
+    modelAlphaByte=255,
     faintFinished=false, pendingFaint=false,
     failedFor=nil, failedForm=nil, form=nil,
     dexOf=opts.dexOf or defaultDex,
@@ -187,6 +188,9 @@ function Actor:update(dt)
     animationFrame=self.renderer.frame,
     dynamicObjectEnabled=true,
     dynamicObjectUpdateEnabled=true,
+    -- Stadium's Gastly gas renderer inherits the owning model object's alpha.
+    modelAlphaByte=self.modelAlphaByte,
+    dynamicObjectGastlyAlternate=self.variant=="shiny",
   },true)
   self.renderer:step(dt)
   if self.renderer.finished then

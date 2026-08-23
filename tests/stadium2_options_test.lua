@@ -8,15 +8,20 @@ end
 
 package.loaded["mods.STADIUM2_IMPORTER.lib.importer"] = nil
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
-local models, battle, shader = true, true, "stadium"
+local models, battle, shader, rapidashCut = true, true, "stadium", true
 Importer.bind({ options={ get=function(_, key)
   if key == "stadium2_models" then return models end
   if key == "stadium2_battle" then return battle end
   if key == "stadium2_shader" then return shader end
+  if key == "stadium2_rapidash_cut_fx" then return rapidashCut end
 end } })
 ok(Importer.modelsEnabled(), "Stadium 2 models default/ON state is enabled")
 ok(Importer.battleEnabled(), "Stadium 2 carried 3D battle default/ON state is enabled")
 ok(Importer.shaderStyle() == "stadium", "Stadium lighting is the default model shader")
+rapidashCut=false
+ok(not Importer.rapidashCutEffectEnabled(), "cut Rapidash particles follow the OFF mod option")
+rapidashCut=true
+ok(Importer.rapidashCutEffectEnabled(), "cut Rapidash particles default ON")
 shader = "cel"
 ok(Importer.shaderStyle() == "cel", "cel-shaded model option reaches the renderer configuration")
 shader = "invalid"
@@ -38,6 +43,10 @@ ok(main:find('key="stadium2_battle"', 1, true) ~= nil, "importer exposes the Sta
 ok(main:find('key="stadium2_shader"', 1, true) ~= nil
     and main:find('{"WATERCOLOR MANGA","cel"}', 1, true) ~= nil,
   "importer exposes Stadium and watercolor-manga model shader choices")
+ok(main:find('key="stadium2_rapidash_cut_fx"',1,true)~=nil
+    and main:find('label="RAPIDASH CUT PARTICLES"',1,true)~=nil
+    and main:find('type="toggle", default=true',1,true)~=nil,
+  "importer exposes the opt-in Rapidash cut-particle option")
 ok(main:find('label="STADIUM 2 BATTLE"', 1, true) ~= nil, "battle option uses the requested Stadium label")
 ok(not main:find("lib.battle_stage", 1, true), "stage wiring stays outside the bootstrap")
 ok(not main:find("RENDER QUALITY", 1, true) and not main:find("TEXTURE FILTERING", 1, true), "no unrelated Stadium renderer options are exposed")

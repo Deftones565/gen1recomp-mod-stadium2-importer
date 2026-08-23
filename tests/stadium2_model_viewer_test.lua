@@ -23,6 +23,7 @@ end
 function importer.autoImport()
   return true
 end
+function importer.rapidashCutEffectEnabled() return true end
 function importer.newRenderer(species, variant, options)
   loaded[#loaded + 1] = { species = species, variant = variant, options = options }
   local rig = {
@@ -52,6 +53,10 @@ function importer.newRenderer(species, variant, options)
   function rig:release()
     self.released = true
   end
+  function rig:setRapidashCutEffect(enabled)
+    self.rapidashCutEffect=enabled==true
+    return self.rapidashCutEffect
+  end
   rigs[#rigs + 1] = rig
   return rig
 end
@@ -67,6 +72,22 @@ ok(#loaded == 1 and loaded[1].species == 1 and loaded[1].variant == "normal", "f
 ok(loaded[1].options.flipY == true, "viewer requests corrected Stadium vertical orientation")
 ok(loaded[1].options.textureFilter == "linear" and loaded[1].options.anisotropy == 8, "viewer requests high quality texture filtering")
 ok(viewer.rig.context == "idle" and viewer.rig.loop == true, "idle animation loops")
+ok(loaded[1].options.rapidashCutEffect==true,
+  "viewer initializes cut Rapidash particles from the mod option")
+viewer:onKeyPressed("f")
+ok(not viewer.rapidashCutEffect and not viewer.rig.rapidashCutEffect,
+  "F disables cut Rapidash particles immediately in the viewer")
+viewer:onKeyPressed("f")
+ok(viewer.rapidashCutEffect and viewer.rig.rapidashCutEffect,
+  "F enables cut Rapidash particles immediately in the viewer")
+viewer:onKeyPressed("f")
+viewer:setEntry(Viewer.encodeEntry(78,"normal"))
+local cutButton=viewer:layout().cutButton
+ok(viewer:onMousePressed(cutButton.x+1,cutButton.y+1,1)
+    and viewer.rapidashCutEffect and viewer.rig.rapidashCutEffect,
+  "Rapidash viewer exposes a clickable cut-particle button")
+viewer.rapidashCutEffect=false
+viewer:setEntry(1)
 
 viewer:onKeyPressed("right")
 ok(viewer.entry == 2 and viewer.species == 1 and viewer.variant == "shiny", "right advances to same-species shiny")

@@ -2,6 +2,7 @@ local Build = require("mods.STADIUM2_IMPORTER.lib.build")
 local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
+local RapidashCut = require("mods.STADIUM2_IMPORTER.lib.effects.rapidash_cut")
 local EffectRenderer = require("mods.STADIUM2_IMPORTER.lib.effect_renderer")
 local Sampler = require("mods.STADIUM2_IMPORTER.lib.sampler")
 local RenderContract = require("mods.STADIUM2_IMPORTER.lib.render_contract")
@@ -9,6 +10,11 @@ local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_te
 
 local Renderer = {}
 Renderer.__index = Renderer
+
+-- Pineco's eye cards are authored as culled RDP decals at the shell surface.
+-- Use the same tiny reduced-depth-buffer stabilization as ordinary decals;
+-- a large pull can move a rear-facing eye in front of the opaque shell.
+Renderer.PINECO_DECAL_DEPTH_BIAS = 4/65535
 
 Renderer.FORMAT = {
   { "VertexPosition", "float", 3 },
@@ -41,7 +47,7 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   if (billboardEnabled > 0.5) {
     vertex_position.xyz = billboardCenter
       + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
-      + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
+      + billboardUp * ((1.0 - VertexTexCoord.y) * billboardSize.y);
   }
   vNormal = normalize(normalMatrix * VertexNormal);
   vEyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
@@ -115,6 +121,7 @@ float sunlight(vec3 p) {
 float foldTextureCoordinate(float value, float mode) {
   if (mode < 0.5) return clamp(value, 0.0, 1.0);
   if (mode < 1.5) return mod(value, 1.0);
+  if (mode > 2.5) return clamp(1.0-abs(value-1.0), 0.0, 1.0);
   float mirrored = mod(value, 2.0);
   return mirrored <= 1.0 ? mirrored : 2.0 - mirrored;
 }
@@ -127,7 +134,10 @@ vec4 sample3(Image image, STADIUM_FLOAT vec2 uv, vec2 size, vec2 wrapMode) {
   // Mobile fragment shaders can use mediump arithmetic, where multiplying a
   // large repeated/scrolled UV by the texture size destroys the fractional
   // texel position and produces primitive-local crawling/noise.
-  if (boundedUVEnabled > 0.5) uv = foldTextureUV(uv, wrapMode);
+  // Mirror+clamp has no direct LÖVE sampler equivalent and must always be
+  // folded here. Other modes only need shader folding on bounded-UV targets.
+  if (boundedUVEnabled > 0.5 || wrapMode.x > 2.5 || wrapMode.y > 2.5)
+    uv = foldTextureUV(uv, wrapMode);
   STADIUM_FLOAT vec2 p = uv * size - vec2(0.5);
   STADIUM_FLOAT vec2 base = floor(p);
   STADIUM_FLOAT vec2 f = fract(p);
@@ -163,7 +173,11 @@ void effect() {
   }
   if (effectIntensityMode > 0.5) {
     float intensity = texel.r;
-    float gasAlpha = intensity * primitiveColor.a * color.a * sceneTint.a;
+    // I4 dynamic particles have no authored alpha and derive coverage from
+    // intensity (mode 1). The shared flame's IA8 render tile uses
+    // intensity for colour but TEXEL0_ALPHA for coverage (mode 2).
+    float coverage = effectIntensityMode > 1.5 ? texel.a : intensity;
+    float gasAlpha = coverage * primitiveColor.a * color.a * sceneTint.a;
     if (gasAlpha <= alphaCutoff) discard;
     vec3 gasColor = mix(environmentColor.rgb, primitiveColor.rgb, intensity);
     love_PixelColor=vec4(gasColor * color.rgb * sceneTint.rgb, gasAlpha);
@@ -240,7 +254,7 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   if (billboardEnabled > 0.5) {
     vertex_position.xyz = billboardCenter
       + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
-      + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
+      + billboardUp * ((1.0 - VertexTexCoord.y) * billboardSize.y);
   }
   vNormal=normalize(normalMatrix*VertexNormal);
   vec3 eyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
@@ -280,7 +294,8 @@ void effect() {
   }
   if (effectIntensityMode > 0.5) {
     float intensity=texel.r;
-    float gasAlpha=intensity*primitiveColor.a*color.a*sceneTint.a;
+    float coverage=effectIntensityMode > 1.5 ? texel.a : intensity;
+    float gasAlpha=coverage*primitiveColor.a*color.a*sceneTint.a;
     if (gasAlpha <= alphaCutoff) discard;
     vec3 gasColor=mix(environmentColor.rgb,primitiveColor.rgb,intensity);
     love_PixelColor=vec4(gasColor*color.rgb*sceneTint.rgb,gasAlpha);
@@ -338,7 +353,7 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   if (billboardEnabled > 0.5) {
     vertex_position.xyz = billboardCenter
       + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
-      + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
+      + billboardUp * ((1.0 - VertexTexCoord.y) * billboardSize.y);
   }
   vec4 clip=mvp*vertex_position;
   clip.z-=decalDepthBias*clip.w;
@@ -353,7 +368,8 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords) {
   vec4 texel = Texel(image, texture_coords);
   if (effectIntensityMode > 0.5) {
     float intensity = texel.r;
-    float alpha = intensity * primitiveColor.a * color.a;
+    float coverage = effectIntensityMode > 1.5 ? texel.a : intensity;
+    float alpha = coverage * primitiveColor.a * color.a;
     if (alpha <= 0.001) discard;
     return vec4(mix(environmentColor.rgb, primitiveColor.rgb, intensity) * color.rgb, alpha);
   }
@@ -675,7 +691,9 @@ local function sendFlameBillboard(shader, part, view, model)
     pcall(shader.send, shader, "billboardEnabled", 0)
     return
   end
-  local tipA, tipB, baseA, baseB = part.rows[1], part.rows[2],
+  -- Literal shared-object Vtx order: 1/4 are the two top corners and 9/10
+  -- are the base. (The intervening records are not regular row pairs.)
+  local tipA, tipB, baseA, baseB = part.rows[1], part.rows[4],
     part.rows[9], part.rows[10]
   local center = { (baseA[1] + baseB[1]) * .5,
     (baseA[2] + baseB[2]) * .5, (baseA[3] + baseB[3]) * .5 }
@@ -693,6 +711,35 @@ local function sendFlameBillboard(shader, part, view, model)
   pcall(shader.send, shader, "billboardUp", {ux,uy,uz})
   pcall(shader.send, shader, "billboardSize", {width,height})
   pcall(shader.send, shader, "billboardEnabled", 1)
+end
+
+-- Fragment 26 gives Gastly a species-specific camera matrix before submitting
+-- its gas quad.  Convert the camera axes back into model-local space so the
+-- ordinary model MVP produces the same screen-facing result.  The three rows
+-- of an orthogonal view-model rotation are its inverse basis; normalizing them
+-- also removes the battle scene's uniform model scale.
+local function cameraFacingAxes(view, model)
+  local vm = matMul(view or identity(), model or identity())
+  local rx,ry,rz = normalize3(vm[1],vm[2],vm[3])
+  local ux,uy,uz = normalize3(vm[5],vm[6],vm[7])
+  local fx,fy,fz = normalize3(vm[9],vm[10],vm[11])
+  return {right={rx,ry,rz},up={ux,uy,uz},forward={fx,fy,fz}}
+end
+
+local function dynamicObjectRuntime(model, runtime)
+  local values = {}
+  for name,value in pairs(type(runtime) == "table" and runtime or {}) do
+    values[name]=value
+  end
+  if model and tonumber(model.species) == 92 then
+    if values.dynamicObjectGastlyAlternate == nil then
+      values.dynamicObjectGastlyAlternate = model.variant == "shiny"
+    end
+    if values.dynamicObjectAlpha == nil and values.modelAlphaByte == nil then
+      values.modelAlphaByte = 255
+    end
+  end
+  return values
 end
 
 local function makeCanvas(w, h, msaa)
@@ -739,6 +786,12 @@ local function sendTextureWrapMode(shader, uniform, wrapS, wrapT)
   if not (shader and shader.send) then return end
   pcall(shader.send, shader, uniform,
     {Sampler.wrapCode(wrapS), Sampler.wrapCode(wrapT)})
+end
+
+local function physicalTextureWrap(mode)
+  -- The combined N64 mode is emulated by foldTextureCoordinate. Keep the GPU
+  -- sampler clamped for the 3-point filter's edge taps.
+  return mode == "mirrorclamp" and "clamp" or mode
 end
 
 local function foldedTextureScroll(scroll, wrapS, wrapT, enabled)
@@ -814,11 +867,13 @@ end
 function Renderer.new(model, options)
   if type(model) ~= "table" or not model.prims then return nil, "model required" end
   options = type(options) == "table" and options or {}
+  model = RapidashCut.augment(model)
   local idleIndex = Pack.contextIndex(model, "idle") or (model.anims[1] and 1 or nil)
   local self = setmetatable({
     model = model,
     parts = {},
     time = 0,
+    displayTime = 0,
     animIndex = nil,
     loop = true,
     frame = 0,
@@ -838,6 +893,10 @@ function Renderer.new(model, options)
     shaderStyle = options.shaderStyle == "cel" and "cel" or "stadium",
     shaderStyleProvider = type(options.shaderStyleProvider) == "function"
       and options.shaderStyleProvider or nil,
+    rapidashCutEffectProvider=type(options.rapidashCutEffectProvider)=="function"
+      and options.rapidashCutEffectProvider or nil,
+    rapidashCutEffectOverride=options.rapidashCutEffect~=nil
+      and (options.rapidashCutEffect==true) or nil,
     handlerRuntime = {},
     randomSeed = math.floor(tonumber(options.randomSeed) or 1),
     handlerState = {},
@@ -851,6 +910,19 @@ function Renderer.new(model, options)
     local used = {}
     for _, vi in ipairs(prim.idx or {}) do used[vi] = true end
     self.parts[i] = { prim = prim, mesh = mesh, rows = rows, visible = {}, used = used }
+  end
+  if model.species == 204 then
+    -- The source layout declares the two eye cards before the shell, while
+    -- Stadium submits RDP decal surfaces after the opaque model layer. LOVE
+    -- has one immediate mesh queue, so preserve the same layer order here.
+    local opaque, decals = {}, {}
+    for _, part in ipairs(self.parts) do
+      local eye = part.prim.decal and part.prim.texAnim >= 0
+      local target = eye and decals or opaque
+      target[#target + 1] = part
+    end
+    for _, part in ipairs(decals) do opaque[#opaque + 1] = part end
+    self.parts = opaque
   end
   if love and love.graphics and love.graphics.newShader then
     local shaderSource,shaderTier=Renderer.activeShaderSource(options)
@@ -943,6 +1015,28 @@ function Renderer:setHandlerRuntime(runtime, defer)
   if not defer then self:updateHandlers() end
 end
 
+function Renderer:rapidashCutEffectEnabled()
+  if not (self.model and self.model.cutRapidashEffect) then return false end
+  if self.rapidashCutEffectOverride~=nil then return self.rapidashCutEffectOverride end
+  if self.rapidashCutEffectProvider then
+    local ok,value=pcall(self.rapidashCutEffectProvider)
+    if ok and value~=nil then return value==true end
+  end
+  return true
+end
+
+function Renderer:setRapidashCutEffect(enabled)
+  self.rapidashCutEffectOverride=enabled==true
+  if not self.rapidashCutEffectOverride then
+    for _,effect in pairs(self.handlerState and self.handlerState.dynamicObjectsBySite or {}) do
+      if tonumber(effect.species)==78 then
+        effect.emitters,effect.particles,effect.lastFrame={},{},nil
+      end
+    end
+  end
+  return self.rapidashCutEffectOverride
+end
+
 function Renderer:handlerValues()
   local values = {
     species = self.model and self.model.species,
@@ -951,13 +1045,18 @@ function Renderer:handlerValues()
     textureFrame = self.frame,
     -- func_81005B50 reads a global display-frame counter, not the model's
     -- looping animation frame. Keep this material moving across anim loops.
-    materialFrame = math.floor(self.time * 60),
+    materialFrame = math.floor(self.displayTime * 60),
     time = self.time,
     randomSeed = self.randomSeed,
     modelContext = self,
     node = self,
   }
   for key, value in pairs(self.handlerRuntime or {}) do values[key] = value end
+  if self.model and self.model.cutRapidashEffect then
+    local enabled=self:rapidashCutEffectEnabled()
+    values.dynamicObjectEnabled=enabled
+    values.dynamicObjectUpdateEnabled=enabled
+  end
   return values
 end
 
@@ -1133,7 +1232,9 @@ end
 
 function Renderer:step(dt)
   self.poseDT=math.max(0,tonumber(dt) or 0)
-  self.time = self.time + math.max(0, tonumber(dt) or 0)
+  local elapsed=math.max(0,tonumber(dt) or 0)
+  self.time = self.time + elapsed
+  self.displayTime = (self.displayTime or 0) + elapsed
   self:updatePose(false)
   self.poseDT=nil
   return not self.finished
@@ -1164,6 +1265,7 @@ function Renderer:callbackOwnsTexture(prim)
   if prim.callbackTextureRequired then return true end
   local record = callbackRecord(self.model, prim.callbackOffset)
   if not record then return false end
+  if record.descriptor == 0x81000038 then return true end
   if record.descriptor == 0x81000050 then return true end
   if record.descriptor == DualTexture.DESCRIPTOR then
     -- The callback replaces a uniform body carrier (or an authored copy of
@@ -1247,8 +1349,9 @@ end
 
 -- Draw into the caller's currently-bound color/depth target. The battle scene
 -- uses this path so every actor shares the same camera and depth buffer.
-function Renderer.koffingGasGeometryState(particle, anchor, sourceGeometry, textureWidth, textureHeight)
-  return EffectRenderer.billboardGeometry(particle, anchor, sourceGeometry, textureWidth, textureHeight)
+function Renderer.koffingGasGeometryState(particle, anchor, sourceGeometry, textureWidth, textureHeight, axes)
+  return EffectRenderer.billboardGeometry(particle, anchor, sourceGeometry,
+    textureWidth, textureHeight, axes)
 end
 
 function Renderer.koffingGasMaterialState(age)
@@ -1311,13 +1414,15 @@ function Renderer.dynamicObjectEmitters(model, matrices)
   else
     for _, record in ipairs(model.handlers and model.handlers.records or {}) do
       if record.family == "dynamic-object-renderer" then
-        local bone = math.floor(tonumber(record.bone) or -1)
-        local matrix = matrices[bone + 1]
-        if bone >= 0 and matrix and not seen[bone] then
-          seen[bone] = true
-          emitters[#emitters + 1] = { index=#emitters, bone=bone,
-            origin={matrix[1][4]*root,matrix[2][4]*root,matrix[3][4]*root},
-            reference={reference[1],reference[2],reference[3]} }
+        for _,rawBone in ipairs(record.emitterBones or {record.bone}) do
+          local bone = math.floor(tonumber(rawBone) or -1)
+          local matrix = matrices[bone + 1]
+          if bone >= 0 and matrix and not seen[bone] then
+            seen[bone] = true
+            emitters[#emitters + 1] = { index=#emitters, bone=bone,
+              origin={matrix[1][4]*root,matrix[2][4]*root,matrix[3][4]*root},
+              reference={reference[1],reference[2],reference[3]} }
+          end
         end
       end
     end
@@ -1334,8 +1439,11 @@ function Renderer.primitiveRenderState(model, prim, options)
     -- body geometry. Mixed profiles classify individual payload primitives so
     -- callback-inheriting body meshes remain in the static/shadow passes.
     drawStatic = not carrier,
+    -- A broad scene override can keep imperfect imported body winding visible,
+    -- but it must not make one-sided eye/face decals visible through a model.
+    -- Preserve the ROM's culling bit for decals and callback carriers.
     cullEnabled = prim and prim.cull == true
-      and (carrier or options.disableCulling ~= true),
+      and (carrier or prim.decal == true or options.disableCulling ~= true),
     lightingEnabled = not carrier and (prim == nil or prim.lighting ~= false),
     castsShadow = not carrier,
     textureGenEnabled = prim and math.floor((prim.geometryMode or 0) / 0x40000) % 2 == 1,
@@ -1349,8 +1457,13 @@ function Renderer:drawDynamicObjects(pass, model, options)
   local dynamic = self.handlerState and self.handlerState.dynamicObjectsBySite
   if type(dynamic) ~= "table" then return end
   local metrics = self:worldMetrics()
+  local runtime = dynamicObjectRuntime(self.model, self.handlerRuntime)
+  local gastlyAxes = self.model and tonumber(self.model.species) == 92
+    and cameraFacingAxes(options and options.viewMatrix, model) or nil
   for site, effect in pairs(dynamic) do
-    if effect.family == "dynamic-object" or effect.family == "koffing-gas" then
+    if (effect.family == "dynamic-object" or effect.family == "koffing-gas")
+        and not (tonumber(effect.species)==78
+          and not self:rapidashCutEffectEnabled()) then
       local bounds = metrics.bounds or {}
       local fallbackAnchor = self.handlerBoneAnchors and self.handlerBoneAnchors[site] or {
         ((bounds.minX or 0) + (bounds.maxX or 0)) * 0.5,
@@ -1369,6 +1482,9 @@ function Renderer:drawDynamicObjects(pass, model, options)
       pcall(self.shader.send, self.shader, "environmentMix", 0)
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
       pcall(self.shader.send, self.shader, "effectIntensityMode", 1)
+      -- Dynamic quads carry their final CPU-authored positions.  Clear a
+      -- preceding flame primitive's shader billboard before drawing them.
+      pcall(self.shader.send, self.shader, "billboardEnabled", 0)
       if g.setColor then g.setColor(1,1,1,1) end
       local emitters = effect.emitters
       if type(emitters) ~= "table" or #emitters == 0 then
@@ -1380,7 +1496,7 @@ function Renderer:drawDynamicObjects(pass, model, options)
           local particle = emitter.particles and emitter.particles[i]
           if particle and particle.active then
             local materialState = EffectRenderer.materialState(effect.species or 109,
-              particle.age, self.handlerRuntime)
+              particle.age, runtime)
             local frame = materialState and materialState.frame or 1
             frame = math.max(1, math.min(#(effect.textureSlots or {}), frame))
             local textureIndex = effect.textureSlots and effect.textureSlots[frame]
@@ -1395,7 +1511,9 @@ function Renderer:drawDynamicObjects(pass, model, options)
               end
               if entry.mesh then
                 local tw,th=imageDimensions(texture,self.model.textures[textureIndex])
-                local geometry = EffectRenderer.billboardGeometry(particle, anchor, effect.geometry, tw, th)
+                local axes = tonumber(effect.species) == 92 and gastlyAxes or nil
+                local geometry = EffectRenderer.billboardGeometry(particle, anchor,
+                  effect.geometry, tw, th, axes)
                 local rows = entry.rows
                 for vi = 1, 4 do
                   local source = geometry.vertices[vi]
@@ -1470,8 +1588,8 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send,self.shader,"sunBias",options.sunBias or 0.002)
     pcall(self.shader.send,self.shader,"sunTexel",options.sunTexel or {1/1024,1/1024})
     -- Keep ordinary geometry on strict depth comparison so eye decals cannot
-    -- leak through nearer beaks or muzzles. Alpha decal primitives switch to
-    -- equal-depth comparison without writing depth when they are drawn.
+    -- leak through nearer beaks or muzzles. Alpha-cutout decal primitives
+    -- accept equal depth; explicitly early ROM cutouts can retain Z writes.
     if g.setDepthMode then
       g.setDepthMode(RenderContract.MODEL_DEPTH_COMPARE, not additiveOnly)
     end
@@ -1498,7 +1616,8 @@ function Renderer:drawScene(pass, model, options)
         local color = attribute and attribute.color or
           (material and material.primitiveColor) or {1,1,1,1}
         pcall(self.shader.send, self.shader, "effectIntensityMode",
-          material and material.intensity and 1 or 0)
+          part.prim.effect == "fire" and 2
+            or (material and material.intensity and 1 or 0))
         pcall(self.shader.send, self.shader, "primitiveColor", color)
         pcall(self.shader.send, self.shader, "lightingEnabled",
           renderState.lightingEnabled and 1 or 0)
@@ -1506,8 +1625,13 @@ function Renderer:drawScene(pass, model, options)
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
           g.setDepthMode(compare, write)
         end
+        local decalBias = self.decalDepthBias
+        if self.model.species == 204 and part.prim.decal
+            and part.prim.texAnim >= 0 then
+          decalBias = Renderer.PINECO_DECAL_DEPTH_BIAS
+        end
         pcall(self.shader.send,self.shader,"decalDepthBias",
-          part.prim.decal and self.decalDepthBias or 0)
+          part.prim.decal and decalBias or 0)
         pcall(self.shader.send, self.shader, "environmentColor",
           material and material.environmentColor or {1,1,1,1})
         pcall(self.shader.send, self.shader, "environmentMix",
@@ -1566,7 +1690,8 @@ function Renderer:drawScene(pass, model, options)
           if texture.setFilter then pcall(texture.setFilter, texture, self.textureFilter,
             self.textureFilter, self.anisotropy) end
           if texture.setWrap then
-            pcall(texture.setWrap, texture, wrapS, wrapT)
+            pcall(texture.setWrap, texture, physicalTextureWrap(wrapS),
+              physicalTextureWrap(wrapT))
           end
           local tw, th = imageDimensions(texture,
             self.model.textures[self:currentTexture(part.prim)])
@@ -1718,12 +1843,18 @@ function Renderer:renderToCanvas(width, height, options)
             g.setDepthMode(compare, write)
           end
           if self.shader then
+            local decalBias = self.decalDepthBias
+            if self.model.species == 204 and part.prim.decal
+                and part.prim.texAnim >= 0 then
+              decalBias = Renderer.PINECO_DECAL_DEPTH_BIAS
+            end
             pcall(self.shader.send,self.shader,"decalDepthBias",
-              part.prim.decal and self.decalDepthBias or 0)
+              part.prim.decal and decalBias or 0)
           end
           if self.shader then
             pcall(self.shader.send, self.shader, "effectIntensityMode",
-              material and material.intensity and 1 or 0)
+              part.prim.effect == "fire" and 2
+                or (material and material.intensity and 1 or 0))
             pcall(self.shader.send, self.shader, "primitiveColor",
               primitiveColor)
             pcall(self.shader.send, self.shader, "environmentColor",
@@ -1788,7 +1919,8 @@ function Renderer:renderToCanvas(width, height, options)
               renderState.textureGenEnabled and 1 or 0)
           end
           if texture and texture.setWrap then
-            pcall(texture.setWrap,texture,wrapS,wrapT)
+            pcall(texture.setWrap,texture,physicalTextureWrap(wrapS),
+              physicalTextureWrap(wrapT))
           end
           if texture and part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
           sendFlameBillboard(self.shader, part, view, mm)
@@ -1840,6 +1972,7 @@ function Renderer:release()
     entry.mesh = nil
   end
   self.dynamicMeshes = {}
+  RapidashCut.release(self.model)
   if self.canvas and self.canvas.release then pcall(self.canvas.release, self.canvas) end
   if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
   if self.shader and self.shader.release then pcall(self.shader.release, self.shader) end
@@ -1861,6 +1994,8 @@ Renderer.modelMatrix = modelMatrix
 Renderer.normalMatrix = normalMatrix
 Renderer.identity = identity
 Renderer.sendFlameBillboard = sendFlameBillboard
+Renderer.cameraFacingAxes = cameraFacingAxes
+Renderer.dynamicObjectRuntime = dynamicObjectRuntime
 
 function Renderer.ortho(l,r,b,t,n,f)
   return {2/(r-l),0,0,-(r+l)/(r-l), 0,2/(t-b),0,-(t+b)/(t-b),

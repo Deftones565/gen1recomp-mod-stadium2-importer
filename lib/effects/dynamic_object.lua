@@ -17,6 +17,7 @@ local INITIALIZERS = {
   [0x8100404C] = { initialScale=1, speed=.5, searchSlots=10 },
   [0x81004070] = { initialScale=.1, speed=1, searchSlots=10, jitter={5,5,5} },
   [0x81004190] = { initialScale=.002, speed=.5, searchSlots=10, jitter={10,10,10} },
+  [0x81004248] = { initialScale=.002, speed=.5, searchSlots=10, jitter={10,5,10} },
   [0x81004324] = { initialScale=.5, speed=0, searchSlots=10, jitter={10,10,10} },
   [0x810043D8] = { initialScale=.5, speed=0, searchSlots=10, jitter={30,10,30} },
   [0x8100448C] = { initialScale=20, speed=0, searchSlots=3 },
@@ -159,10 +160,20 @@ local UPDATERS = {
     if p.age >= 16 then p.active = false end
   end,
   [0x8100522C] = function(p, runtime)
-    local growth = tonumber(runtime.dynamicObjectGrowth) or .10000000149011612
+    -- Fragment 26 loads 0x81006648 (0.005f) for Ponyta.  This route was
+    -- previously using Koffing's 0.1f constant, making each smoke card grow
+    -- twenty times too quickly.
+    local growth = tonumber(runtime.dynamicObjectGrowth) or .004999999888241291
     p.age = math.floor(tonumber(p.age) or 0) + 1
     p.sx, p.sy, p.sz = (p.sx or 0)+growth, (p.sy or 0)+growth, (p.sz or 0)+growth
     p.y = (tonumber(p.y) or 0) + .75 * (tonumber(runtime.modelScaleY) or 1)
+    if p.age >= 16 then p.active = false end
+  end,
+  [0x81005298] = function(p, runtime)
+    local growth = tonumber(runtime.dynamicObjectGrowth) or .004999999888241291
+    p.age = math.floor(tonumber(p.age) or 0) + 1
+    p.sx, p.sy, p.sz = (p.sx or 0)+growth, (p.sy or 0)+growth, (p.sz or 0)+growth
+    p.y = (tonumber(p.y) or 0) + (tonumber(runtime.modelScaleY) or 1)
     if p.age >= 16 then p.active = false end
   end,
   [0x810052F8] = function(p, runtime)
@@ -222,7 +233,11 @@ local RENDERERS = {
   [0x81004D44] = function(age)
     local alpha = clampByte(250 - 3 * age)
     return { frame=math.floor(age/2)+1, alphaByte=alpha,
-      primitiveColor={1,1,1,alpha/255}, environmentColor={0,0,0,0}, intensity=true }
+      -- Ponyta and Moltres both enter this route with their callback material
+      -- environment colour set to #FF2000C8.  The I4 texel interpolates from
+      -- that orange toward the dynamic white primitive colour.
+      primitiveColor={1,1,1,alpha/255},
+      environmentColor={1,32/255,0,200/255}, intensity=true }
   end,
   [0x81004E50] = function(age)
     local alpha = clampByte(age < 4 and (180 + 20 * age) or (290 - 10 * age))

@@ -73,6 +73,8 @@ return function(mod)
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
     { key="stadium2_hud_panels", label="DRAW HUD PANELS", type="toggle", default=true,
       help="Back the Stadium 2 status cards with the frosted glass plate. Turn OFF for a bare HUD on the 3D scene." },
+    { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
+      help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
   })
 
   -- Hand the mod handle to the HUD module so its panels can read the
@@ -95,7 +97,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.10.15"
+  mod.exports.version = "0.10.17"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
@@ -103,6 +105,7 @@ return function(mod)
   mod.exports.modelsEnabled = Importer.modelsEnabled
   mod.exports.battleEnabled = Importer.battleEnabled
   mod.exports.shaderStyle = Importer.shaderStyle
+  mod.exports.rapidashCutEffectEnabled = Importer.rapidashCutEffectEnabled
   mod.exports.battleStatus = Battle.status
   mod.exports.configureGame = Battle.configureGame
   mod.exports.presentation = BattlePresentation

@@ -11,8 +11,12 @@ end
 
 local function wrap(mode)
   mode = math.floor(tonumber(mode) or 0)
-  if mode % 2 == 1 then return "mirroredrepeat" end
+  -- Mode 3 is a real combined operation: mirror once across the two-tile
+  -- span, then clamp beyond it. Koffing and Weezing author one half-face and
+  -- rely on this mode for the other eye without repeating faces at the sides.
+  if mode % 4 == 3 then return "mirrorclamp" end
   if math.floor(mode / 2) % 2 == 1 then return "clamp" end
+  if mode % 2 == 1 then return "mirroredrepeat" end
   return "repeat"
 end
 
@@ -23,11 +27,27 @@ end
 
 -- Shader-side texture folding uses small numeric modes instead of relying on
 -- string comparisons in GLSL. Keep these values stable: 0=clamp, 1=repeat,
--- 2=mirrored repeat.
+-- 2=mirrored repeat, 3=one mirrored span clamped at both outer edges.
 function Sampler.wrapCode(mode)
   if mode == "repeat" then return 1 end
   if mode == "mirroredrepeat" then return 2 end
+  if mode == "mirrorclamp" then return 3 end
   return 0
+end
+
+-- CPU oracle for the shader's N64 coordinate folding. This is also useful to
+-- callers that need to preview the exact tile addressing without a GPU.
+function Sampler.foldCoordinate(value, mode)
+  value = tonumber(value) or 0
+  if mode == "repeat" then return value - floor(value) end
+  if mode == "mirroredrepeat" then
+    local mirrored = value - floor(value / 2) * 2
+    return mirrored <= 1 and mirrored or 2 - mirrored
+  end
+  if mode == "mirrorclamp" then
+    return math.max(0, math.min(1, 1 - math.abs(value - 1)))
+  end
+  return math.max(0, math.min(1, value))
 end
 
 -- Scrolling callback materials can accumulate tile origins over time. The

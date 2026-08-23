@@ -125,10 +125,16 @@ local function renderBytes(renderInfo)
   local prims = type(renderInfo) == "table" and (renderInfo.prims or renderInfo) or {}
   local textures = type(renderInfo) == "table" and renderInfo.handlerTextures or nil
   textures = type(textures) == "table" and textures or {}
-  local out = { "R4MD", p16(#prims), p16(#textures) }
+  local out = { "R5MD", p16(#prims), p16(#textures) }
   for _, prim in ipairs(prims) do
     out[#out + 1] = p32(prim.materialOffset ~= nil and prim.materialOffset or 0xFFFFFFFF)
     out[#out + 1] = p32(prim.callbackOffset ~= nil and prim.callbackOffset or 0xFFFFFFFF)
+    local color = prim.nodeColor
+    out[#out + 1] = string.char(
+      tonumber(color and color[1]) or 0xFF,
+      tonumber(color and color[2]) or 0xFF,
+      tonumber(color and color[3]) or 0xFF,
+      tonumber(color and color[4]) or 0xFF)
   end
   for _, row in ipairs(textures) do
     out[#out + 1] = p32(row.commandOffset or 0xFFFFFFFF)
@@ -144,18 +150,24 @@ end
 local function readRenderBytes(data)
   if type(data) ~= "string" or #data < 8 then return nil end
   local magic = data:sub(1, 4)
-  if magic ~= "R3MD" and magic ~= "R4MD" then return nil end
-  local stride = magic == "R4MD" and 8 or 4
+  if magic ~= "R3MD" and magic ~= "R4MD" and magic ~= "R5MD" then return nil end
+  local stride = magic == "R5MD" and 12 or (magic == "R4MD" and 8 or 4)
   local count, textureCount = u16le(data, 4), u16le(data, 6)
   if not count or not textureCount or 8 + count * stride + textureCount * 16 > #data then return nil end
-  local out = { primitiveMaterials = {}, primitiveCallbacks = {}, handlerTextures = {} }
+  local out = { primitiveMaterials = {}, primitiveCallbacks = {}, primitiveColors = {}, handlerTextures = {} }
   local cursor = 8
   for i = 1, count do
     local offset = u32le(data, cursor)
     out.primitiveMaterials[i] = offset ~= 0xFFFFFFFF and offset or nil
-    if stride == 8 then
+    if stride >= 8 then
       local callback = u32le(data, cursor + 4)
       out.primitiveCallbacks[i] = callback ~= 0xFFFFFFFF and callback or nil
+    end
+    if stride >= 12 then
+      out.primitiveColors[i] = {
+        byte(data, cursor + 8), byte(data, cursor + 9),
+        byte(data, cursor + 10), byte(data, cursor + 11),
+      }
     end
     cursor = cursor + stride
   end
@@ -274,7 +286,12 @@ function Handlers.evaluate(record, phase, runtime)
   elseif record.family == "dynamic-material-builder" or record.family == "texture-material-builder"
       or record.family == "flame-object-renderer" then
     local callbackFrame = math.floor(tonumber(runtime.textureFrame) or frame)
-    if record.descriptor == 0x81000050 and tonumber(runtime.species) == 88 then
+    if record.descriptor == Flame.DESCRIPTOR then
+      -- Both func_81005AC0's image index and func_80070A4C's colour pulse
+      -- read the same global display-frame counter at 0x80094904.
+      result.textureFrame = math.floor(tonumber(runtime.materialFrame)
+        or tonumber(runtime.callbackFrame) or callbackFrame) % 8
+    elseif record.descriptor == 0x81000050 and tonumber(runtime.species) == 88 then
       local animation, animationFrame = tonumber(runtime.selector) or -1,
         tonumber(runtime.rangeValue) or 0
       result.textureFrame = animation >= 2 and animationFrame >= 66

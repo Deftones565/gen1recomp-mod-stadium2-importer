@@ -313,9 +313,9 @@ function ModelParity.auditModel(model, fragment, sourceBase, options)
     end
   end
   if out.species == 208
-      and (textureGenCallbacks ~= 5 or textureGenPrimitives ~= 4) then
+      and (textureGenCallbacks ~= 5 or textureGenPrimitives ~= 7) then
     issue(out, "error", "STEELIX_REFLECTION_ROUTES",
-      ("reference reflection coverage is 5 callbacks/4 body primitives, got %d/%d")
+      ("reference reflection coverage is 5 callbacks/7 submission groups, got %d/%d")
         :format(textureGenCallbacks, textureGenPrimitives))
   end
   return out

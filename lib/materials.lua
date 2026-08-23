@@ -64,8 +64,9 @@ end
 
 local function sampler(mode, mask, shift)
   return {
-    wrap = bits(mode, 0, 1) ~= 0 and "mirroredrepeat"
-      or (bits(mode, 1, 1) ~= 0 and "clamp" or "repeat"),
+    wrap = mode % 4 == 3 and "mirrorclamp"
+      or bits(mode, 1, 1) ~= 0 and "clamp"
+      or (bits(mode, 0, 1) ~= 0 and "mirroredrepeat" or "repeat"),
     mirror = bits(mode, 0, 1) ~= 0,
     clamp = bits(mode, 1, 1) ~= 0,
     mask = mask,
@@ -195,6 +196,25 @@ function Materials.attach(model)
     prim.callbackOffset = render.primitiveCallbacks and render.primitiveCallbacks[i] or nil
     if prim.materialOffset then
       prim.material = Materials.parse(extension, prim.materialOffset)
+      model.materials[i] = prim.material
+    end
+    local color = render.primitiveColors and render.primitiveColors[i]
+    -- Neutral greys are Stadium's model-light value and are already handled
+    -- by our lighting shader. Chromatic values are genuine per-draw tints for
+    -- intensity carriers and must reach the primitive-colour combiner.
+    if color and (color[1] ~= color[2] or color[2] ~= color[3]) then
+      prim.material = prim.material or Materials.parse(extension, prim.materialOffset)
+      if not prim.material then
+        prim.material = {
+          primitiveColor = { 1, 1, 1, 1 },
+          environmentColor = { 1, 1, 1, 1 },
+          textureScale = { 1, 1 }, textureEnabled = true,
+        }
+      end
+      prim.material.primitiveColor = {
+        color[1] / 255, color[2] / 255, color[3] / 255, color[4] / 255,
+      }
+      prim.nodeColor = color
       model.materials[i] = prim.material
     end
   end

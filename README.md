@@ -38,6 +38,10 @@ If import does not start, confirm that:
 
 - `STADIUM 2 MODELS` enables imported Stadium models. Disabling it preserves the generated model cache.
 - `STADIUM 2 BATTLE` enables the complete Stadium battle presentation. The underlying game still controls battle rules, damage, turn order, switching, capture results, menus, and RNG.
+- `RAPIDASH CUT PARTICLES` optionally restores the complete but disconnected
+  Rapidash particle callback left in the retail ROM. It is enabled by default and
+  affects Stadium model renderers and battles; the model viewer also provides
+  a `CUT PARTICLES: ON/OFF` button on Rapidash (`F` is the keyboard shortcut).
 - `MODEL SHADER` selects the original `STADIUM` lighting or the `WATERCOLOR MANGA` style. Changes apply to existing battle models immediately.
 - `BATTLE AA` selects `OFF`, `2X`, or `4X` supersampling for the 3D arena while keeping the native interface crisp. The selected level is limited automatically by the device's texture support.
 - `DRAW HUD PANELS` enables or hides the frosted panels behind the Stadium status cards.

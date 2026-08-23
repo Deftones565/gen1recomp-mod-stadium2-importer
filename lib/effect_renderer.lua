@@ -2,7 +2,7 @@ local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object
 
 local EffectRenderer = {}
 
-function EffectRenderer.billboardGeometry(particle, anchor, sourceGeometry, textureWidth, textureHeight)
+function EffectRenderer.billboardGeometry(particle, anchor, sourceGeometry, textureWidth, textureHeight, axes)
   particle = type(particle) == "table" and particle or {}
   anchor = type(anchor) == "table" and anchor or {0,0,0}
   sourceGeometry = type(sourceGeometry) == "table" and sourceGeometry or {}
@@ -24,11 +24,23 @@ function EffectRenderer.billboardGeometry(particle, anchor, sourceGeometry, text
   end
   local tw, th = math.max(1, tonumber(textureWidth) or 32), math.max(1, tonumber(textureHeight) or 32)
   local vertices = {}
+  local right = axes and axes.right
+  local up = axes and axes.up
+  local forward = axes and axes.forward
   for i = 1, 4 do
     local v = source[i]
     local vx,vy,vz = tonumber(v.x or v[1]) or 0,tonumber(v.y or v[2]) or 0,tonumber(v.z or v[3]) or 0
     local vs,vt = tonumber(v.s or v[4]) or 0,tonumber(v.t or v[5]) or 0
-    vertices[i] = {x+vx*sx,y+vy*sy,z+vz*sz,(vs/32)/tw,(vt/32)/th}
+    if right and up and forward then
+      vertices[i] = {
+        x + right[1]*vx*sx + up[1]*vy*sy + forward[1]*vz*sz,
+        y + right[2]*vx*sx + up[2]*vy*sy + forward[2]*vz*sz,
+        z + right[3]*vx*sx + up[3]*vy*sy + forward[3]*vz*sz,
+        (vs/32)/tw,(vt/32)/th,
+      }
+    else
+      vertices[i] = {x+vx*sx,y+vy*sy,z+vz*sz,(vs/32)/tw,(vt/32)/th}
+    end
   end
   local indices = sourceGeometry.indices
   if type(indices) ~= "table" or #indices ~= 6 then indices={1,2,3,1,3,4} end

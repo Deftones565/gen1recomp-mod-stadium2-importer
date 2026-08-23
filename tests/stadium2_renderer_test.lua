@@ -14,13 +14,18 @@ end
 
 ok(RenderContract.supportsCoplanarDecals(),
   "model depth contract preserves later coplanar eye and face layers")
+ok(math.abs(Renderer.PINECO_DECAL_DEPTH_BIAS - 4/65535) < 0.000000001,
+  "Pineco uses a minimal decal bias that cannot pull eyes through its shell")
 local decalCompare, decalWrite = RenderContract.depthState({
+  sourceTextureMissing = false, decal = true, decalDepthWrite = true }, true)
+local ordinaryDecalCompare, ordinaryDecalWrite = RenderContract.depthState({
   sourceTextureMissing = false, decal = true }, true)
 local bodyCompare, bodyWrite = RenderContract.depthState({
   sourceTextureMissing = false, decal = false }, true)
 ok(decalCompare == "lequal" and not decalWrite
+  and ordinaryDecalCompare == "lequal" and not ordinaryDecalWrite
   and bodyCompare == "less" and bodyWrite,
-  "alpha decals compare equal without writing over ordinary body depth")
+  "ROM cutouts compare equal without replacing opaque model depth")
 
 local function be16(value)
   return string.char(math.floor(value / 256) % 256, value % 256)
@@ -107,6 +112,10 @@ ok(not carrierState.castsShadow,
 local colorState = Renderer.primitiveRenderState({}, { lighting = false, cull = true })
 ok(not colorState.lightingEnabled and colorState.cullEnabled,
   "source vertex-colour geometry disables lighting without disabling culling")
+local decalCullState = Renderer.primitiveRenderState({},
+  { decal = true, cull = true }, { disableCulling = true })
+ok(decalCullState.cullEnabled,
+  "scene body-culling override cannot expose one-sided decals through a model")
 ok(Renderer.FORMAT[4] and Renderer.FORMAT[4][1] == "VertexColor",
   "DSM4 mesh format carries source vertex RGBA")
 local _, normalDecls = Renderer.SHADER_SOURCE:gsub("varying STADIUM_FLOAT vec3 vNormal;", "")
@@ -121,6 +130,9 @@ ok(Renderer.SHADER_SOURCE:find("#ifdef GL_ES", 1, true) ~= nil
   "GLES uses a single soft sun shadow compare instead of binary PCF speckle")
 ok(Renderer.SHADER_SOURCE:find("0.30+(stadiumShade-0.30)*shadowVisibility", 1, true) ~= nil,
   "Pokemon self-shadow preserves the authored ambient lighting floor")
+ok(Renderer.SHADER_SOURCE:find(
+    "effectIntensityMode > 1.5 ? texel.a : intensity", 1, true) ~= nil,
+  "IA8 flame coverage uses TEXEL0 alpha instead of I4 smoke intensity")
 ok(Renderer.SHADER_SOURCE:find(
     "vec4(mix(texel.rgb, other.rgb, secondaryMix), texel.a)", 1, true) ~= nil
   and Renderer.MOBILE_SHADER_SOURCE:find(
@@ -298,6 +310,13 @@ ok(movedBounds.cx ~= stableCamera.bounds.cx, "animated pose can move independent
 ok(math.abs(stableCamera.bounds.cx - cameraSquare.bounds.cx) < 0.000001,
   "camera framing stays locked to bind pose instead of chasing animation")
 rig:setAnimation("idle", true)
+rig.displayTime = 1.25
+rig.time = .25
+ok(rig:handlerValues().materialFrame == 75,
+  "shared callback display counter advances independently of animation time")
+rig:setAnimation("idle", true)
+ok(rig:handlerValues().materialFrame == 75,
+  "shared callback display counter does not reset when animations change")
 ok(cameraSquare.near > 0 and cameraSquare.far > cameraSquare.near, "camera clip range valid")
 local orient = Renderer.modelMatrix(0, 0, 1, 0, 5, 0, true)
 ok(math.abs(orient[6] + 1) < 0.000001 and math.abs(orient[8] - 5) < 0.000001, "Stadium model matrix flips vertical axis around model center")
@@ -307,12 +326,11 @@ local billboardUniforms = {}
 local billboardShader = { send = function(_, name, value)
   billboardUniforms[name] = value
 end }
-local billboardRows = {}
-for row = 1, 5 do
-  local y = 200 - (row - 1) * 50
-  billboardRows[(row-1)*2+1] = {-50,y,0}
-  billboardRows[(row-1)*2+2] = {50,y,0}
-end
+local billboardRows = {
+  {-50,200,0}, {-50,150,0}, {50,150,0}, {50,200,0},
+  {-50,100,0}, {50,100,0}, {-50,50,0}, {50,50,0},
+  {-50,0,0}, {50,0,0},
+}
 Renderer.sendFlameBillboard(billboardShader,
   { prim={effect="fire"}, rows=billboardRows },
   Renderer.identity(), Renderer.identity())
@@ -325,6 +343,21 @@ ok(billboardUniforms.billboardCenter[1] == 0
     and billboardUniforms.billboardRight[1] == 1
     and billboardUniforms.billboardUp[2] == 1,
   "shared flame object derives camera-facing axes from the view transform")
+
+local gastlyModel=Renderer.modelMatrix(math.pi/2,0,2,0,0,0,false)
+local gastlyAxes=Renderer.cameraFacingAxes(Renderer.identity(),gastlyModel)
+local gastlyGeometry=Renderer.koffingGasGeometryState(
+  {absolute=true,x=0,y=0,z=0,sx=20,sy=20,sz=20}, {0,0,0}, nil,32,32,
+  gastlyAxes)
+local left,right=gastlyGeometry.vertices[1],gastlyGeometry.vertices[2]
+ok(math.abs(left[3]-right[3])>199.999 and math.abs(left[1]-right[1])<0.000001,
+  "Gastly gas rotates into model-local camera axes instead of turning edge-on")
+local normalRuntime=Renderer.dynamicObjectRuntime({species=92,variant="normal"},{})
+local shinyRuntime=Renderer.dynamicObjectRuntime({species=92,variant="shiny"},{})
+ok(normalRuntime.dynamicObjectGastlyAlternate==false
+    and shinyRuntime.dynamicObjectGastlyAlternate==true
+    and shinyRuntime.modelAlphaByte==255,
+  "Gastly gas inherits the normal/shiny model state and owning model alpha")
 
 rig:setHandlerRuntime({ selector = 4, rangeValue = 3000 })
 rig:updatePose(true)
@@ -464,6 +497,8 @@ ok(normalColor[9] == 1 and normalColor[10] == 1
   "lit normal geometry reaches the shader with neutral vertex colour")
 local canvas, renderErr = gpuRig:renderToCanvas(64, 64)
 ok(canvas ~= nil, renderErr or "GPU canvas")
+ok(gpuRig.shader.uniforms.effectIntensityMode == 2,
+  "shared flame selects the IA8 intensity-and-alpha shader path")
 ok(gpuRig.shader.uniforms.celShadingEnabled == 0,
   "Stadium shader style leaves source lighting continuous")
 local liveShaderStyle = "cel"

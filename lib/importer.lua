@@ -141,6 +141,14 @@ function Importer.shaderStyle()
   return "stadium"
 end
 
+function Importer.rapidashCutEffectEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_rapidash_cut_fx")
+    if ok and value~=nil then return value==true end
+  end
+  return true
+end
+
 local function rendererOptions(options)
   local out = {}
   for key, value in pairs(type(options) == "table" and options or {}) do
@@ -150,6 +158,9 @@ local function rendererOptions(options)
   -- Existing battle actors observe an option change immediately; this does
   -- not rebuild packs, meshes, shaders, or the active battle scene.
   if out.shaderStyleProvider == nil then out.shaderStyleProvider = Importer.shaderStyle end
+  if out.rapidashCutEffectProvider == nil then
+    out.rapidashCutEffectProvider=Importer.rapidashCutEffectEnabled
+  end
   return out
 end
 

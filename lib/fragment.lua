@@ -12,6 +12,15 @@ local sub = string.sub
 local concat = table.concat
 local floor = math.floor
 
+-- Verified against the supplied Pineco OBJ/DAE rip. The archive contains the
+-- same six ROM vertices and 64x32 eye image; these are its texture coordinates
+-- converted from bottom-left OBJ V to the renderer's top-left convention.
+-- Track 1 is the left eye and track 0 the right eye in the source layout.
+local PINECO_EYE_UV = {
+  [1] = { 1.011948, 0.971150, 0.677231, -0.134700, -0.121161, 0.953261 },
+  [0] = { 0.684959, -0.126568, 0.996974, 0.950009, -0.139998, 0.939438 },
+}
+
 local BASE = 0x8FF00000
 
 function StadiumFragment.setBase(value)
@@ -240,8 +249,15 @@ function Model:build()
   self.curTlut = -1
   self.curMat = nil
   self.curTexAnim = -1
+  self.curNodeColor = nil
   self.stack = { -1 }
   self.vbuf = {}
+  -- The RSP is stateful across gSPDisplayList calls.  Stadium submits the
+  -- model's named-bone lists one after another without resetting either the
+  -- transformed vertex cache or G_GEOMETRYMODE.  In particular, a child list
+  -- may consume vertices loaded by the preceding torso list and inherits the
+  -- cull state left by that submission.
+  self.geometryMode = 0x20400 -- G_LIGHTING | G_CULL_BACK
   if not self.geoLayouts[1] then
     self.warnings[#self.warnings + 1] = "no geo layout"
     return
@@ -334,6 +350,12 @@ function Model:walk(o, depth)
       self.curTlut = f:s16(o + 0xA)
       self.curMat = f:ptr(o + 4)
       self.curTexAnim = f:s16(o + 2)
+      -- The final word is the draw's ROM-authored RGBA colour. Most model
+      -- nodes use a neutral B2/B2/B2 light value, but intensity carriers use
+      -- chromatic values here (Jynx's otherwise-white face is 56/38/60/FF).
+      self.curNodeColor = {
+        f:u8(o + 0xC), f:u8(o + 0xD), f:u8(o + 0xE), f:u8(o + 0xF),
+      }
       -- A local texture/material command supersedes callback RDP state for
       -- this node and its descendants. The slime models' uniform 4x4 input is
       -- the exception: it is a body placeholder consumed by the inherited
@@ -410,12 +432,14 @@ function Model:primFor(tex, tlut, mat, texAnim, cull)
   end
   local key = tex .. "," .. tlut .. "," .. tostring(mat) .. ","
               .. texAnim .. "," .. cull .. "," .. tostring(callbackOffset)
-              .. "," .. tostring(self.drawSerial)
+              .. "," .. tostring(self.drawSerial) .. ","
+              .. table.concat(self.curNodeColor or {}, ":")
   local p = self.primsByKey[key]
   if p == nil then
     p = { tex = tex, tlut = tlut, mat = mat, texAnim = texAnim, cull = cull,
           callbackOffset = callbackOffset,
           callbackDescriptor = callbackDescriptor,
+          nodeColor = self.curNodeColor,
           verts = {}, nverts = 0, tris = {}, ntris = 0, remap = {} }
     self.primsByKey[key] = p
     self.prims[#self.prims + 1] = p
@@ -479,10 +503,6 @@ function Model:runDL(o, bone, depth)
   end
   local f = self.f
   local vbuf = self.vbuf
-  -- The model dispatcher enters these child lists with lighting and back-face
-  -- culling enabled.  Their usual D9FFFFFF/00000400 command preserves that
-  -- inherited lighting bit; starting from culling alone loses caller state.
-  local geometryMode = 0x20400
   local steps = 0
   while o >= 0 and o + 8 <= #f.d and steps < 4096 do
     steps = steps + 1
@@ -514,11 +534,13 @@ function Model:runDL(o, bone, depth)
       end
     elseif op == 0xD9 then                            
       -- F3DEX2 stores a 24-bit keep mask in w0 and the bits to set in w1.
-      -- Preserve the full state, including inherited G_LIGHTING; culling is
-      -- only one part of the geometry-mode contract.
-      geometryMode = bor(band(geometryMode, w0 % 0x1000000, 24),
+      -- Preserve the full state, including inherited G_LIGHTING, on the
+      -- model rather than in this Lua call.  G_DL returns do not restore RSP
+      -- geometry state, and separate graph-node submissions do not clear it.
+      self.geometryMode = bor(band(self.geometryMode, w0 % 0x1000000, 24),
         w1 % 0x1000000, 24)
     elseif op == 0x05 or op == 0x06 then              
+      local geometryMode = self.geometryMode
       local prim = self:primFor(self.curTex, self.curTlut, self.curMat,
                                 self.curTexAnim, geometryMode)
       local flip = (floor(geometryMode / 0x200) % 2 == 1)
@@ -552,6 +574,40 @@ function Model:tilePalette(mat)
     mat = mat + 8
   end
   return pal
+end
+
+local function decodeTileSampler(word)
+  word = tonumber(word) or 0
+  return {
+    cms = floor(word / 0x100) % 4,
+    cmt = floor(word / 0x40000) % 4,
+    masks = floor(word / 0x10) % 16,
+    maskt = floor(word / 0x4000) % 16,
+    shifts = word % 16,
+    shiftt = floor(word / 0x400) % 16,
+  }
+end
+
+StadiumFragment.decodeTileSampler = decodeTileSampler
+
+function Model:tileSampler(mat)
+  if mat == nil then return nil end
+  local f = self.f
+  local sampler
+  for _ = 1, 16 do
+    local w0, w1 = f:u32(mat), f:u32(mat + 4)
+    local op = floor(w0 / 0x1000000)
+    -- G_SETTILE first configures load tile 7, then render tile 0. Vertex
+    -- coordinates use the render tile. Pineco's ROM eye material is the
+    -- direct fixture: tile 0 clamps both 64x32 axes (0x00094260).
+    if op == 0xF5 and floor(w1 / 0x1000000) % 8 == 0 then
+      sampler = decodeTileSampler(w1)
+    elseif op == 0xDF then
+      break
+    end
+    mat = mat + 8
+  end
+  return sampler
 end
 
 function Model:bakePhase5Geometry()
@@ -610,11 +666,19 @@ function Model:bakePhase5Geometry()
 end
 
 function Model:mergePrimitivesByCallback()
+  -- Politoed's torso is authored as an ordered stream of small RSP
+  -- submissions which reuse transformed vertices from the preceding list.
+  -- Globally coalescing equal materials moves those bridge triangles ahead
+  -- of or behind the rigid shell submission they belong to. Keep the ROM's
+  -- final submission order; this changes neither the DSM/API contract nor
+  -- the decoded geometry, only the order in which its parts reach the GPU.
+  if self.species == 186 then return end
   local merged, byKey = {}, {}
   for _, source in ipairs(self.prims) do
+    local nodeColor = source.nodeColor and table.concat(source.nodeColor, ":") or ""
     local key = table.concat({ source.tex, source.tlut, tostring(source.mat),
       source.texAnim, source.cull, tostring(source.callbackOffset),
-      tostring(source.callbackDescriptor) }, ",")
+      tostring(source.callbackDescriptor), nodeColor }, ",")
     local target = byKey[key]
     if not target then
       target = source
@@ -953,6 +1017,40 @@ end
 
 StadiumFragment.dedupeFx = dedupeFx
 
+-- Politoed's torso is split across two separately loaded 64x32 RGBA16 maps.
+-- Their bottom/top rows form one continuous belly line, but keeping the maps
+-- as independent host images makes the N64 three-point filter clamp on each
+-- side of the join. Resolve the shared boundary to the same filtered colour
+-- on both images so the split cannot become a horizontal model seam.
+local function stitchPolitoedTorsoBoundary(species, textures, prims)
+  if species ~= 186 then return end
+  local upperPrim, lowerPrim
+  for _, prim in ipairs(prims or {}) do
+    if prim.tex == 1 then upperPrim = prim
+    elseif prim.tex == 2 then lowerPrim = prim end
+  end
+  local upper = upperPrim and textures[upperPrim.tex + 1]
+  local lower = lowerPrim and textures[lowerPrim.tex + 1]
+  if not (upper and lower and upper.w == 64 and upper.h == 32
+      and lower.w == 64 and lower.h == 32
+      and type(upper.rgba) == "string" and type(lower.rgba) == "string"
+      and #upper.rgba == 64 * 32 * 4 and #lower.rgba == 64 * 32 * 4) then
+    return
+  end
+  local upperAt = (upper.h - 1) * upper.w * 4 + 1
+  local boundary = {}
+  for byteIndex = 0, upper.w * 4 - 1 do
+    local a = upper.rgba:byte(upperAt + byteIndex)
+    local b = lower.rgba:byte(1 + byteIndex)
+    boundary[#boundary + 1] = char(floor((a + b + 1) / 2))
+  end
+  boundary = concat(boundary)
+  upper.rgba = upper.rgba:sub(1, upperAt - 1) .. boundary
+  lower.rgba = boundary .. lower.rgba:sub(upper.w * 4 + 1)
+  upper.stitchedBoundary = "politoed-torso"
+  lower.stitchedBoundary = "politoed-torso"
+end
+
 local function inspectFxLayout(frag, layoutOffset, layoutIndex, out, warnings)
   local state = { stack = { -1 }, boneIds = {}, bones = 0, steps = 0 }
 
@@ -1140,7 +1238,12 @@ function StadiumFragment.extract(data, name, options)
     local handler = node.handler
     if arg then
       if handler == 0x81000038 then
-        for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 32, 3, 2) end
+        -- func_810059D0 loads 0x400 IA16 texels into TMEM, then deliberately
+        -- renders that same 0x800-byte payload through an IA8 tile with line=4
+        -- and a 32x64 extent. Treating the source image as 32x32 IA16 puts its
+        -- two byte planes side-by-side and leaves the lower half of the card
+        -- clamped away from the tail.
+        for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 64, 3, 1) end
       elseif handler == 0x81000048 then
         registerCallback(node, frag:u32(arg), 32, 32, 0, 2)
         registerCallback(node, frag:u32(arg + 4), 32, 32, 0, 2)
@@ -1207,6 +1310,10 @@ function StadiumFragment.extract(data, name, options)
         color[i * 4] = v[9]
         skin[i] = v[10]
       end
+      if m.species == 204 and p.mat == 0x40C8 and p.nverts == 3
+          and PINECO_EYE_UV[p.texAnim] then
+        uv = PINECO_EYE_UV[p.texAnim]
+      end
       local ni = 0
       for i = 1, p.ntris do
         local tri = p.tris[i]
@@ -1235,6 +1342,7 @@ function StadiumFragment.extract(data, name, options)
       local callbackTexture = callbackTextureBySite[callbackOffset]
       local callbackState = callbackStateBySite[callbackOffset]
       local callbackTextureRequired = callbackOffset ~= nil and ti < 0
+      local authoredSampler = m:tileSampler(p.mat)
       local function textureHasAlpha(slot)
         local texture = slot and slot >= 0 and texOut[slot + 1] or nil
         local rgba = texture and texture.rgba
@@ -1260,12 +1368,14 @@ function StadiumFragment.extract(data, name, options)
         geometryMode = bor(p.cull or 0, callbackGeometryMode, 24), lighting = lighting,
         vertexSemantics = vertexSemantics,
         color = color, texAnim = p.texAnim, texMap = texMap,
-        sampler = callbackTextureRequired and callbackTexture and callbackTexture.sampler or nil,
+        sampler = callbackTextureRequired and callbackTexture and callbackTexture.sampler
+          or authoredSampler,
         textureScale = callbackTextureRequired and callbackState
           and callbackState.textureScale or nil,
         blend = (p.callbackDescriptor == 0x81000038 or p.callbackDescriptor == 0x81000068)
           and "add" or "alpha",
         materialOffset = p.mat, callbackOffset = callbackOffset,
+        nodeColor = p.nodeColor,
         callbackDescriptor = callbackDescriptor,
         callbackTextureRequired = callbackTextureRequired,
         sourceTextureMissing = ti < 0,
@@ -1293,6 +1403,11 @@ function StadiumFragment.extract(data, name, options)
         local geo = Flame.geometry(node.bone)
         prims[#prims + 1] = {
           tex = slots[1], cull = 0, texAnim = -1, texMap = nil,
+          sampler = {
+            cms=Flame.SAMPLER.cms, cmt=Flame.SAMPLER.cmt,
+            masks=Flame.SAMPLER.masks, maskt=Flame.SAMPLER.maskt,
+            shifts=Flame.SAMPLER.shifts, shiftt=Flame.SAMPLER.shiftt,
+          },
           callbackOffset = node.commandOffset,
           callbackDescriptor = node.handler,
           generated = true, effect = "fire", blend = "add", fxFrames = slots,
@@ -1353,6 +1468,8 @@ function StadiumFragment.extract(data, name, options)
                   loopStart = a.loopStart,
                   channels = chans }
   end
+
+  stitchPolitoedTorsoBoundary(m.species, texOut, prims)
 
   return {
     species = m.species,

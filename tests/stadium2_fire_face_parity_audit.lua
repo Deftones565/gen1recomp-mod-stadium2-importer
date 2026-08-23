@@ -89,13 +89,16 @@ for _, dex in ipairs({4, 5, 6, 146}) do
     ("dex %03d cached %d/1 shared flame callback programs")
       :format(dex, familyCount))
   local state = select(1, Handlers.runExtension(extension, 2,
-    { species = dex, materialFrame = 7 }, {}))
+    { species = dex, materialFrame = 7, textureFrame = 2 }, {}))
   for _, prim in ipairs(tail) do
     local site = prim.callbackOffset
     check(state.textureBySite[site] ~= nil and state.materialBySite[site]
         and state.materialBySite[site].intensity == true,
       ("dex %03d flame site %s lost runtime texture/material state")
         :format(dex, tostring(site)))
+    check(state.textureBySite[site] == (prim.fxFrames[8] or -2) + 1,
+      ("dex %03d flame texture is not synchronized to the ROM display counter")
+        :format(dex))
   end
   for _, prim in ipairs(tail) do
     local expectedMesh = Flame.geometry(prim.skin and prim.skin[1] or -1)
@@ -111,6 +114,10 @@ for _, dex in ipairs({4, 5, 6, 146}) do
       ("dex %03d flame colors are not raw N64 RGBA bytes"):format(dex))
     check(prim.blend == "add" and #(prim.fxFrames or {}) == 8,
       ("dex %03d flame lost additive eight-frame animation"):format(dex))
+    check(prim.sampler and prim.sampler.cms == Flame.SAMPLER.cms
+        and prim.sampler.cmt == Flame.SAMPLER.cmt
+        and prim.sampler.masks == 0 and prim.sampler.maskt == 0,
+      ("dex %03d flame does not preserve the ROM clamp tile"):format(dex))
     local frames = {}
     for _, slot in ipairs(prim.fxFrames or {}) do
       local texture = model.textures and model.textures[slot + 1]

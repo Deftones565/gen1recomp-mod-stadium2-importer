@@ -1,6 +1,8 @@
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Materials = require("mods.STADIUM2_IMPORTER.lib.materials")
 local TextureParity = require("mods.STADIUM2_IMPORTER.lib.texture_parity")
+local Flame = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.flame")
+local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
 
 local Pack = {}
 Pack.SUBSTITUTE_SPECIES = 253
@@ -177,6 +179,14 @@ local function readPrims(r, m)
     prim.geometryMode = r:u32()
     prim.sampler = { cms=r:u8(), cmt=r:u8(), masks=r:u8(), maskt=r:u8(),
       shifts=r:u8(), shiftt=r:u8() }
+    -- S2IMP41 and older generated flame cards without func_810059D0's
+    -- render-tile clamp state. Normalize them while reading so existing
+    -- caches gain the ROM behaviour without a full model re-export.
+    if prim.effect == "fire" then
+      prim.sampler.cms, prim.sampler.cmt = 2, 2
+      prim.sampler.masks, prim.sampler.maskt = 0, 0
+      prim.sampler.shifts, prim.sampler.shiftt = 0, 0
+    end
     prim.textureScale = { r:f32(), r:f32() }
     prim.texAnim = r:i16()
     local mapCount = r:u8()
@@ -209,6 +219,17 @@ local function readPrims(r, m)
     end
     prim.idx = {}
     for k = 1, prim.nidx do prim.idx[k] = r:u16() + 1 end
+    if prim.effect == "fire" and prim.nverts == 10 and prim.nidx == 24 then
+      -- Older packs generated the same planar outline as regular row pairs,
+      -- which changed the ROM's vertex order and interpolation diagonals.
+      -- Upgrade it after consuming the stored payload so existing caches get
+      -- the literal shared object without a DSM revision or re-export.
+      local geometry = Flame.geometry(prim.skin[1] or 0)
+      prim.pos, prim.uv, prim.nrm, prim.color, prim.skin = geometry.pos,
+        geometry.uv, geometry.nrm, geometry.color, geometry.skin
+      prim.nverts, prim.idx, prim.nidx = geometry.nverts, geometry.idx, geometry.nidx
+      prim.vertexSemantics = "color"
+    end
     m.prims[i] = prim
   end
 end
@@ -219,6 +240,31 @@ local function readTextures(r, m)
     local w, h, n = r:u16(), r:u16(), r:u32()
     if n ~= w * h * 4 then error("invalid DSM4 texture length", 0) end
     m.textures[i] = { w = w, h = h, rgba = r:raw(n) }
+  end
+end
+
+local function normalizeFlameTextures(m)
+  local slots = {}
+  for _, prim in ipairs(m.prims or {}) do
+    if prim.effect == "fire" and prim.nverts == 10 and prim.nidx == 24 then
+      for _, slot in ipairs(prim.fxFrames or {}) do slots[slot] = true end
+    end
+  end
+  for slot in pairs(slots) do
+    local texture = m.textures and m.textures[slot]
+    if texture and texture.w == 32 and texture.h == 32
+        and type(texture.rgba) == "string" and #texture.rgba == 32*32*4 then
+      -- Old caches expanded each source byte pair as one IA16 RGBA pixel.
+      -- Recover those two bytes, then apply func_810059D0's actual IA8 render
+      -- tile. This is lossless and avoids a ROM re-import/cache revision.
+      local source = {}
+      for p = 1, #texture.rgba, 4 do
+        source[#source+1] = texture.rgba:sub(p,p)
+        source[#source+1] = texture.rgba:sub(p+3,p+3)
+      end
+      local rgba = Palette.decodeNativeTexture(table.concat(source),32,64,3,1)
+      if rgba then texture.w,texture.h,texture.rgba = 32,64,rgba end
+    end
   end
 end
 
@@ -281,6 +327,7 @@ function Pack.parse(bytes)
     readBones(r, m)
     readPrims(r, m)
     readTextures(r, m)
+    normalizeFlameTextures(m)
     readAnimations(r, m)
     readAux(r, m)
     if r.p - 1 ~= baseEnd then error("unexpected DSM4 base payload length", 0) end
