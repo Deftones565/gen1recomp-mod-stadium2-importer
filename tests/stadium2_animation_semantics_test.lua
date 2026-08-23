@@ -8,7 +8,7 @@ local function ok(value, message)
 end
 
 local animations = {}
-for index = 0, 7 do
+for index = 0, 6 do
   animations[index + 1] = { index = index, aux = index }
 end
 
@@ -27,6 +27,8 @@ ok(animations[2].name == "attack_default", "move-routed clip is identified as an
 ok(animations[5].name == "entrance", "ROM entrance entry names its routed clip")
 ok(animations[6].name == "faint", "ROM faint entry names its routed clip")
 ok(animations[7].name == "hit", "ROM damage entry names its routed clip")
+ok(Semantics.selectorBase(animations, dispatch) == 1,
+  "a selector domain reaching the pose count reserves the default slot")
 ok(contexts[1] == 0, "idle context")
 ok(contexts[2] == 4, "entrance comes from normalized ROM entry 252")
 ok(contexts[3] == 5, "faint route comes from normalized ROM entry 253")
@@ -38,6 +40,21 @@ ok(rows[1][1] == 1 and rows[251][1] == 1,
   "move routes normalize runtime selectors to exported clips")
 ok(rows[1].romSelector == 2, "raw ROM selector remains available for audits")
 ok(#animations[2].moveIds == 251, "move-routed clip retains its metadata")
+
+local directAnimations = {}
+for index = 0, 7 do directAnimations[index + 1] = { index = index } end
+local directRows, directContexts = assert(Semantics.apply(directAnimations, {},
+  Build, nil, dispatch))
+ok(Semantics.selectorBase(directAnimations, dispatch) == 0,
+  "a selector domain inside the pose count directly indexes pose files")
+ok(directContexts[2] == 5 and directContexts[3] == 6
+    and directContexts[4] == 7,
+  "direct-layout contexts retain their ROM selectors")
+ok(directAnimations[7].name == "faint"
+    and directAnimations[8].name == "hit",
+  "direct-layout semantic tags name the authored pose files")
+ok(directRows[1][1] == 2 and directRows[1].selectorBase == 0,
+  "direct-layout move routes retain their authored selector")
 
 local minimum = { { index = 0 } }
 local _, minimumContexts = assert(Semantics.apply(minimum, {}, Build))

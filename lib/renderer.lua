@@ -1433,6 +1433,18 @@ end
 function Renderer.primitiveRenderState(model, prim, options)
   options = type(options) == "table" and options or {}
   local carrier = dynamicObjectCarrier(model, prim)
+  -- Most animated face/detail submissions are small rigid shell sections,
+  -- not free-standing cards. Stadium composes them under per-node matrices;
+  -- preserving their local G_CULL_BACK bit after our unified scene winding
+  -- removes eyes (and Pikachu's head fill). Pineco is the ROM-backed
+  -- exception: its two eyes are isolated one-triangle cards and must remain
+  -- one-sided so their backs cannot be seen through the shell.
+  local pinecoEye = tonumber(model and model.species) == 204
+    and prim and prim.decal == true and (tonumber(prim.texAnim) or -1) >= 0
+    and prim.nverts == 3 and prim.nidx == 3
+  local twoSidedDetail = options.disableCulling == true
+    and not carrier and not pinecoEye and prim
+    and (prim.decal == true or (tonumber(prim.texAnim) or -1) >= 0)
   return {
     dynamicObjectCarrier = carrier,
     -- Carrier profiles contain merged callback billboard copies, not ordinary
@@ -1442,7 +1454,7 @@ function Renderer.primitiveRenderState(model, prim, options)
     -- A broad scene override can keep imperfect imported body winding visible,
     -- but it must not make one-sided eye/face decals visible through a model.
     -- Preserve the ROM's culling bit for decals and callback carriers.
-    cullEnabled = prim and prim.cull == true
+    cullEnabled = prim and prim.cull == true and not twoSidedDetail
       and (carrier or prim.decal == true or options.disableCulling ~= true),
     lightingEnabled = not carrier and (prim == nil or prim.lighting ~= false),
     castsShadow = not carrier,

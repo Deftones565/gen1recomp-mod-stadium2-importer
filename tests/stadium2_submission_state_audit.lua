@@ -4,6 +4,7 @@ local Layout = require("mods.STADIUM2_IMPORTER.lib.layout")
 local Rom = require("mods.STADIUM2_IMPORTER.lib.rom")
 local Extract = require("mods.STADIUM2_IMPORTER.lib.extract")
 local Fragment = require("mods.STADIUM2_IMPORTER.lib.fragment")
+local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
 
 local path = os.getenv("STADIUM2_ROM") or arg[1]
 if not path or path == "" then
@@ -43,5 +44,29 @@ end
 assert(triangles == 566,
   ("Ponyta submission geometry changed: %d/566 triangles"):format(triangles))
 
+-- Pikachu's head shell deliberately leaves an opening for two expression
+-- submissions on auxiliary track 4. They contain two culled triangles and
+-- one unculled triangle. The battle renderer disables imperfect body culling;
+-- treating the first cover as a generic one-sided decal leaves that opening
+-- exposed and shows the brown rear assembly through Pikachu's forehead.
+local pikachu = modelFor(25)
+local headFillTriangles, culledFillTriangles = 0, 0
+for _, primitive in ipairs(pikachu.prims) do
+  if primitive.decal and primitive.texAnim == 4 then
+    local count = primitive.nidx / 3
+    headFillTriangles = headFillTriangles + count
+    if primitive.cull then culledFillTriangles = culledFillTriangles + count end
+    local state = Renderer.primitiveRenderState(pikachu, primitive,
+      { disableCulling = true })
+    assert(not state.cullEnabled,
+      "Pikachu head-fill submission can still be rejected by back-face culling")
+  end
+end
+assert(#pikachu.prims == 17 and headFillTriangles == 3
+    and culledFillTriangles == 2,
+  ("Pikachu head-fill structure changed: primitives=%d fill=%d culled=%d")
+    :format(#pikachu.prims, headFillTriangles, culledFillTriangles))
+
 print("submission-state audit: Ponyta preserves 47 ROM primitive groups and "
-  .. "566 triangles without per-list geometry-mode resets")
+  .. "566 triangles without per-list geometry-mode resets; Pikachu preserves "
+  .. "all three ROM head-fill triangles without scene culling")

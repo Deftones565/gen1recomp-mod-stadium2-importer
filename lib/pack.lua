@@ -15,7 +15,7 @@ Pack.CONTEXTS = {
   "rom_context_258", "rom_context_259", "rom_context_260",
   "rom_context_261", "rom_context_262", "rom_context_263",
   "rom_context_264", "rom_context_265", "rom_context_266",
-  "rom_context_267", "rom_context_268", "rom_context_269",
+  "rom_context_267", "sleep", "rom_context_269",
   "rom_context_270",
 }
 Pack.N_MOVES = 251

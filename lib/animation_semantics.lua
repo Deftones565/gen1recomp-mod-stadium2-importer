@@ -6,21 +6,36 @@ local Semantics = {}
 
 local MOVE_COUNT = 251
 
--- Runtime selector zero is the model's non-animated bind/default pose.  It is
--- not one of the external pose clips that the importer exposes.  External
--- selector 1 is exported as animation index 0; requests for the default pose
--- use that same first (idle) clip rather than exposing a one-frame T-pose.
-local function exportedBodySelector(selector)
+-- Stadium's per-species records use both selector layouts found in the ROM.
+-- A record whose authored domain fits wholly inside the pose bundle indexes
+-- file 0 directly.  A record that reaches the bundle count reserves selector
+-- 0 for the model's default pose and indexes external files from selector 1.
+-- Derive the layout from that species' complete record; never infer it from a
+-- particular role's position in the animation list.
+function Semantics.selectorBase(animations, dispatchRows)
+  local count = #(animations or {})
+  local maximum = 0
+  for index = 0, tonumber(dispatchRows and dispatchRows.n) or -1 do
+    local selector = tonumber(dispatchRows[index] and dispatchRows[index][1])
+    if selector and selector >= 0 and selector < 0xFFFF then
+      maximum = math.max(maximum, selector)
+    end
+  end
+  return maximum < count and 0 or 1
+end
+
+local function exportedBodySelector(selector, base)
   selector = tonumber(selector)
   if selector == nil or selector < 0 or selector >= 0xFFFF then return 0xFFFF end
   if selector == 0 then return 0 end
-  return selector - 1
+  return selector - (base or 0)
 end
 
 function Semantics.apply(animations, auxiliary, Build, AnimationRouting, dispatchRows)
   animations = animations or {}
   local count = #animations
   if count == 0 then return nil, nil, "no animations" end
+  local selectorBase = Semantics.selectorBase(animations, dispatchRows)
 
   if AnimationRouting and AnimationRouting.apply then
     AnimationRouting.apply(animations, auxiliary or {})
@@ -39,7 +54,8 @@ function Semantics.apply(animations, auxiliary, Build, AnimationRouting, dispatc
   for move = 1, MOVE_COUNT do
     local authored = dispatchRows and dispatchRows[move - 1]
     rows[move] = authored and {
-      exportedBodySelector(authored[1]), authored[2], romSelector = authored[1],
+      exportedBodySelector(authored[1], selectorBase), authored[2],
+      romSelector = authored[1], selectorBase = selectorBase,
     } or { 0xFFFF, -1 }
     local animation = animations[(rows[move][1] or -1) + 1]
     if animation then animation.moveIds[#animation.moveIds + 1] = move end
@@ -48,7 +64,8 @@ function Semantics.apply(animations, auxiliary, Build, AnimationRouting, dispatc
   local contexts = {}
   for index = 1, #(Build.CONTEXTS or {}) do
     local authored = dispatchRows and dispatchRows[MOVE_COUNT + index - 1]
-    local selector = authored and exportedBodySelector(authored[1]) or 0xFFFF
+    local selector = authored
+      and exportedBodySelector(authored[1], selectorBase) or 0xFFFF
     contexts[index] = selector
     local animation = animations[selector + 1]
     if animation then
@@ -57,7 +74,7 @@ function Semantics.apply(animations, auxiliary, Build, AnimationRouting, dispatc
       animation.semanticRoles[#animation.semanticRoles + 1] = role
     end
   end
-  local preferred = { "idle", "entrance", "faint", "hit" }
+  local preferred = { "idle", "entrance", "faint", "hit", "sleep" }
   local attackNumber = 0
   for _, animation in ipairs(animations) do
     local roles = {}

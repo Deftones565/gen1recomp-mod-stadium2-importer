@@ -114,8 +114,17 @@ ok(not colorState.lightingEnabled and colorState.cullEnabled,
   "source vertex-colour geometry disables lighting without disabling culling")
 local decalCullState = Renderer.primitiveRenderState({},
   { decal = true, cull = true }, { disableCulling = true })
-ok(decalCullState.cullEnabled,
-  "scene body-culling override cannot expose one-sided decals through a model")
+ok(not decalCullState.cullEnabled,
+  "rigid face/detail surfaces follow the scene's unified winding override")
+local pinecoEyeCullState = Renderer.primitiveRenderState({ species = 204 },
+  { decal = true, cull = true, texAnim = 0, nverts = 3, nidx = 3 },
+  { disableCulling = true })
+ok(pinecoEyeCullState.cullEnabled,
+  "Pineco's isolated eye cards remain one-sided through the scene override")
+local pikachuHeadFillState = Renderer.primitiveRenderState({ species = 25 },
+  { decal = true, cull = true, texAnim = 4 }, { disableCulling = true })
+ok(not pikachuHeadFillState.cullEnabled,
+  "Pikachu's ROM head-fill triangles survive the scene body-culling override")
 ok(Renderer.FORMAT[4] and Renderer.FORMAT[4][1] == "VertexColor",
   "DSM4 mesh format carries source vertex RGBA")
 local _, normalDecls = Renderer.SHADER_SOURCE:gsub("varying STADIUM_FLOAT vec3 vNormal;", "")

@@ -161,6 +161,16 @@ local function parse(bytes, label)
         and Pack.contextSelector(model, "hit") == 4,
       label .. " Rhyhorn ROM animation selectors were not normalized")
   end
+  if model.species == 19 then
+    assert(#model.anims == 6 and model.anims[2].name == "sleep"
+        and model.anims[5].name == "faint"
+        and model.anims[6].name == "hit"
+        and Pack.contextSelector(model, "entrance") == 2
+        and Pack.contextSelector(model, "sleep") == 1
+        and Pack.contextSelector(model, "faint") == 4
+        and Pack.contextSelector(model, "hit") == 5,
+      label .. " Rattata direct ROM animation selectors were shifted")
+  end
   if model.species == 208 then
     local reflected = 0
     for _, prim in ipairs(model.prims or {}) do

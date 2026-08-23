@@ -25,7 +25,8 @@ ok(bulbasaur.n == 271, "ROM record has 251 moves and 20 contexts")
 ok(Dispatch.CONTEXT_ENTRY.idle == 251
     and Dispatch.CONTEXT_ENTRY.entrance == 252
     and Dispatch.CONTEXT_ENTRY.faint == 253
-    and Dispatch.CONTEXT_ENTRY.hit == 254,
+    and Dispatch.CONTEXT_ENTRY.hit == 254
+    and Dispatch.CONTEXT_ENTRY.sleep == 268,
   "battle-overlay-proven semantic entries are explicit")
 ok(bulbasaur[0][1] == 2 and bulbasaur[0][2] == 0,
   "first Bulbasaur move route matches ROM")
@@ -44,6 +45,8 @@ ok(#moves == 251 and moves[1][1] == bulbasaur[0][1] - 1
   "runtime selectors normalize while ROM entries become public move IDs")
 ok(moves[1].romSelector == bulbasaur[0][1],
   "normalized routes preserve their raw ROM selector")
+ok(moves[1].selectorBase == 1,
+  "Bulbasaur uses the ROM-proven default-plus-external selector layout")
 ok(animations[2].moveIds[1] == 1,
   "exported animation metadata identifies its ROM-routed moves")
 
@@ -62,23 +65,47 @@ ok(rhyhornContexts[3] == rhyhorn[253][1] - 1
     and rhyhornContexts[3] == 3,
   "Rhyhorn faint uses its normalized species-correct ROM selector")
 
+local rattata = assert(Dispatch.forSpecies(rom, 19))
+local rattataAnimations = {}
+for index = 0, 5 do rattataAnimations[index + 1] = { index = index } end
+local _, rattataContexts = assert(Semantics.apply(rattataAnimations, {}, Build,
+  nil, rattata))
+ok(Semantics.selectorBase(rattataAnimations, rattata) == 0,
+  "Rattata's ROM domain directly indexes all six pose files")
+ok(rattataContexts[3] == 4 and rattataContexts[4] == 5
+    and rattataAnimations[5].name == "faint"
+    and rattataAnimations[6].name == "hit"
+    and rattataContexts[18] == 1
+    and rattataAnimations[2].name == "sleep",
+  "Rattata viewer animations 2, 5, and 6 are sleep, faint, and hit")
+
 local poseArchive = assert(Rom.archiveAt(rom, Layout.POSE_TABLE_START))
-local exactTopSelector = 0
+local directLayout, shiftedLayout, exceptionalTop = 0, 0, 0
+local directSpecies = {}
 for species = 1, 251 do
   local posePayload = assert(Rom.decompress(assert(Rom.recordBytes(rom,
     poseArchive.records[species + 1]))))
   local poseFiles = assert(Rom.archiveAt(posePayload, 0)).count
   local speciesRows = assert(Dispatch.forSpecies(rom, species))
   local maximum = 0
-  for moveIndex = 0, 250 do
-    maximum = math.max(maximum, speciesRows[moveIndex][1])
+  for rowIndex = 0, speciesRows.n - 1 do
+    maximum = math.max(maximum, speciesRows[rowIndex][1])
   end
-  ok(maximum <= poseFiles,
-    ("species %d selector %d exceeds default+%d pose slots")
+  ok(maximum <= poseFiles + 1,
+    ("species %d selector %d exceeds its %d-file ROM domain")
       :format(species, maximum, poseFiles))
-  if maximum == poseFiles then exactTopSelector = exactTopSelector + 1 end
+  if maximum < poseFiles then
+    directLayout = directLayout + 1
+    directSpecies[#directSpecies + 1] = species
+  else
+    shiftedLayout = shiftedLayout + 1
+    if maximum > poseFiles then exceptionalTop = exceptionalTop + 1 end
+  end
 end
-ok(exactTopSelector == 83,
-  "all species use zero-based dispatch records and default+external selector layout")
+ok(directLayout == 20 and shiftedLayout == 231 and exceptionalTop == 2,
+  "all species select their ROM-authored direct or default-plus-external layout")
+ok(table.concat(directSpecies, ",")
+    == "9,16,17,18,19,21,46,64,69,70,101,104,105,122,131,136,144,178,193,198",
+  "the complete direct-layout species set remains ROM-derived")
 
 print("stadium2 ROM animation dispatch tests passed")
