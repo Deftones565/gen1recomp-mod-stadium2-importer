@@ -106,7 +106,7 @@ local packed = Build.pack({
   handlerSourceBase = 0x8FF00000,
   handlerFragment = fragment,
 }, 25, moveRows, contexts)
-ok(packed:sub(1, 4) == "DSM4", "handler-aware pack uses DSM4 magic")
+ok(packed:sub(1, 4) == "DSM5", "handler-aware pack uses DSM5 magic")
 local packedHandlers = Handlers.readExtension(packed)
 ok(packedHandlers and #packedHandlers.records == 4, "real pack carries handler extension")
 ok(packedHandlers.fragment == fragment, "real pack carries handler fragment")

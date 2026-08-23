@@ -5,6 +5,8 @@ local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Layout = require("mods.STADIUM2_IMPORTER.lib.layout")
 local AnimationRouting = require("mods.STADIUM2_IMPORTER.lib.animation_routing")
+local AnimationDispatch = require("mods.STADIUM2_IMPORTER.lib.animation_dispatch")
+local AnimationSemantics = require("mods.STADIUM2_IMPORTER.lib.animation_semantics")
 
 local Extract = {}
 Extract.BASE_COUNT = 151
@@ -15,7 +17,6 @@ local ASSET_START = Rom.ASSET_START
 local MODEL_TABLE_START = Rom.MODEL_TABLE_START
 local POSE_TABLE_START = Rom.POSE_TABLE_START
 local POSE_TABLE_END = Rom.POSE_TABLE_END
-local NONE16 = 0xFFFF
 local paletteByDex = {}
 local standaloneShinyPalettes
 local speciesIdByDex = {}
@@ -283,72 +284,7 @@ local function normaliseDrawableModel(model, species, Fx)
   }
 end
 
-local function matrixPoseSignature(matrices)
-  if type(matrices) ~= "table" or #matrices == 0 then return nil end
-  local loX, loY, loZ = math.huge, math.huge, math.huge
-  local hiX, hiY, hiZ = -math.huge, -math.huge, -math.huge
-  local maxAxis = 0
-  for _, matrix in ipairs(matrices) do
-    if type(matrix) ~= "table" or type(matrix[1]) ~= "table"
-        or type(matrix[2]) ~= "table" or type(matrix[3]) ~= "table" then
-      return nil
-    end
-    for row = 1, 3 do
-      for column = 1, 4 do
-        local value = tonumber(matrix[row][column])
-        if not value or value ~= value or value == math.huge or value == -math.huge then
-          return nil
-        end
-      end
-    end
-    local x, y, z = matrix[1][4], matrix[2][4], matrix[3][4]
-    if x < loX then loX = x end
-    if y < loY then loY = y end
-    if z < loZ then loZ = z end
-    if x > hiX then hiX = x end
-    if y > hiY then hiY = y end
-    if z > hiZ then hiZ = z end
-    for column = 1, 3 do
-      local a, b, c = matrix[1][column], matrix[2][column], matrix[3][column]
-      local axis = math.sqrt(a * a + b * b + c * c)
-      if axis > maxAxis then maxAxis = axis end
-    end
-  end
-  local dx, dy, dz = hiX - loX, hiY - loY, hiZ - loZ
-  return math.sqrt(dx * dx + dy * dy + dz * dz), maxAxis
-end
-
-local function animationLooksExplosive(data, animation, Build)
-  if type(animation) ~= "table" or type(data) ~= "table" then return false end
-  if type(data.bones) ~= "table" or #data.bones == 0 then return false end
-  if not (Build and type(Build.bindMatrices) == "function"
-      and type(Build.animSample) == "function") then
-    return false
-  end
-  local frames = math.max(1, math.floor(tonumber(animation.frames) or 1))
-  if frames > 600 then return true, "implausible frame count" end
-
-  local okBind, bindMatrices = pcall(Build.bindMatrices, data.bones)
-  if not okBind then return false end
-  local bindSpread, bindAxis = matrixPoseSignature(bindMatrices)
-  if not bindSpread or not bindAxis then return false end
-  bindSpread = math.max(bindSpread, 1e-6)
-  bindAxis = math.max(bindAxis, 1e-6)
-
-  for frame = 0, frames - 1 do
-    local okSample, sample = pcall(Build.animSample, data.bones, animation, frame)
-    if not okSample then return true, "pose sample failed" end
-    local okPose, matrices = pcall(Build.bindMatrices, data.bones, sample)
-    if not okPose then return true, "pose matrix failed" end
-    local spread, axis = matrixPoseSignature(matrices)
-    if not spread or not axis then return true, "non-finite pose" end
-    if spread / bindSpread > 8.0 then return true, "bone spread" end
-    if axis / bindAxis > 8.0 then return true, "bone scale" end
-  end
-  return false
-end
-
-local function genericAnimationTable(data, Build)
+local function genericAnimationTable(data, Build, rom, species)
   local animations = data.anims or {}
   if #animations == 0 then
     animations[1] = {
@@ -360,48 +296,13 @@ local function genericAnimationTable(data, Build)
       tracks = {},
       syntheticBindPose = true,
     }
-    data.anims = animations
   end
+  data.anims = animations
 
-  local sourceCount = #animations
-  local idle = 0
-  local attack = sourceCount > 1 and 1 or idle
-  local faint = sourceCount > 2 and 2 or idle
-  local entrance = sourceCount > 3 and 3 or idle
-
-  local faintRejected, faintReason = false, nil
-  if faint ~= idle then
-    faintRejected, faintReason = animationLooksExplosive(data,
-      animations[faint + 1], Build)
-    if faintRejected then faint = idle end
-  end
-  data.stadium2FaintRejected = faintRejected or nil
-  data.stadium2FaintRejectReason = faintRejected and faintReason or nil
-
-  local auxiliary = data.auxAnims or {}
-  AnimationRouting.apply(animations, auxiliary)
-  for index, animation in ipairs(animations) do
-    if index == 1 then
-      animation.name = "idle"
-    elseif index == 2 then
-      animation.name = "attack_default"
-    elseif index == 3 then
-      animation.name = faintRejected and "faint_rejected" or "faint"
-    elseif index == 4 then
-      animation.name = "entrance"
-    else
-      animation.name = "anim" .. tostring(index - 1)
-    end
-  end
-
-  local rows = {}
-  local attackAux = animations[attack + 1] and animations[attack + 1].aux or -1
-  for move = 1, 165 do rows[move] = { attack, attackAux } end
-  local contexts = {}
-  for index = 1, #Build.CONTEXTS do contexts[index] = NONE16 end
-  contexts[1], contexts[2], contexts[3], contexts[4] = idle, attack, faint, entrance
-  contexts[12], contexts[13], contexts[19], contexts[20] = idle, faint, entrance, idle
-  return rows, contexts
+  local dispatchRows, dispatchErr = AnimationDispatch.forSpecies(rom, species)
+  if not dispatchRows then return nil, nil, dispatchErr end
+  return AnimationSemantics.apply(animations, data.auxAnims, Build,
+    AnimationRouting, dispatchRows)
 end
 
 local function decompressedFragment(data, record, StadiumRom)
@@ -1085,7 +986,8 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
           special.animations,model.bones,dependencies)
         model.anims=animations
         if #auxiliary>0 then model.auxAnims=auxiliary end
-        local rows,contexts,animationErr=genericAnimationTable(model,dependencies.Build)
+        local rows,contexts,animationErr=genericAnimationTable(model,dependencies.Build,
+          data,special.record)
         if not rows then return nil,animationErr end
         local bytes,shinyBytes
         if special.kind=="unown" then
@@ -1161,7 +1063,8 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
           and table.concat(animationErrors, " | ")
           or "no decodable Stadium 2 skeletal animation record"
       end
-      local rows, contexts, animationErr = genericAnimationTable(model, Build)
+      local rows, contexts, animationErr = genericAnimationTable(model, Build,
+        data, species)
       if not rows then return nil, animationErr end
       coroutine.yield("animations")
 

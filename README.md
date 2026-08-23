@@ -241,6 +241,24 @@ end
 
 Use `instance:playContext(name, loop)`, `playAnimation(nameOrIndex, loop, auxIndex)`, or `playMove(moveId, loop)` when the animation source should be explicit. `seekFrame(frame)` supports inspection tools; `animationState()` and `isFinished()` expose playback state; and `metrics()`, `bounds()`, or `geometryAnchor()` support placement. To cast the model into a custom shadow map, bind that target and call `instance:drawShadow({modelMatrix=..., lightViewProjection=...})` before the color pass.
 
+Stadium 2 does not store human-readable names in its pose records, so the importer does not infer meaning from a clip's position. It reads the battle overlay's per-species dispatch record instead. ROM entry `251` selects idle, `252` entrance, `253` faint, and `254` hit/damage. Other non-move entries remain named `rom_context_ID` until their battle call sites prove a meaning. An otherwise unclassified animation is named `attack` only when at least one ROM move entry routes to it.
+
+`models.contextSelector(model, name)` and `models.moveSelector(model, moveId)` expose the normalized zero-based selector in the exported animation list. `contextIndex` and `moveIndex` return its one-based playable index. The ROM-only TSV audit retains Stadium's original selector values for low-level comparison.
+
+Per-move body-animation routing is read directly from Stadium 2's ROM-authored per-species dispatch records. `playMove(moveId)` supports all 251 Gen II move IDs, and each parsed animation exposes the one-based move IDs routed to it as `animation.moveIds`. No animation names or move relationships are inferred from another mod.
+
+The two relevant archives use different numbering conventions. Dispatch record `0` belongs to species `1`, while the model and pose archives retain their record-zero placeholder. Inside the game, runtime selector `0` is the built-in non-animated default pose and external pose files occupy selectors `1..N`. The exporter does not expose that one-frame bind/T-pose: selector `0` falls back to exported idle clip `0`, and selectors `1..N` become exported clips `0..N-1`.
+
+To export a readable ROM-only report grouped by Pokémon, body clip, auxiliary clip, move ID, and the move name stored in Stadium 2, run this from the Gen1 recomp repository root:
+
+```sh
+STADIUM2_ROM=mods/STADIUM2_IMPORTER/baseroms/stadium2.z64 \
+STADIUM2_ANIMATION_DISPATCH_OUT=stadium2_animation_dispatch.tsv \
+luajit mods/STADIUM2_IMPORTER/tests/stadium2_animation_dispatch_audit.lua
+```
+
+The visual model viewer also shows the current clip's compacted `ROM move IDs` in its debug panel.
+
 Matrices are row-major and multiply column vectors; a clip transform is `projection * view * model`. `models.matrix` provides `identity`, `multiply`, `perspective`, `lookAt`, `orthographic`, translation/rotation/scale constructors, `compose`, `transform`, and `normalFromModel`. `transform` builds `translation * rotationZ * rotationY * rotationX * scale` and accepts angles in radians.
 
 `newInstanceFromModel(model, options)` renders a model already created or parsed by the caller. It leaves that model caller-owned unless `options.takeOwnership == true`; transferring ownership means `instance:release()` also calls `models.release(model)`. Perform structural model edits before calling `newInstanceFromModel`, because renderer meshes are built when the instance is created. `instance:model()` and `instance:renderer()` are explicit escape hatches for creators who need raw DSM data or renderer features beyond the stable facade.

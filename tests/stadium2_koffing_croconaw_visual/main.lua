@@ -3,6 +3,7 @@ local Importer
 local Presentation
 local Camera
 local DynamicObject
+local TagFile
 local root
 local loadError
 local paused = false
@@ -32,6 +33,10 @@ local autoKeysApplied = false
 local shaderStyle = os.getenv("STADIUM2_VISUAL_SHADER") == "cel" and "cel" or "stadium"
 local rapidashCutEffect = os.getenv("STADIUM2_VISUAL_RAPIDASH_CUT_FX") ~= "0"
 local rapidashButtonHeld = false
+local tagData
+local tagFilePath
+local tagEditing = false
+local tagInput = ""
 
 local function fileExists(path)
   local handle = io.open(path, "rb")
@@ -306,6 +311,88 @@ local function selectedActor()
   return actorForSide(selectedSide)
 end
 
+local function showMessage(message)
+  screenshotMessage = tostring(message)
+  screenshotTimer = 7
+  print("[stadium2-visual-test] " .. screenshotMessage)
+end
+
+local function animationTagPath()
+  local supplied = os.getenv("STADIUM2_ANIMATION_TAGS_EXPORT")
+  if supplied and supplied ~= "" then return supplied end
+  return love.filesystem.getSaveDirectory() .. "/stadium2_animation_tags.tsv"
+end
+
+local function loadAnimationTags()
+  tagFilePath = animationTagPath()
+  tagData = TagFile.new()
+  if not fileExists(tagFilePath) then return true end
+  local loaded, err = TagFile.load(tagFilePath)
+  if not loaded then
+    showMessage("could not read animation tags: " .. tostring(err))
+    return false
+  end
+  tagData = loaded
+  warn("ANIMATION_TAGS loaded " .. tagFilePath)
+  return true
+end
+
+local function saveAnimationTags()
+  if not (TagFile and tagData and tagFilePath) then return false end
+  local ok, err = TagFile.save(tagFilePath, tagData)
+  if not ok then
+    showMessage("animation tag export failed: " .. tostring(err))
+    return false
+  end
+  showMessage("animation tags saved: " .. tagFilePath)
+  return true
+end
+
+local function syncTagCount(actor)
+  local renderer = actor and actor.renderer
+  local animations = renderer and renderer.model and renderer.model.anims
+  if tagData and actor and type(animations) == "table" then
+    TagFile.setCount(tagData, actor.dex, #animations)
+  end
+end
+
+local function currentTagSelection()
+  local actor = selectedActor()
+  local renderer = actor and actor.renderer
+  local animations = renderer and renderer.model and renderer.model.anims
+  local luaIndex = renderer and renderer.animIndex or nil
+  if not (actor and type(animations) == "table" and luaIndex and animations[luaIndex]) then
+    return nil
+  end
+  local animation = animations[luaIndex]
+  return actor.dex, luaIndex - 1, animation, #animations
+end
+
+local function currentTag()
+  local species, index = currentTagSelection()
+  return species and TagFile.get(tagData, species, index) or nil
+end
+
+local function tagProgress()
+  local species, _, _, count = currentTagSelection()
+  local current, total, visited = 0, 0, 0
+  for dex = 1, 251 do
+    local known = tagData and tagData.counts[dex]
+    if known then total, visited = total + known, visited + 1 end
+  end
+  local rows = tagData and tagData.species or {}
+  local tagged = 0
+  for dex = 1, 251 do
+    for index, tag in pairs(rows[dex] or {}) do
+      if tag ~= "" and (not tagData.counts[dex] or index < tagData.counts[dex]) then
+        tagged = tagged + 1
+        if dex == species then current = current + 1 end
+      end
+    end
+  end
+  return current, count or 0, tagged, total, visited
+end
+
 local function koffingActor()
   -- Compatibility name retained for the legacy visual entry point. FX
   -- inspection follows the currently selected model.
@@ -491,6 +578,8 @@ local function makeScene(resetView)
     return false
   end
   scene = nextScene
+  syncTagCount(actorForSide("enemy"))
+  syncTagCount(actorForSide("player"))
   applyDebugControls()
   loadError = nil
   local enemy = actorForSide("enemy")
@@ -528,6 +617,69 @@ local function cycleSelectedAnimation(delta)
   if not (renderer and type(animations) == "table" and #animations > 0) then return false end
   local index = ((renderer.animIndex or 1) - 1 + (tonumber(delta) or 0)) % #animations + 1
   return renderer:setAnimation(index, true)
+end
+
+local function advanceTagCursor()
+  local _, index, _, count = currentTagSelection()
+  if not index then return false end
+  if index + 1 < count then return cycleSelectedAnimation(1) end
+  return cycleSelectedSpecies(1)
+end
+
+local function commitAnimationTag(value, advance)
+  local species, index = currentTagSelection()
+  if not species then return false end
+  local ok, err = TagFile.set(tagData, species, index, value)
+  if not ok then
+    showMessage("could not set animation tag: " .. tostring(err))
+    return false
+  end
+  saveAnimationTags()
+  if advance then advanceTagCursor() end
+  return true
+end
+
+local function beginTagEdit()
+  local _, _, animation = currentTagSelection()
+  if not animation then return false end
+  tagInput = currentTag() or tostring(animation.name or "")
+  tagEditing = true
+  if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(true) end
+  return true
+end
+
+local function finishTagEdit(save)
+  if save then commitAnimationTag(tagInput, true) end
+  tagEditing = false
+  tagInput = ""
+  if love.keyboard and love.keyboard.setTextInput then love.keyboard.setTextInput(false) end
+end
+
+local function removeLastCharacter(value)
+  local length = #value
+  if length == 0 then return value end
+  repeat
+    length = length - 1
+  until length == 0 or value:byte(length + 1) < 128 or value:byte(length + 1) >= 192
+  return value:sub(1, length)
+end
+
+local function compactMoveIds(moveIds)
+  if type(moveIds) ~= "table" or #moveIds == 0 then return "none" end
+  local out = {}
+  local first, last = moveIds[1], moveIds[1]
+  for index = 2, #moveIds + 1 do
+    local value = moveIds[index]
+    if value == last + 1 then
+      last = value
+    else
+      out[#out + 1] = first == last and tostring(first)
+        or (tostring(first) .. "-" .. tostring(last))
+      first, last = value, value
+    end
+  end
+  local text = table.concat(out, ",")
+  return #text > 96 and (text:sub(1, 93) .. "...") or text
 end
 
 local function toggleRapidashCutEffect()
@@ -584,6 +736,8 @@ local function initialise()
     Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
     Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
     DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
+    TagFile = require("mods.STADIUM2_IMPORTER.lib.animation_tag_file")
+    loadAnimationTags()
     local shadowBias=tonumber(os.getenv("STADIUM2_VISUAL_SHADOW_BIAS"))
     if os.getenv("STADIUM2_VISUAL_DISABLE_SUN_SHADOW") == "1" or shadowBias then
       local Shadow=require("mods.STADIUM2_IMPORTER.lib.battle_shadow")
@@ -610,6 +764,10 @@ local function drawText(g)
   local model = renderer and renderer.model or {}
   local animations = model.anims or {}
   local animation = animations[renderer and renderer.animIndex or 0]
+  local manualTag = currentTag()
+  local currentTagged, currentTotal, allTagged, allTotal, visited = tagProgress()
+  local playbackState = paused and "PAUSED"
+    or (renderer and renderer.finished and "FINISHED" or "PLAYING")
   local authoredTextures, neutralTextures, resolvedTextures = 0, 0, 0
   for _, prim in ipairs(model.prims or {}) do
     if prim.sourceTextureMissing then neutralTextures = neutralTextures + 1
@@ -619,21 +777,39 @@ local function drawText(g)
   local enemyMark = selectedSide == "enemy" and "> " or "  "
   local playerMark = selectedSide == "player" and "> " or "  "
   g.setColor(0, 0, 0, .72)
-  local panelHeight = help and (debugPanel and 256 or 134) or (debugPanel and 192 or 52)
+  local panelHeight = help and (debugPanel and 382 or 242) or (debugPanel and 264 or 124)
   g.rectangle("fill", 12, 12, 430, panelHeight, 6, 6)
   g.setColor(1, 1, 1, 1)
   g.print(enemyMark .. "Enemy species #" .. string.format("%03d", enemyDex), 24, 22)
   g.print(playerMark .. "Player species #" .. string.format("%03d", playerDex), 24, 40)
+  g.print(("NOW %s  %d/%d  %s  frame:%s/%s"):format(
+    playbackState, renderer and renderer.animIndex or 0, #animations,
+    tostring(animation and animation.name or "bind pose"),
+    tostring(renderer and renderer.frame or 0),
+    tostring(animation and animation.frames or 0)), 24, 58)
+  if tagEditing then
+    g.setColor(1, .9, .35, 1)
+    g.print("TAG EDIT> " .. tagInput .. "_", 24, 78)
+  else
+    g.setColor(manualTag and .45 or 1, manualTag and 1 or .75, .55, 1)
+    g.print("TAG: " .. tostring(manualTag or "<untagged>")
+      .. "   suggested: " .. tostring(animation and animation.name or "none"), 24, 78)
+  end
+  g.setColor(1, 1, 1, 1)
+  g.print(("TAGGED %d/%d THIS MODEL   %d/%d VISITED CLIPS   SPECIES VISITED %d/251")
+    :format(currentTagged, currentTotal, allTagged, allTotal, visited), 24, 98)
   if help then
-    g.print("TAB select side   LEFT/RIGHT species   UP/DOWN +/-10", 24, 62)
-    g.print("Drag mouse orbit/pitch   Wheel zoom", 24, 80)
-    g.print("Q/E animation   R recenter   SPACE pause", 24, 98)
-    g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 116)
-    g.print("0 all primitives   1-9 isolate   V shader   S shot   H/D/P debug", 24, 134)
+    g.print("T edit tag   A accept suggested + next   DELETE clear tag", 24, 122)
+    g.print("CTRL+S or F6 export tags   ENTER saves edits + next", 24, 140)
+    g.print("TAB select side   LEFT/RIGHT species   UP/DOWN +/-10", 24, 158)
+    g.print("Drag mouse orbit/pitch   Wheel zoom", 24, 176)
+    g.print("Q/E animation   R recenter   SPACE pause", 24, 194)
+    g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 212)
+    g.print("0 all primitives   1-9 isolate   V shader   S shot   H/D/P debug", 24, 230)
   end
   if debugPanel then
     local d = gasSnapshot()
-    local y = help and 158 or 62
+    local y = help and 254 or 134
     g.print(("Selected %s #%03d  bones:%d prims:%d textures:%d"):format(
       selectedSide, selected and selected.dex or 0, #(model.bones or {}),
       #(model.prims or {}), #(model.textures or {})), 24, y)
@@ -641,18 +817,19 @@ local function drawText(g)
       renderer and renderer.animIndex or 0, #animations,
       tostring(animation and animation.name or "bind pose"),
       tostring(renderer and renderer.frame or 0), tostring(animation and animation.frames or 0)), 24, y + 18)
+    g.print("ROM move IDs: " .. compactMoveIds(animation and animation.moveIds), 24, y + 36)
     g.print("Primitive: " .. (isolatePrimitive == 0 and "all" or tostring(isolatePrimitive))
-      .. "  paused: " .. tostring(paused), 24, y + 36)
+      .. "  paused: " .. tostring(paused), 24, y + 54)
     g.print("Dynamic FX: " .. tostring(d.active or 0) .. "  emitters: "
-      .. tostring(d.emitterCount or 0) .. "  age: " .. tostring(forceGasAge), 24, y + 54)
+      .. tostring(d.emitterCount or 0) .. "  age: " .. tostring(forceGasAge), 24, y + 72)
     g.print("FX forced: " .. tostring(forceGas) .. "  suppressed: "
-      .. tostring(suppressGasDraw), 24, y + 72)
-    g.print("Callback texture: " .. tostring(d.textureInfo or "none"), 24, y + 90)
+      .. tostring(suppressGasDraw), 24, y + 90)
+    g.print("Callback texture: " .. tostring(d.textureInfo or "none"), 24, y + 108)
     g.print(("Textures: %d authored + %d neutral; resolved %d/%d; shader %s/%s; cache %s")
       :format(authoredTextures, neutralTextures, resolvedTextures, #(model.prims or {}),
         tostring(renderer and renderer.shaderTier or "none"),
         tostring(renderer and renderer:currentShaderStyle() or shaderStyle),
-        tostring(Importer and Importer.FORMAT or "?")), 24, y + 108)
+        tostring(Importer and Importer.FORMAT or "?")), 24, y + 126)
   end
   if screenshotMessage then
     local width = g.getWidth()
@@ -746,7 +923,23 @@ function love.draw()
 end
 
 function love.keypressed(key)
-  if key == "escape" then
+  if tagEditing then
+    if key == "escape" then
+      finishTagEdit(false)
+    elseif key == "return" or key == "kpenter" then
+      finishTagEdit(true)
+    elseif key == "backspace" then
+      tagInput = removeLastCharacter(tagInput)
+    elseif key == "delete" then
+      tagInput = ""
+    end
+    return
+  end
+  local control = love.keyboard and love.keyboard.isDown
+    and love.keyboard.isDown("lctrl", "rctrl")
+  if (key == "s" and control) or key == "f6" then
+    saveAnimationTags()
+  elseif key == "escape" then
     love.event.quit()
   elseif key == "tab" and Presentation then
     selectedSide = selectedSide == "enemy" and "player" or "enemy"
@@ -768,6 +961,13 @@ function love.keypressed(key)
     cycleSelectedAnimation(-1)
   elseif key == "e" or key == "pagedown" then
     cycleSelectedAnimation(1)
+  elseif key == "t" then
+    beginTagEdit()
+  elseif key == "a" then
+    local _, _, animation = currentTagSelection()
+    if animation then commitAnimationTag(animation.name or "", true) end
+  elseif key == "delete" then
+    commitAnimationTag("", false)
   elseif key == "r" and Camera then
     Camera.recentre()
     Camera.reset()
@@ -805,10 +1005,12 @@ function love.keypressed(key)
   elseif key == "s" then
     local name = ("stadium2-models-%03d-vs-%03d.png"):format(enemyDex, playerDex)
     love.graphics.captureScreenshot(name)
-    screenshotMessage = "saved " .. love.filesystem.getSaveDirectory() .. "/" .. name
-    screenshotTimer = 5
-    print("[stadium2-visual-test] " .. screenshotMessage)
+    showMessage("saved " .. love.filesystem.getSaveDirectory() .. "/" .. name)
   end
+end
+
+function love.textinput(text)
+  if tagEditing then tagInput = tagInput .. tostring(text or "") end
 end
 
 function love.mousepressed(x, y, button)
@@ -836,6 +1038,7 @@ function love.wheelmoved(x, y)
 end
 
 function love.quit()
+  if tagData and tagFilePath then TagFile.save(tagFilePath, tagData) end
   if scene then scene:release() end
   if Importer then Importer.releaseModels() end
 end

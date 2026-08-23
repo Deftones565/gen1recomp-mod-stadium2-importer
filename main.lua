@@ -97,7 +97,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.10.17"
+  mod.exports.version = "0.11.0"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus

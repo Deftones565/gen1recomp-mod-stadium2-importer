@@ -1,4 +1,5 @@
 local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
+local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
 
 local ModelApi = {}
 local Instance = {}
@@ -180,6 +181,18 @@ function Instance:playMove(move, loop)
   return self._renderer:setMove(move, loop)
 end
 
+function Instance:contextSelector(name)
+  local ok, err = live(self)
+  if not ok then return nil, err end
+  return Pack.contextSelector(self._model, name)
+end
+
+function Instance:moveSelector(move)
+  local ok, err = live(self)
+  if not ok then return nil, err end
+  return Pack.moveSelector(self._model, move)
+end
+
 function Instance:seekFrame(frame)
   local ok, err = live(self)
   if not ok then return false, err end
@@ -345,6 +358,8 @@ function ModelApi.new(importer)
     newRendererFromModel = importer.newRendererFromModel,
     readPack = importer.readPack,
     parsePack = importer.parsePack,
+    contextSelector = Pack.contextSelector,
+    moveSelector = Pack.moveSelector,
   }
 
   function api.capabilities()
@@ -354,7 +369,7 @@ function ModelApi.new(importer)
       ownedInstances = true,
       mutableModels = true,
       sceneNeutralDraw = true,
-      animation = {context=true, move=true, index=true, seek=true},
+      animation = {context=true, move=true, index=true, seek=true, selector=true},
       metrics = {bounds=true, height=true, floor=true, radius=true, rootScale=true},
       passes = {"opaque", "additive"},
       shadows = {cast=true, receive=true},

@@ -308,7 +308,7 @@ function ModelParity.auditModel(model, fragment, sourceBase, options)
     end
     if auxRoute[2] ~= 3 or auxRoute[3] ~= 4 or auxRoute[4] ~= 5 then
       issue(out, "error", "MISDREAVUS_AUX_ROUTES",
-        ("reference attack/faint/entrance aux routes are 3/4/5, got %s/%s/%s")
+        ("ROM entrance/faint/hit aux routes are 3/4/5, got %s/%s/%s")
           :format(tostring(auxRoute[2]), tostring(auxRoute[3]), tostring(auxRoute[4])))
     end
   end

@@ -12,18 +12,19 @@ local frexp = math.frexp
 local roundHalfEven = StadiumFragment.roundHalfEven
 
 StadiumBuild.CONTEXTS = {
-  "idle", "attack_default", "faint", "entrance", "reaction_169", "reaction_170",
-  "reaction_171", "reaction_172", "reaction_173", "reaction_174",
-  "struggle", "idle_alt", "faint_alt", "flinch", "reaction_179",
-  "reaction_180", "reaction_181", "reaction_182", "entrance_alt",
-  "idle_return",
+  "idle", "entrance", "faint", "hit",
+  "rom_context_255", "rom_context_256", "rom_context_257",
+  "rom_context_258", "rom_context_259", "rom_context_260",
+  "rom_context_261", "rom_context_262", "rom_context_263",
+  "rom_context_264", "rom_context_265", "rom_context_266",
+  "rom_context_267", "rom_context_268", "rom_context_269",
+  "rom_context_270",
 }
 
-local NAME_PREF = { "idle", "attack_default", "faint", "entrance",
-                    "struggle", "flinch" }
+local NAME_PREF = { "idle", "entrance", "faint", "hit" }
 
-local N_MOVES = 165
-local CTX_BASE = 165
+local N_MOVES = 251
+local CTX_BASE = 251
 local NONE16 = 0xFFFF
 
 
@@ -305,7 +306,11 @@ function StadiumBuild.contextTable(rows, nAnims)
   for i = 1, #StadiumBuild.CONTEXTS do
     local row = rows[CTX_BASE + i - 1]
     local ai = row and row[1] or nil
-    ctx[i] = (ai ~= nil and ai < nAnims) and ai or NONE16
+    -- Preserve the ROM selector even when the currently decoded animation
+    -- bank does not expose that slot.  Runtime lookup validates it before
+    -- playback; audits can therefore distinguish "ROM says slot 7" from
+    -- "no route" instead of silently substituting another clip.
+    ctx[i] = (ai ~= nil and ai >= 0 and ai < NONE16) and ai or NONE16
   end
   return ctx
 end
@@ -403,7 +408,7 @@ local function preparePack(data, species, moveRows, ctx)
   local idle = (idleIndex ~= NONE16) and anims[idleIndex + 1] or nil
   local static = idleIsBroken(data, idle)
 
-  w:raw("DSM4")
+  w:raw("DSM5")
   w:u16(species)
   w:u16(#bones)
   w:u16(#prims)
@@ -418,7 +423,9 @@ local function preparePack(data, species, moveRows, ctx)
 
   for m = 1, N_MOVES do
     local row = moveRows[m]
-    w:u16((row and row[1] < #anims) and row[1] or NONE16)
+    local selector = row and row[1] or nil
+    w:u16((selector ~= nil and selector >= 0 and selector < NONE16)
+      and selector or NONE16)
   end
   for m = 1, N_MOVES do
     local row = moveRows[m]
@@ -573,7 +580,7 @@ end
 
 -- Internal fast path used by the ROM exporter. `makeShiny` mutates only the
 -- model's texture pixels, exactly as the old two-call path did. The returned
--- values remain independent, byte-for-byte normal DSM4 packs, so Cache.read,
+-- values remain independent, byte-for-byte normal DSM5 packs, so Cache.read,
 -- Pack.parse and the public model API require no changes.
 function StadiumBuild.packPair(data, species, moveRows, ctx, makeShiny)
   local prepared = preparePack(data, species, moveRows, ctx)

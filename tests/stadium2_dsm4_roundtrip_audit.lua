@@ -58,7 +58,7 @@ local function assertTextureMap(primitive, firstTexture)
 end
 
 local function parse(bytes, label)
-  assert(type(bytes) == "string" and bytes:sub(1, 4) == "DSM4", label .. ": not DSM4")
+  assert(type(bytes) == "string" and bytes:sub(1, 4) == "DSM5", label .. ": not DSM5")
   local model, err = Pack.parse(bytes)
   assert(model, label .. ": " .. tostring(err))
   for index, prim in ipairs(model.prims or {}) do
@@ -151,6 +151,16 @@ local function parse(bytes, label)
         ("%s Aipom facial texture %d is missing"):format(label, textureIndex))
     end
   end
+  if model.species == 111 then
+    assert(#model.anims == 5 and model.anims[1].name == "idle"
+        and model.anims[1].frames == 75,
+      label .. " Rhyhorn exposed the runtime bind pose as animation zero")
+    assert(model.anims[4].name == "faint" and model.anims[5].name == "hit"
+        and Pack.contextSelector(model, "entrance") == 1
+        and Pack.contextSelector(model, "faint") == 3
+        and Pack.contextSelector(model, "hit") == 4,
+      label .. " Rhyhorn ROM animation selectors were not normalized")
+  end
   if model.species == 208 then
     local reflected = 0
     for _, prim in ipairs(model.prims or {}) do
@@ -190,10 +200,10 @@ local job = Extract.newJob(rom, writePack, writeSpecial)
 local steps = 0
 while job:step() do
   steps = steps + 1
-  if steps > 200000 then error("DSM4 import audit exceeded step budget") end
+  if steps > 200000 then error("DSM5 import audit exceeded step budget") end
 end
 assert(job.success, job.error)
 assert(ordinary == 502, ("ordinary pack count %d, expected 502"):format(ordinary))
 assert(special == 51, ("special pack count %d, expected 51"):format(special))
-print(("DSM4 roundtrip audit: ordinary=%d special=%d steps=%d failures=0")
+print(("DSM5 roundtrip audit: ordinary=%d special=%d steps=%d failures=0")
   :format(ordinary, special, steps))

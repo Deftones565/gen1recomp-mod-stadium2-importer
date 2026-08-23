@@ -108,6 +108,12 @@ ok(actor:play(4,false,7) and renderer.animation==4 and renderer.aux==7,
   "indexed animation helper")
 ok(actor:playAnimation("named",true),"explicit raw animation helper")
 ok(actor:playMove(85,true) and renderer.move==85,"move animation helper")
+ok(actor:playMove(251,true) and renderer.move==251,
+  "move animation helper covers the complete Stadium 2 move table")
+ok(type(Models.contextSelector)=="function"
+    and type(Models.moveSelector)=="function"
+    and capabilities.animation.selector,
+  "ROM selector inspection helpers are public")
 ok(actor:seekFrame(12) and renderer.frame==12,"frame seek helper")
 ok(actor:update(0.25,{weather="rain"}) and renderer.runtime.weather=="rain"
   and renderer.defer,"animation update and handler runtime")

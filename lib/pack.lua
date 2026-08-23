@@ -10,12 +10,16 @@ Pack.UNOWN_FORM_FIRST = 254
 Pack.UNOWN_FORM_LAST = 278
 
 Pack.CONTEXTS = {
-  "idle", "attack_default", "faint", "entrance", "reaction_169", "reaction_170",
-  "reaction_171", "reaction_172", "reaction_173", "reaction_174",
-  "struggle", "idle_alt", "faint_alt", "flinch", "reaction_179",
-  "reaction_180", "reaction_181", "reaction_182", "entrance_alt", "idle_return",
+  "idle", "entrance", "faint", "hit",
+  "rom_context_255", "rom_context_256", "rom_context_257",
+  "rom_context_258", "rom_context_259", "rom_context_260",
+  "rom_context_261", "rom_context_262", "rom_context_263",
+  "rom_context_264", "rom_context_265", "rom_context_266",
+  "rom_context_267", "rom_context_268", "rom_context_269",
+  "rom_context_270",
 }
-Pack.N_MOVES = 165
+Pack.N_MOVES = 251
+Pack.LEGACY_N_MOVES = 165
 Pack.NONE = 0xFFFF
 Pack.FPS = 30
 
@@ -121,7 +125,7 @@ local function readComponent(r, frames, fixed)
   return out
 end
 
-local function readHeader(r, m)
+local function readHeader(r, m, moveCount)
   m.species = r:u16()
   m.boneCount = r:u16()
   m.primCount = r:u16()
@@ -136,8 +140,8 @@ local function readHeader(r, m)
   m.moveAnim = {}
   m.moveAux = {}
   m.context = {}
-  for i = 1, Pack.N_MOVES do m.moveAnim[i] = r:u16() end
-  for i = 1, Pack.N_MOVES do m.moveAux[i] = r:i16() end
+  for i = 1, moveCount do m.moveAnim[i] = r:u16() end
+  for i = 1, moveCount do m.moveAux[i] = r:i16() end
   for i = 1, #Pack.CONTEXTS do m.context[i] = r:u16() end
 end
 
@@ -311,13 +315,24 @@ local function readAux(r, m)
   end
 end
 
+local function attachMoveMetadata(m)
+  for _, animation in ipairs(m.anims or {}) do animation.moveIds = {} end
+  for moveId, animationIndex in ipairs(m.moveAnim or {}) do
+    local animation = animationIndex ~= Pack.NONE
+      and m.anims and m.anims[animationIndex + 1] or nil
+    if animation then animation.moveIds[#animation.moveIds + 1] = moveId end
+  end
+end
+
 function Pack.parse(bytes)
-  if type(bytes) ~= "string" or bytes:sub(1, 4) ~= "DSM4" then return nil, "not a DSM4 pack" end
+  local magic = type(bytes) == "string" and bytes:sub(1, 4) or nil
+  if magic ~= "DSM4" and magic ~= "DSM5" then return nil, "not a DSM pack" end
   local baseEnd = extensionStart(bytes) - 1
   local ok, result = pcall(function()
     local r = newReader(bytes, baseEnd)
     local m = { bytes = bytes }
-    readHeader(r, m)
+    m.packVersion = magic
+    readHeader(r, m, magic == "DSM5" and Pack.N_MOVES or Pack.LEGACY_N_MOVES)
     if not Pack.validSpecies(m.species) then
       error("invalid DSM4 species", 0)
     end
@@ -330,6 +345,7 @@ function Pack.parse(bytes)
     normalizeFlameTextures(m)
     readAnimations(r, m)
     readAux(r, m)
+    attachMoveMetadata(m)
     if r.p - 1 ~= baseEnd then error("unexpected DSM4 base payload length", 0) end
     m.handlers = Handlers.readExtension(bytes)
     Materials.attach(m)
@@ -344,23 +360,35 @@ function Pack.parse(bytes)
   return result
 end
 
-function Pack.contextIndex(model, name)
+function Pack.contextSelector(model, name)
   if type(model) ~= "table" or type(name) ~= "string" then return nil end
   for i, context in ipairs(Pack.CONTEXTS) do
     if context == name then
       local index = model.context and model.context[i]
-      if index and index ~= Pack.NONE then return index + 1 end
+      if index and index ~= Pack.NONE then return index end
       return nil
     end
   end
   return nil
 end
 
-function Pack.moveIndex(model, move)
+function Pack.contextIndex(model, name)
+  local selector = Pack.contextSelector(model, name)
+  if selector and selector < #(model.anims or {}) then return selector + 1 end
+  return nil
+end
+
+function Pack.moveSelector(model, move)
   move = tonumber(move)
   if not (model and move and move >= 1 and move <= Pack.N_MOVES) then return nil end
   local index = model.moveAnim and model.moveAnim[move]
-  if index and index ~= Pack.NONE then return index + 1 end
+  if index and index ~= Pack.NONE then return index end
+  return nil
+end
+
+function Pack.moveIndex(model, move)
+  local selector = Pack.moveSelector(model, move)
+  if selector and selector < #(model.anims or {}) then return selector + 1 end
   return nil
 end
 

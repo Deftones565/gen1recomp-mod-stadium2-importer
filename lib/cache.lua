@@ -4,7 +4,7 @@
 -- does not rewrite and verify hundreds of separate records during import.
 local Cache = {}
 
-Cache.FORMAT = "S2IMP45"
+Cache.FORMAT = "S2IMP50"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"
@@ -47,8 +47,13 @@ end
 -- payloads before the engine's transactional write (tmp/main/backup plus
 -- verification reads), then unwrap them before returning from Cache.read.
 -- Existing raw caches and non-DSM test payloads remain valid.
+local function isModelPack(bytes)
+  local magic = type(bytes) == "string" and bytes:sub(1, 4) or nil
+  return magic == "DSM4" or magic == "DSM5"
+end
+
 local function encodeBlob(bytes)
-  if type(bytes) ~= "string" or #bytes < 1024 or bytes:sub(1, 4) ~= "DSM4" then
+  if type(bytes) ~= "string" or #bytes < 1024 or not isModelPack(bytes) then
     return bytes
   end
   local data = love and love.data
@@ -71,7 +76,7 @@ local function decodeBlob(bytes)
   end
   local ok, raw = pcall(data.decompress, "string", "lz4", bytes:sub(9))
   if not ok or type(raw) ~= "string" or #raw ~= rawLength
-      or raw:sub(1, 4) ~= "DSM4" then
+      or not isModelPack(raw) then
     return nil, "compressed cache payload is corrupt"
   end
   return raw
