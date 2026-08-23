@@ -6,6 +6,27 @@ The current `pret/pokestadiumgs` decomp at commit `c0e10f23d90cc4f335b654711f13e
 
 The retained Stadium GS reverse-engineering notes in `pret/pokestadium`, file `oldnotes/stadiumgs/main.s`, identify `0x27ED000..0x2D7D000` as the Pokémon models table and `0x2D7D000..0x3FD5000` as the Pokémon poses table. These boundaries are therefore treated as sourced layout facts. The species-to-record indexing and the internal pose structures are still subject to ROM audit.
 
+The same retained ROM map labels `0x1638000..0x1708000` as the Stadium models
+table. An exact-US-ROM audit resolves a valid 30-record archive at `0x1638000`;
+every record is PERS-SZP/Yay0 and decompresses to a FRAGMENT module. Unlike a
+Pokémon model module, mode zero of each field module returns its geo-layout
+pointer directly. The pointer is built by the entrypoint's `lui` at `0x3C` and
+the `addiu` in the `jr` delay slot at `0x44`. Across all 30 reachable layouts,
+the only static transform node is command `0x1F`: 122 instances matching
+`geo_layout.c::func_80018600` (s16 translation, degree rotation, percentage
+scale). `tools/dump_stadium2_arenas.lua` preserves those graph transforms and
+dumps all fields as OBJ/MTL/TGA plus their exact packed and decoded source.
+
+Arena lighting is authored as a hybrid rather than a field-local light rig.
+Across the 537 extracted draw batches, 507 carry RGB in the final Vtx bytes
+and are therefore already lit; only 30 carry signed normals and require the
+battle renderer's shared directional light. The reachable field display lists
+contain no valid pointer to a field-local N64 `Light`/`Lights` record. Primitive
+and environment RGBA still arrive through the phase-5 field callback. The live
+renderer consequently preserves the 507 prelit batches exactly and applies a
+modern ambient-plus-Lambert pass only to normal-bearing arena geometry and to
+Pokémon drawn in arena mode.
+
 The same notes identify `0x3FD5000..0x3FED000` as another table and describe the data beginning at `0x3FED000` as a file whose prefix appears to contain 253 records of 16 bytes. That region is treated as a species-metadata candidate until its fields and indexing are decoded.
 
 `pret/pokestadium/oldnotes/utils/cattbl.c` defines the archive-table format used by the old extraction work. The header is four big-endian 32-bit words: tag, zero, total size, and record count. The tag is either `0` or `0xEF`. Each record is four big-endian 32-bit words: relative offset, 16-byte-aligned size, zero, zero. Payload offsets and sizes are 16-byte aligned and must remain inside the table total size. `lib/rom.lua` now enforces these invariants.

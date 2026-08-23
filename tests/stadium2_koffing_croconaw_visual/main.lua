@@ -4,6 +4,11 @@ local Presentation
 local Camera
 local DynamicObject
 local TagFile
+local ArenaRom
+local ArenaFragment
+local ArenaHandlers
+local ArenaMaterials
+local ArenaPack
 local root
 local loadError
 local paused = false
@@ -33,6 +38,20 @@ local autoKeysApplied = false
 local shaderStyle = os.getenv("STADIUM2_VISUAL_SHADER") == "cel" and "cel" or "stadium"
 local rapidashCutEffect = os.getenv("STADIUM2_VISUAL_RAPIDASH_CUT_FX") ~= "0"
 local rapidashButtonHeld = false
+local arenaButtonHeld = false
+local cameraButtonHeld = false
+local arenaSceneEnabled = os.getenv("STADIUM2_VISUAL_SCENE") ~= "classic"
+local arenaIndex = math.max(0, math.min(29,
+  math.floor(tonumber(os.getenv("STADIUM2_VISUAL_ARENA")) or 0)))
+local arenaScale = tonumber(os.getenv("STADIUM2_VISUAL_ARENA_SCALE")) or 0.05
+local arenaYOffset = tonumber(os.getenv("STADIUM2_VISUAL_ARENA_Y")) or 0
+local arenaRomData
+local arenaArchive
+local arenaRenderer
+local arenaModel
+local arenaSource
+local arenaError
+local arenaUnhook
 local tagData
 local tagFilePath
 local tagEditing = false
@@ -317,6 +336,183 @@ local function showMessage(message)
   print("[stadium2-visual-test] " .. screenshotMessage)
 end
 
+local function arenaName(index)
+  return ("arena_%02d"):format(tonumber(index) or 0)
+end
+
+local function loadArenaSource()
+  local supplied = os.getenv("STADIUM2_VISUAL_ROM")
+  local romPath = supplied and supplied ~= "" and supplied
+    or (root .. "/mods/STADIUM2_IMPORTER/baseroms/stadium2.z64")
+  local file = io.open(romPath, "rb")
+  if file then
+    local raw = assert(file:read("*a"))
+    file:close()
+    local normalized, normaliseError = ArenaRom.normalise(raw)
+    if not normalized then return false, normaliseError end
+    if #normalized ~= ArenaRom.SIZE
+        or ArenaRom.title(normalized):upper() ~= ArenaRom.US_TITLE then
+      return false, "STADIUM2_VISUAL_ROM is not the supported Stadium 2 US ROM"
+    end
+    local archive = ArenaRom.archiveAt(normalized, ArenaRom.STADIUM_MODEL_TABLE_START)
+    if not archive or archive.count ~= ArenaRom.STADIUM_MODEL_TABLE_RECORDS then
+      return false, "the Stadium field archive is unavailable"
+    end
+    arenaRomData, arenaArchive, arenaSource = normalized, archive, romPath
+    return true
+  end
+
+  local dump = root .. "/mods/STADIUM2_IMPORTER/stadium2_arena_dump"
+  local fragmentPath = dump .. "/arena_00/arena_00.fragment"
+  if not fileExists(fragmentPath) then
+    return false, "no Stadium 2 ROM or stadium2_arena_dump was found"
+  end
+  arenaSource = dump
+  return true
+end
+
+local function arenaBytes(index)
+  if arenaRomData and arenaArchive then
+    local record = arenaArchive.records[index + 1]
+    local packed = record and ArenaRom.recordBytes(arenaRomData, record)
+    if not packed then return nil, "arena archive record is unavailable" end
+    return ArenaRom.decompress(packed)
+  end
+  if not arenaSource then return nil, "arena source is unavailable" end
+  local name = arenaName(index)
+  local path = arenaSource .. "/" .. name .. "/" .. name .. ".fragment"
+  local file, err = io.open(path, "rb")
+  if not file then return nil, err end
+  local bytes = assert(file:read("*a"))
+  file:close()
+  return bytes
+end
+
+local function loadArena(index)
+  index = math.floor(tonumber(index) or 0) % 30
+  local decoded, decodeError = arenaBytes(index)
+  if not decoded then
+    arenaError = tostring(decodeError)
+    return false, arenaError
+  end
+  ArenaFragment.setBase(0x8FF00000)
+  local model, extractError = ArenaFragment.extractStage(decoded, arenaName(index), index)
+  if not model then
+    arenaError = tostring(extractError)
+    return false, arenaError
+  end
+  -- The shared live renderer uses one uniform root-scale value. Stadium's
+  -- field archive authors the same 0.5 value on all three axes.
+  if type(model.rootScale) == "table" then
+    model.rootScaleVector = model.rootScale
+    model.rootScale = tonumber(model.rootScale[1]) or 1
+  end
+  model.staticPose = true
+  model.handlers = ArenaHandlers.readExtension(ArenaHandlers.packExtension(
+    ArenaHandlers.compile(model.fx, decoded, 0x8FF00000), 0x8FF00000,
+    decoded, { prims = model.prims, handlerTextures = model.handlerTextures }))
+  ArenaMaterials.attach(model)
+  -- Fragment extraction uses N64/OBJ-style zero-based slots. The live LOVE
+  -- renderer consumes the same one-based contract as parsed DSM packs.
+  for _, primitive in ipairs(model.prims or {}) do
+    primitive.tex = primitive.tex and primitive.tex >= 0
+      and primitive.tex + 1 or 0x10000
+    primitive.additive = primitive.blend == "add"
+    for i, vertexIndex in ipairs(primitive.idx or {}) do
+      primitive.idx[i] = vertexIndex + 1
+    end
+    for key, textureIndex in pairs(primitive.texMap or {}) do
+      primitive.texMap[key] = textureIndex + 1
+    end
+    for i, textureIndex in ipairs(primitive.fxFrames or {}) do
+      primitive.fxFrames[i] = textureIndex + 1
+    end
+  end
+  local renderer, rendererError = Importer.newRendererFromModel(model, {
+    shaderStyleProvider = function() return shaderStyle end,
+    textureFilter = "nearest",
+  })
+  if not renderer then
+    arenaError = tostring(rendererError)
+    return false, arenaError
+  end
+  if arenaRenderer and arenaRenderer.release then pcall(arenaRenderer.release, arenaRenderer) end
+  if arenaModel then ArenaPack.release(arenaModel) end
+  arenaIndex, arenaModel, arenaRenderer, arenaError = index, model, renderer, nil
+  warn(("ARENA_READY index=%02d prims=%d textures=%d source=%s")
+    :format(index, #model.prims, #model.textures, tostring(arenaSource)))
+  return true
+end
+
+local function cycleArena(delta)
+  local nextIndex = (arenaIndex + (tonumber(delta) or 0)) % 30
+  local ok, err = loadArena(nextIndex)
+  if ok then showMessage(("Stadium field %02d/29"):format(arenaIndex))
+  else showMessage("arena swap failed: " .. tostring(err)) end
+  return ok
+end
+
+local function cycleCameraMode(delta)
+  if not Camera then return false end
+  Camera.setArenaTarget(selectedSide)
+  Camera.cycleArenaMode(delta)
+  showMessage("Stadium camera " .. Camera.arenaModeLabel()
+    .. " / " .. selectedSide)
+  return true
+end
+
+local function arenaModelMatrix()
+  local scale = arenaScale
+  return {
+    scale, 0, 0, 0,
+    0, scale, 0, arenaYOffset,
+    0, 0, scale, 0,
+    0, 0, 0, 1,
+  }
+end
+
+local function drawArena(nextDraw, context)
+  if not arenaSceneEnabled or not arenaRenderer then return nextDraw() end
+  local environment = context.environment or {}
+  local shadow = context.shadow or {}
+  local matrix = arenaModelMatrix()
+  arenaRenderer.debugOnlyPrimitive = isolatePrimitive > 0 and isolatePrimitive or nil
+  local options = {
+    viewProjection = context.camera and context.camera.vp,
+    viewMatrix = context.camera and context.camera.view,
+    normalMatrix = {1,0,0, 0,1,0, 0,0,1},
+    lightDir = environment.light,
+    ambient = environment.ambient,
+    diffuse = environment.diffuse,
+    modernLighting = true,
+    tint = {1,1,1,1},
+    flipWinding = true,
+    sunMap = shadow.map,
+    sunVP = shadow.sunVP,
+    sunDark = shadow.sunDark,
+    sunBias = shadow.sunBias,
+    sunTexel = shadow.sunTexel,
+  }
+  local drawn, err = arenaRenderer:drawScene("opaque", matrix, options)
+  if drawn then drawn, err = arenaRenderer:drawScene("additive", matrix, options) end
+  if not drawn then
+    arenaError = tostring(err)
+    warn("ARENA_DRAW_FAILED " .. arenaError)
+    return nextDraw()
+  end
+  return context.marks
+end
+
+local function installArenaHook()
+  local Runtime = require("src.mods.Runtime")
+  if type(Runtime.hooks.wrap) ~= "function" then
+    local Hooks = require("src.mods.Hooks")
+    Runtime.install(Runtime.events, Hooks.new(), Runtime.errors)
+  end
+  arenaUnhook = Runtime.hooks:wrap("battle.scene.environment.v1",
+    drawArena, 1000, "stadium2-arena-visual")
+end
+
 local function animationTagPath()
   local supplied = os.getenv("STADIUM2_ANIMATION_TAGS_EXPORT")
   if supplied and supplied ~= "" then return supplied end
@@ -556,7 +752,16 @@ local function makeScene(resetView)
       Camera.update(1)
     end
   end
-  local nextScene = Presentation.newScene({ warn = warn, label = "Stadium 2 model viewer" })
+  local nextScene = Presentation.newScene({
+    warn = warn,
+    label = "Stadium 2 model viewer",
+    sceneMode = arenaSceneEnabled and arenaRenderer ~= nil and "arena" or "classic",
+    arenaMode = arenaSceneEnabled and arenaRenderer ~= nil,
+    arenaScale = arenaScale,
+    arenaGroundY = arenaYOffset,
+    arenaEnvironment = arenaModel and arenaModel.arenaLighting
+      and arenaModel.arenaLighting.environment or nil,
+  })
   nextScene.game = {
     world = {
       map = { def = { environment = "TOWN" } },
@@ -595,6 +800,17 @@ local function makeScene(resetView)
         :format(tostring(side), tonumber(actor.dex) or 0, tostring(renderer.shaderError)))
     end
   end
+  return true
+end
+
+local function toggleSceneMode()
+  if not arenaRenderer then
+    showMessage("arena unavailable")
+    return false
+  end
+  arenaSceneEnabled=not arenaSceneEnabled
+  makeScene(false)
+  showMessage(arenaSceneEnabled and "Arena battle scene" or "Classic battle scene")
   return true
 end
 
@@ -710,6 +926,51 @@ local function drawRapidashButton(g)
     x, y + 9, width, "center")
 end
 
+local function arenaButtonBounds()
+  local width = love.graphics.getWidth()
+  local groupWidth = math.min(300, math.max(210, width - 470))
+  local arrowWidth = 44
+  local x, y, height = width - groupWidth - 12, 12, 36
+  return x, y, arrowWidth, groupWidth - arrowWidth * 2, arrowWidth, height
+end
+
+local function drawArenaButtons(g)
+  local x, y, previousWidth, labelWidth, nextWidth, height = arenaButtonBounds()
+  g.setColor(.12, .14, .19, .94)
+  g.rectangle("fill", x, y, previousWidth, height, 6, 6)
+  g.rectangle("fill", x + previousWidth + labelWidth, y, nextWidth, height, 6, 6)
+  g.setColor(arenaSceneEnabled and arenaRenderer and .14 or .28,
+    arenaSceneEnabled and arenaRenderer and .38 or .16,
+    arenaSceneEnabled and arenaRenderer and .60 or .16, .94)
+  g.rectangle("fill", x + previousWidth + 3, y, labelWidth - 6, height, 6, 6)
+  g.setColor(.9, .93, 1, 1)
+  g.printf("<", x, y + 9, previousWidth, "center")
+  g.printf(not arenaRenderer and "ARENA UNAVAILABLE"
+      or arenaSceneEnabled and (("ARENA %02d / 29"):format(arenaIndex))
+      or "CLASSIC SCENE",
+    x + previousWidth, y + 9, labelWidth, "center")
+  g.printf(">", x + previousWidth + labelWidth, y + 9, nextWidth, "center")
+end
+
+local function cameraButtonBounds()
+  local x, _, previousWidth, labelWidth, nextWidth, height = arenaButtonBounds()
+  return x, 56, previousWidth, labelWidth, nextWidth, height
+end
+
+local function drawCameraButtons(g)
+  local x,y,previousWidth,labelWidth,nextWidth,height=cameraButtonBounds()
+  g.setColor(.12,.14,.19,.94)
+  g.rectangle("fill",x,y,previousWidth,height,6,6)
+  g.rectangle("fill",x+previousWidth+labelWidth,y,nextWidth,height,6,6)
+  g.setColor(.30,.22,.55,.94)
+  g.rectangle("fill",x+previousWidth+3,y,labelWidth-6,height,6,6)
+  g.setColor(.9,.93,1,1)
+  g.printf("<",x,y+9,previousWidth,"center")
+  local label=Camera and Camera.arenaModeLabel() or "FIELD"
+  g.printf("CAMERA "..label,x+previousWidth,y+9,labelWidth,"center")
+  g.printf(">",x+previousWidth+labelWidth,y+9,nextWidth,"center")
+end
+
 local function initialise()
   -- LOVE's distro boot scripts do not all honor conf.lua's appendidentity
   -- field.  Select it explicitly before SaveData or Storage touches the
@@ -737,6 +998,11 @@ local function initialise()
     Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
     DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
     TagFile = require("mods.STADIUM2_IMPORTER.lib.animation_tag_file")
+    ArenaRom = require("mods.STADIUM2_IMPORTER.lib.rom")
+    ArenaFragment = require("mods.STADIUM2_IMPORTER.lib.fragment")
+    ArenaHandlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
+    ArenaMaterials = require("mods.STADIUM2_IMPORTER.lib.materials")
+    ArenaPack = require("mods.STADIUM2_IMPORTER.lib.pack")
     loadAnimationTags()
     local shadowBias=tonumber(os.getenv("STADIUM2_VISUAL_SHADOW_BIAS"))
     if os.getenv("STADIUM2_VISUAL_DISABLE_SUN_SHADOW") == "1" or shadowBias then
@@ -747,6 +1013,15 @@ local function initialise()
       end
     end
     Importer.configure({ count = 251 })
+    local arenaSourceOk, arenaSourceError = loadArenaSource()
+    if arenaSourceOk then
+      installArenaHook()
+      local arenaOk, loadArenaError = loadArena(arenaIndex)
+      if not arenaOk then warn("ARENA_LOAD_FAILED " .. tostring(loadArenaError)) end
+    else
+      arenaError = tostring(arenaSourceError)
+      warn("ARENA_UNAVAILABLE " .. arenaError)
+    end
     if not Importer.available(251) then
       local started, err = Importer.autoImport()
       if not started then error(err or "Stadium 2 cache is stale and automatic re-import failed") end
@@ -805,7 +1080,7 @@ local function drawText(g)
     g.print("Drag mouse orbit/pitch   Wheel zoom", 24, 176)
     g.print("Q/E animation   R recenter   SPACE pause", 24, 194)
     g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 212)
-    g.print("0 all primitives   1-9 isolate   V shader   S shot   H/D/P debug", 24, 230)
+    g.print("0 all primitives   1-9 isolate   ,/. arena   B scene   C camera   V shader   S shot", 24, 230)
   end
   if debugPanel then
     local d = gasSnapshot()
@@ -838,6 +1113,8 @@ local function drawText(g)
     g.setColor(1, 1, 1, 1)
     g.print(screenshotMessage, 24, g.getHeight() - 34)
   end
+  drawArenaButtons(g)
+  drawCameraButtons(g)
   drawRapidashButton(g)
 end
 
@@ -885,6 +1162,7 @@ function love.update(dt)
   end
   if scene and not paused then
     Camera.update(dt)
+    if arenaRenderer then arenaRenderer:step(dt) end
     for _, actor in pairs(scene.actors or {}) do actor:update(dt) end
     applyDebugControls()
     ensureForcedGas()
@@ -943,6 +1221,7 @@ function love.keypressed(key)
     love.event.quit()
   elseif key == "tab" and Presentation then
     selectedSide = selectedSide == "enemy" and "player" or "enemy"
+    if Camera then Camera.setArenaTarget(selectedSide) end
     isolatePrimitive = 0
     applyDebugControls()
   elseif key == "left" and scene then
@@ -961,6 +1240,14 @@ function love.keypressed(key)
     cycleSelectedAnimation(-1)
   elseif key == "e" or key == "pagedown" then
     cycleSelectedAnimation(1)
+  elseif key == "," then
+    cycleArena(-1)
+  elseif key == "." then
+    cycleArena(1)
+  elseif key == "c" then
+    cycleCameraMode(1)
+  elseif key == "b" then
+    toggleSceneMode()
   elseif key == "t" then
     beginTagEdit()
   elseif key == "a" then
@@ -1015,6 +1302,39 @@ end
 
 function love.mousepressed(x, y, button)
   if button ~= 1 then return end
+  local ax, ay, previousWidth, labelWidth, nextWidth, arenaHeight = arenaButtonBounds()
+  if y >= ay and y <= ay + arenaHeight then
+    if x >= ax and x <= ax + previousWidth then
+      arenaButtonHeld = true
+      cycleArena(-1)
+      return
+    end
+    if x >= ax + previousWidth and x <= ax + previousWidth + labelWidth then
+      arenaButtonHeld = true
+      toggleSceneMode()
+      return
+    end
+    local nextX = ax + previousWidth + labelWidth
+    if x >= nextX and x <= nextX + nextWidth then
+      arenaButtonHeld = true
+      cycleArena(1)
+      return
+    end
+  end
+  local cx,cy,cPreviousWidth,cLabelWidth,cNextWidth,cameraHeight=cameraButtonBounds()
+  if y>=cy and y<=cy+cameraHeight then
+    if x>=cx and x<=cx+cPreviousWidth then
+      cameraButtonHeld=true
+      cycleCameraMode(-1)
+      return
+    end
+    local cameraNextX=cx+cPreviousWidth+cLabelWidth
+    if x>=cameraNextX and x<=cameraNextX+cNextWidth then
+      cameraButtonHeld=true
+      cycleCameraMode(1)
+      return
+    end
+  end
   local bx, by, width, height = rapidashButtonBounds()
   if x >= bx and y >= by and x <= bx + width and y <= by + height then
     rapidashButtonHeld = true
@@ -1023,11 +1343,16 @@ function love.mousepressed(x, y, button)
 end
 
 function love.mousereleased(_, _, button)
-  if button == 1 then rapidashButtonHeld = false end
+  if button == 1 then
+    rapidashButtonHeld = false
+    arenaButtonHeld = false
+    cameraButtonHeld = false
+  end
 end
 
 function love.mousemoved(x, y, dx, dy)
-  if Camera and not rapidashButtonHeld and love.mouse.isDown(1) then
+  if Camera and not rapidashButtonHeld and not arenaButtonHeld
+      and not cameraButtonHeld and love.mouse.isDown(1) then
     Camera.mouseOrbit(dx)
     Camera.mousePitch(dy)
   end
@@ -1039,6 +1364,12 @@ end
 
 function love.quit()
   if tagData and tagFilePath then TagFile.save(tagFilePath, tagData) end
+  if arenaUnhook then pcall(arenaUnhook); arenaUnhook = nil end
+  if arenaRenderer and arenaRenderer.release then
+    pcall(arenaRenderer.release, arenaRenderer)
+    arenaRenderer = nil
+  end
+  if arenaModel and ArenaPack then ArenaPack.release(arenaModel); arenaModel = nil end
   if scene then scene:release() end
   if Importer then Importer.releaseModels() end
 end

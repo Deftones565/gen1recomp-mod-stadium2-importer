@@ -95,6 +95,8 @@ local packed = Build.pack({
   bones = { { parent = -1, t = { 0, 0, 0 }, r = { 0, 0, 0 }, s = { 1, 1, 1 } } },
   prims = { { tex = 0, cull = 0, blend = "alpha", texAnim = -1,
     materialOffset = 0x40, callbackOffset = 0xA8,
+    arenaRenderProfile = 2, arenaSubmissionClass = 6,
+    arenaResetAfterDraw = true,
     pos = { 0, 0, 0, 1, 0, 0, 0, 1, 0 },
     uv = { 0, 0, 1, 0, 0, 1 },
     nrm = { 0, 0, 1, 0, 0, 1, 0, 0, 1 },
@@ -114,6 +116,13 @@ ok(packedHandlers.records[1].bone == 3, "real pack preserves handler bone")
 local parsed = assert(Pack.parse(packed))
 ok(parsed.prims[1].geometryMode == 0 and parsed.prims[1].vertexSemantics == "normal",
   "DSM4 primitive semantics roundtrip")
+ok(parsed.prims[1].arenaRenderProfile == 2
+    and parsed.prims[1].arenaSubmissionClass == 6
+    and parsed.prims[1].arenaSubmissionLayer == 6
+    and parsed.prims[1].arenaResetAfterDraw == true,
+  "ROM arena graph render state roundtrip")
+ok(parsed.prims[1].arenaRootRenderMode == 0x001041C8,
+  "ROM profile and submission class select the exact parent render mode")
 
 local state, deferred = Handlers.run(compiled, 0, { modelContext = "model-25" }, {})
 ok(state.modelContext == "model-25", "phase zero model registration")

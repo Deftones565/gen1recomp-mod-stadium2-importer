@@ -3,6 +3,8 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
 local Stage = require("mods.STADIUM2_IMPORTER.lib.battle_stage")
 local Sky = require("mods.STADIUM2_IMPORTER.lib.battle_sky")
+local Scene = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
+local StadiumBattleLayout = require("mods.STADIUM2_IMPORTER.lib.stadium_battle_layout")
 
 local checks=0
 local function ok(value,message)
@@ -43,6 +45,93 @@ local tiny={renderer={worldMetrics=function() return {height=52.25,radius=1} end
 local huge={renderer={worldMetrics=function() return {height=52.25,radius=999} end}}
 ok(Stage.radius(tiny)==Stage.MIN_RADIUS,"small model platform uses minimum footprint")
 ok(Stage.radius(huge)==Stage.MAX_RADIUS,"large model platform is bounded")
+
+local modelActor={
+  renderer={worldMetrics=function()
+    return {height=200,floor=-20,radius=50}
+  end},
+  scale=function() return 1 end,
+}
+local legacyScene=Scene.new({actors={player=modelActor,enemy=modelActor}})
+ok(legacyScene.sceneMode=="classic" and not legacyScene.arenaMode,
+  "legacy battle composition remains an explicit classic scene")
+local legacyMatrix=legacyScene:modelMatrix("enemy",modelActor)
+ok(legacyMatrix[12]==Stage.positions.enemy[3] and legacyMatrix[1]~=.05,
+  "legacy battle mode retains normalized presentation placement and scale")
+local arenaScene=Scene.new({actors={player=modelActor,enemy=modelActor},
+  arenaMode=true,arenaScale=.05,arenaGroundY=2})
+ok(arenaScene.sceneMode=="arena" and arenaScene.arenaMode,
+  "arena composition is isolated from the classic battle scene")
+ok(arenaScene:resolveEnvironment()==Scene.ARENA_ENVIRONMENT,
+  "arena composition uses neutral field lighting instead of the classic sky environment")
+arenaScene:setSceneMode("classic")
+ok(arenaScene.sceneMode=="classic" and not arenaScene.arenaMode,
+  "classic scene remains selectable after constructing an arena scene")
+arenaScene:setSceneMode("arena")
+local enemyArenaMatrix=arenaScene:modelMatrix("enemy",modelActor)
+local playerArenaMatrix=arenaScene:modelMatrix("player",modelActor)
+near(enemyArenaMatrix[3],-.05,1e-6,
+  "arena mode uses the field's ROM-to-world scale for Pokemon")
+near(enemyArenaMatrix[8],3,1e-6,
+  "arena mode grounds the Pokemon's real model floor")
+near(enemyArenaMatrix[4],7.5,1e-6,
+  "arena mode places the opponent at Stadium's +150 X field slot")
+near(playerArenaMatrix[4],-7.5,1e-6,
+  "arena mode places the player at Stadium's -150 X field slot")
+near(enemyArenaMatrix[12],0,1e-6,
+  "Stadium battle slots remain on the arena's Z centre line")
+local arenaEnemyPosition=arenaScene:actorPosition("enemy")
+near(arenaEnemyPosition[1],7.5,1e-6,
+  "arena camera and extension marks use the rendered opponent slot")
+near(arenaEnemyPosition[2],2,1e-6,
+  "arena camera and extension marks use the rendered field ground")
+
+Camera.recentre()
+local arenaFrame=Camera.arenaFrame(1280,720,{
+  scale=.05,groundY=2,actors={player=modelActor,enemy=modelActor},
+})
+near(arenaFrame.stadium.fov,math.rad(45),1e-8,
+  "arena mode uses Stadium 2's ROM battle-camera field of view")
+near(arenaFrame.stadium.near,1,1e-8,
+  "arena mode converts Stadium's 20-unit near plane with the field scale")
+near(arenaFrame.stadium.far,320,1e-8,
+  "arena mode converts Stadium's 6400-unit far plane with the field scale")
+near(arenaFrame.focus[2],5.52,1e-6,
+  "arena camera derives its vertical target from loaded model bounds")
+Camera.setArenaTarget("enemy")
+Camera.setArenaMode(1)
+local stadiumShot=Camera.arenaFrame(1280,720,{
+  scale=.05,groundY=2,actors={player=modelActor,enemy=modelActor},
+})
+ok(stadiumShot.stadium.preset==0 and stadiumShot.stadium.variant=="A"
+    and stadiumShot.stadium.target=="enemy",
+  "viewer can select the ROM's first opponent camera variant")
+Camera.setArenaMode(9)
+local wideStadiumShot=Camera.arenaFrame(1280,720,{
+  scale=.05,groundY=2,actors={player=modelActor,enemy=modelActor},
+})
+near(wideStadiumShot.stadium.fov,math.rad(60),1e-8,
+  "camera mode cycling preserves each ROM preset's authored FOV")
+Camera.setArenaMode(0)
+local legacyAfterArena=Camera.frame(1280,720)
+near(legacyAfterArena.focus[1],Camera.RIG.lookX,1e-8,
+  "arena camera construction does not replace the legacy Gold camera rig")
+
+local steelixActor={dex=208,renderer=modelActor.renderer,scale=modelActor.scale}
+local steelixMatrix=arenaScene:modelMatrix("enemy",steelixActor)
+near(steelixMatrix[4],0,1e-6,
+  "arena mode preserves Stadium's zero-origin Steelix placement override")
+for species,distance in pairs({[3]=185,[95]=225,[130]=200,[249]=200,[250]=185}) do
+  local playerSlot,playerYaw=StadiumBattleLayout.slot("player",species)
+  local enemySlot,enemyYaw=StadiumBattleLayout.slot("enemy",species)
+  ok(playerSlot[1]==-distance and enemySlot[1]==distance
+      and playerSlot[3]==0 and enemySlot[3]==0,
+    ("species %03d uses its fragment-79 X slot"):format(species))
+  near(playerYaw,math.pi*.5,1e-6,
+    ("species %03d player faces inward"):format(species))
+  near(enemyYaw,-math.pi*.5,1e-6,
+    ("species %03d opponent faces inward"):format(species))
+end
 
 local day=Sky.resolve({world={hour=function() return 12 end,daytime="DAY",map={def={environment="ROUTE"}}}})
 ok(day.outdoor and day.daytime=="DAY","route battle follows Gold daytime")

@@ -7,14 +7,19 @@
 local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
 local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
 local Stage = require("mods.STADIUM2_IMPORTER.lib.battle_stage")
+local StadiumBattleLayout = require("mods.STADIUM2_IMPORTER.lib.stadium_battle_layout")
 local Shadow = require("mods.STADIUM2_IMPORTER.lib.battle_shadow")
 local Sky = require("mods.STADIUM2_IMPORTER.lib.battle_sky")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
 local AA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
 local Extensions = require("mods.STADIUM2_IMPORTER.lib.battle_scene_extensions")
+local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 
 local Scene = {}
 Scene.__index = Scene
+Scene.MODE_CLASSIC="classic"
+Scene.MODE_ARENA="arena"
+Scene.ARENA_ENVIRONMENT=ArenaLighting.environment()
 local unpack=table.unpack or unpack
 local DEPTH_FORMATS={"depth24stencil8","depth24","depth16","depth32f"}
 
@@ -57,7 +62,32 @@ function Scene.init(self,opts)
   self.defect=nil
   self.warn=opts.warn or self.warn
   self.label=opts.label or self.label or "Stadium battle"
+  -- Opt-in only: the ordinary Gen 1/Gen 2 presentation keeps its established
+  -- normalized-height placement. Arena viewers can instead keep Stadium's
+  -- model and field coordinates in the same world-unit conversion.
+  self.sceneMode=(opts.sceneMode==Scene.MODE_ARENA or opts.arenaMode==true)
+    and Scene.MODE_ARENA or Scene.MODE_CLASSIC
+  -- Compatibility alias for API consumers that adopted arenaMode before the
+  -- two scene compositions were formally separated.
+  self.arenaMode=self.sceneMode==Scene.MODE_ARENA
+  self.arenaScale=tonumber(opts.arenaScale) or .05
+  self.arenaGroundY=tonumber(opts.arenaGroundY) or 0
+  self.arenaEnvironment=type(opts.arenaEnvironment)=="table"
+    and opts.arenaEnvironment or Scene.ARENA_ENVIRONMENT
   return self
+end
+
+function Scene:setSceneMode(mode)
+  self.sceneMode=mode==Scene.MODE_ARENA and Scene.MODE_ARENA
+    or Scene.MODE_CLASSIC
+  self.arenaMode=self.sceneMode==Scene.MODE_ARENA
+  self.readyFrame=false
+  return self.sceneMode
+end
+
+function Scene:resolveEnvironment()
+  if self.sceneMode==Scene.MODE_ARENA then return self.arenaEnvironment end
+  return Sky.resolve(self:environmentGame())
 end
 
 function Scene.new(opts)
@@ -114,7 +144,7 @@ end
 local function projectedMarks(self,frame,width,height)
   local marks={}
   for _,side in ipairs({"enemy","player"}) do
-    local p=Stage.positions[side]
+    local p=self:actorPosition(side)
     local x,y=Camera.project(frame,width,height,p)
     marks[side]={x=x,y=y,radius=Stage.radius(self:visualActor(side))}
   end
@@ -124,7 +154,7 @@ end
 local function extensionContext(self,g,frame,width,height,renderWidth,renderHeight,marks)
   local slots={}
   for _,side in ipairs({"enemy","player"}) do
-    local p=Stage.positions[side]
+    local p=self:actorPosition(side)
     slots[side]={position={p[1],p[2],p[3]},x=p[1],y=p[2],z=p[3]}
   end
   return {
@@ -143,7 +173,10 @@ local function extensionContext(self,g,frame,width,height,renderWidth,renderHeig
       horizonY=horizonY(frame,renderHeight),
     },
     world={
-      origin={0,0,0}, groundY=0, unitsPerTile=16, actorSlots=slots,
+      origin={0,self.arenaMode and self.arenaGroundY or 0,0},
+      groundY=self.arenaMode and self.arenaGroundY or 0,
+      unitsPerTile=self.arenaMode and 16*self.arenaScale or 16,
+      actorSlots=slots,
     },
     pixelScale={
       x=renderWidth/math.max(1,width),
@@ -154,7 +187,8 @@ local function extensionContext(self,g,frame,width,height,renderWidth,renderHeig
     marks=marks,
     scene={
       game=self:environmentGame(), screen=self.screen, battle=self.battle,
-      actors=self.actors, host=self, label=self.label,
+      actors=self.actors, host=self, label=self.label, mode=self.sceneMode,
+      arena=self.sceneMode==Scene.MODE_ARENA,
     },
   }
 end
@@ -221,6 +255,16 @@ function Scene:visualActor(side)
   return self.actors and self.actors[side] or nil
 end
 
+function Scene:actorPosition(side)
+  if self.arenaMode then
+    local actor=self:visualActor(side)
+    local slot=StadiumBattleLayout.slot(side,actor and actor.dex)
+    return {slot[1]*self.arenaScale,self.arenaGroundY,
+      slot[3]*self.arenaScale}
+  end
+  return Stage.positions[side]
+end
+
 function Scene:battlerMode(side)
   local modes=self.providerBattlerModes
   local mode=modes and modes[side]
@@ -235,6 +279,16 @@ end
 function Scene:modelMatrix(side,actor)
   actor=actor or self.actors[side]
   local metrics=actor.renderer:worldMetrics()
+  if self.arenaMode then
+    local k=self.arenaScale*actor:scale()*self:picScale(side)
+    local slot,yaw=StadiumBattleLayout.slot(side,actor.dex)
+    -- Stadium model bounds and field vertices use the same source units.
+    -- Fragment 79 authors X/Z and facing globally for every field. Ground the
+    -- extracted model's real floor to reproduce its model-derived Y offset.
+    return mul(translate(slot[1]*self.arenaScale,
+        self.arenaGroundY-metrics.floor*k,slot[3]*self.arenaScale),
+      mul(rotateY(yaw),scale(k))),yaw
+  end
   local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
   local k=worldHeight/metrics.height*actor:scale()*self:picScale(side)
   local p=Stage.positions[side]
@@ -286,8 +340,15 @@ function Scene:render(requestedWidth,requestedHeight)
   local previous=g.getCanvas and {g.getCanvas()} or nil
   local ok,err=pcall(function()
     g.setCanvas(sceneTarget(self))
-    self.environment=Sky.resolve(self:environmentGame())
-    local defaultFrame=Camera.frame(width,height)
+    self.environment=self:resolveEnvironment()
+    local defaultFrame
+    if self.arenaMode then
+      defaultFrame=Camera.arenaFrame(width,height,{
+        scale=self.arenaScale,groundY=self.arenaGroundY,actors=self.actors,
+      })
+    else
+      defaultFrame=Camera.frame(width,height)
+    end
     local initialMarks=projectedMarks(self,defaultFrame,width,height)
     local cameraCtx=extensionContext(self,g,defaultFrame,width,height,renderWidth,renderHeight,initialMarks)
     cameraCtx.cameraPhase="select"
@@ -311,7 +372,15 @@ function Scene:render(requestedWidth,requestedHeight)
     if g.setDepthMode then g.setDepthMode("always",false) end
     g.clear(clear[1] or 0,clear[2] or 0,clear[3] or 0,1,true,true)
     Extensions.background(ext,function()
-      Sky.paint(g,renderWidth,renderHeight,self.environment,frame)
+      -- Classic and Stadium arena backgrounds remain separate compositions.
+      -- Outdoor field geometry omits the parent battle cyclorama, so paint
+      -- only an explicitly attached arena backdrop. Enclosed arenas retain
+      -- their authored clear colour and never inherit the Gen 1/2 world sky.
+      if self.sceneMode==Scene.MODE_CLASSIC then
+        Sky.paint(g,renderWidth,renderHeight,self.environment,frame)
+      elseif self.environment.backdrop==true then
+        Sky.paint(g,renderWidth,renderHeight,self.environment,frame)
+      end
       return true
     end)
     restoreWorldTarget(self,g)
@@ -356,6 +425,7 @@ function Scene:render(requestedWidth,requestedHeight)
     g.setCanvas(sceneTarget(self))
 
     local providerMarks,stageErr=Extensions.environment(ext,function()
+      if self.sceneMode==Scene.MODE_ARENA then return marks end
       return Stage.draw(g,width,height,frame,self.actors,shadow,self.environment)
     end)
     if type(providerMarks)=="table" and providerMarks.player and providerMarks.enemy then
@@ -405,6 +475,7 @@ function Scene:render(requestedWidth,requestedHeight)
             normalMatrix=Renderer.normalMatrix(entry[2],0,false),
             lightDir=self.environment.light,ambient=self.environment.ambient,
             diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
+            modernLighting=self.sceneMode==Scene.MODE_ARENA,
             flipWinding=true,disableCulling=true,
             tint={base[1],base[2],base[3],1},
             flashAmount=actor.flash>0 and .5 or 0,

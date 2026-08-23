@@ -125,7 +125,7 @@ local function renderBytes(renderInfo)
   local prims = type(renderInfo) == "table" and (renderInfo.prims or renderInfo) or {}
   local textures = type(renderInfo) == "table" and renderInfo.handlerTextures or nil
   textures = type(textures) == "table" and textures or {}
-  local out = { "R5MD", p16(#prims), p16(#textures) }
+  local out = { "R6MD", p16(#prims), p16(#textures) }
   for _, prim in ipairs(prims) do
     out[#out + 1] = p32(prim.materialOffset ~= nil and prim.materialOffset or 0xFFFFFFFF)
     out[#out + 1] = p32(prim.callbackOffset ~= nil and prim.callbackOffset or 0xFFFFFFFF)
@@ -135,6 +135,10 @@ local function renderBytes(renderInfo)
       tonumber(color and color[2]) or 0xFF,
       tonumber(color and color[3]) or 0xFF,
       tonumber(color and color[4]) or 0xFF)
+    out[#out + 1] = string.char(
+      tonumber(prim.arenaRenderProfile) or 0xFF,
+      tonumber(prim.arenaSubmissionClass) or 0xFF,
+      prim.arenaResetAfterDraw == true and 1 or 0, 0)
   end
   for _, row in ipairs(textures) do
     out[#out + 1] = p32(row.commandOffset or 0xFFFFFFFF)
@@ -150,8 +154,10 @@ end
 local function readRenderBytes(data)
   if type(data) ~= "string" or #data < 8 then return nil end
   local magic = data:sub(1, 4)
-  if magic ~= "R3MD" and magic ~= "R4MD" and magic ~= "R5MD" then return nil end
-  local stride = magic == "R5MD" and 12 or (magic == "R4MD" and 8 or 4)
+  if magic ~= "R3MD" and magic ~= "R4MD" and magic ~= "R5MD"
+      and magic ~= "R6MD" then return nil end
+  local stride = magic == "R6MD" and 16
+    or (magic == "R5MD" and 12 or (magic == "R4MD" and 8 or 4))
   local count, textureCount = u16le(data, 4), u16le(data, 6)
   if not count or not textureCount or 8 + count * stride + textureCount * 16 > #data then return nil end
   local out = { primitiveMaterials = {}, primitiveCallbacks = {}, primitiveColors = {}, handlerTextures = {} }
@@ -168,6 +174,15 @@ local function readRenderBytes(data)
         byte(data, cursor + 8), byte(data, cursor + 9),
         byte(data, cursor + 10), byte(data, cursor + 11),
       }
+    end
+    if stride >= 16 then
+      local profile, submission = byte(data, cursor + 12), byte(data, cursor + 13)
+      out.primitiveArenaProfiles = out.primitiveArenaProfiles or {}
+      out.primitiveArenaSubmissions = out.primitiveArenaSubmissions or {}
+      out.primitiveArenaReset = out.primitiveArenaReset or {}
+      out.primitiveArenaProfiles[i] = profile ~= 0xFF and profile or nil
+      out.primitiveArenaSubmissions[i] = submission ~= 0xFF and submission or nil
+      out.primitiveArenaReset[i] = byte(data, cursor + 14) == 1
     end
     cursor = cursor + stride
   end
@@ -327,6 +342,16 @@ function Handlers.evaluate(record, phase, runtime)
   elseif record.family == "render-time-geometry-pipeline" then
     result.geometryPointer = record.argAddress
     result.geometryIndex = math.max(0, math.floor(tonumber(runtime.geometryIndex) or frame))
+    -- Stadium field descriptor 0x81000148 reads global counter selector 1.
+    -- Renderer.materialFrame is the modern equivalent of 0x80128C00 and must
+    -- keep advancing even though field models have no skeletal animation.
+    result.phase5Frame = math.max(0, math.floor(tonumber(runtime.materialFrame)
+      or tonumber(runtime.callbackFrame) or frame))
+  elseif record.family == "stage-transform-color" then
+    local scale = tonumber(runtime.stageScale or runtime.arenaScale) or 1
+    local color = runtime.stageColor or runtime.arenaColor or { 1, 1, 1, 1 }
+    result.stageScale = scale
+    result.color = { color[1] or 1, color[2] or 1, color[3] or 1, color[4] or 1 }
   end
   return result
 end
@@ -408,6 +433,9 @@ function Handlers.prepare(extension)
       program.geometry = dynamicObjectGeometry(extension, record)
     elseif record.family == "render-time-geometry-pipeline" then
       program.phase5Material = Phase5Geometry.materialSpec(extension.fragment,
+        extension.sourceBase, record.argOffset,
+        record.descriptor == 0x81000148 and 2 or 1)
+      program.phase5Controller = Phase5Geometry.controllerSpec(extension.fragment,
         extension.sourceBase, record.argOffset)
     end
     for _, texture in ipairs(extension.render and extension.render.handlerTextures or {}) do
@@ -422,6 +450,7 @@ function Handlers.prepare(extension)
     end
     if record.family ~= "model-context-register" and record.family ~= "runtime-dispatch-bridge"
         and record.family ~= "visibility-range-enable" and record.family ~= "visibility-range-disable"
+        and record.family ~= "stage-transform-color"
         and record.argOffset == nil then
       program.complete = false
       program.error = "missing callback argument"
@@ -522,6 +551,9 @@ function Handlers.run(records, phase, runtime, state)
           DynamicObject.updateState(state, key, result, runtime)
         elseif result.operation == "attribute-transform" then
           state.attributesBySite[key] = result
+        elseif result.operation == "stage-transform-color" then
+          state.stageScale = result.stageScale or 1
+          state.stageColor = result.color or { 1, 1, 1, 1 }
         elseif result.operation == "render-time-geometry-pipeline" then
           Phase5Geometry.apply(state, key, result)
         end

@@ -17,7 +17,17 @@ Registry.BY_DESCRIPTOR = {
   [0x81000078] = { target = 0x81003680, phases = { 2 }, family = "attribute-transform", confidence = "partial" },
   [0x81000080] = { target = 0x81005F80, phases = { 0 }, family = "model-context-register", confidence = "verified-behavior" },
   [0x81000088] = { target = 0x81003DAC, phases = { 0, 2 }, family = "runtime-dispatch-bridge", confidence = "partial" },
-  [0x81000140] = { target = 0x810033DC, phases = { 5 }, family = "render-time-geometry-pipeline", confidence = "verified-structure" },
+  [0x81000140] = { target = 0x810033DC, phases = { 5 }, family = "render-time-geometry-pipeline", confidence = "verified-structure",
+    submissionMode = 1 },
+  -- Stadium fields use the same func_810024E0 submission pipeline as model
+  -- callback 0x140, but select mode 2 so the authored primitive RGBA (alpha
+  -- included) is submitted without the live Pokemon fade override.
+  [0x81000148] = { target = 0x8100343C, phases = { 5 }, family = "render-time-geometry-pipeline", confidence = "verified-behavior",
+    submissionMode = 2 },
+  -- Phase 2 applies the shared field scale and RGBA to its graph node. The
+  -- battle overlays initialise these globals to 1.0 and FF/FF/FF/FF and may
+  -- change them for scene transitions.
+  [0x81000150] = { target = 0x81003768, phases = { 2 }, family = "stage-transform-color", confidence = "verified-behavior" },
 }
 
 local CONTRACTS = {
@@ -43,6 +53,8 @@ local CONTRACTS = {
     texturePolicy="preserve", argumentDecoder="model_handlers.runtimeDispatch" },
   ["render-time-geometry-pipeline"] = { ownership="following", geometry="state-only",
     texturePolicy="replace-untextured", argumentDecoder="render_callbacks.phase5_geometry" },
+  ["stage-transform-color"] = { ownership="none", geometry="none",
+    texturePolicy="preserve", argumentDecoder="model_handlers.stageTransformColor" },
 }
 for _, row in pairs(Registry.BY_DESCRIPTOR) do
   local contract = CONTRACTS[row.family]
@@ -56,6 +68,7 @@ Registry.FAMILY_IDS = {
   ["attribute-transform"] = 7, ["model-context-register"] = 8,
   ["runtime-dispatch-bridge"] = 9, ["render-time-geometry-pipeline"] = 10,
   ["flame-object-renderer"] = 11,
+  ["stage-transform-color"] = 12,
 }
 
 Registry.FAMILY_NAMES = {}

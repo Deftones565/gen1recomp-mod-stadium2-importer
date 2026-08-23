@@ -28,3 +28,6 @@ picked_stadium2.*
 *.[rR][aA][rR]
 
 *.glb
+
+# Generated Stadium battle-field exports (contain ROM-derived assets).
+/stadium2_arena_dump/

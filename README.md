@@ -34,6 +34,24 @@ If import does not start, confirm that:
 - Its MD5 is `1561c75d11cedf356a8ddb1a4a5f9d5d`.
 - The mod is installed and enabled for the current game.
 
+### Exporting the original Stadium battle fields
+
+The ROM contains 30 battle-field models in its archive at `0x01638000`. To
+dump all of them as OBJ/MTL models with TGA textures, run this from the
+Gen1Recomp repository root after importing the ROM:
+
+```bash
+luajit mods/STADIUM2_IMPORTER/tools/dump_stadium2_arenas.lua \
+  mods/STADIUM2_IMPORTER/baseroms/stadium2.z64 \
+  mods/STADIUM2_IMPORTER/stadium2_arena_dump
+```
+
+Each `arena_00` through `arena_29` directory also retains its exact packed
+PERS-SZP record and decompressed FRAGMENT for further research. `manifest.json`
+and `manifest.tsv` record ROM offsets, geometry counts, texture counts, and
+bounds. The dump directory is ignored by Git because it contains assets
+derived from the user's ROM and must not be distributed with the mod.
+
 ## Options
 
 - `STADIUM 2 MODELS` enables imported Stadium models. Disabling it preserves the generated model cache.

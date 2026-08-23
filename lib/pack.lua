@@ -422,8 +422,17 @@ function Pack.image(model, index)
   if not (love and love.image and love.image.newImageData and love.graphics and love.graphics.newImage) then return nil end
   local ok, image = pcall(function()
     local data = love.image.newImageData(slot.w, slot.h, "rgba8", slot.rgba)
-    local out = love.graphics.newImage(data)
-    if out.setFilter then out:setFilter("nearest", "nearest") end
+    local wantsMipmaps = model.staticPose == true and tonumber(model.species) == 0
+    local made, out = pcall(love.graphics.newImage, data,
+      wantsMipmaps and { mipmaps = true } or nil)
+    if not made then out = love.graphics.newImage(data) end
+    if out.setFilter then
+      out:setFilter(wantsMipmaps and "linear" or "nearest",
+        wantsMipmaps and "linear" or "nearest", wantsMipmaps and 16 or 1)
+    end
+    if wantsMipmaps and out.setMipmapFilter then
+      pcall(out.setMipmapFilter, out, "linear", 0)
+    end
     if out.setWrap then pcall(out.setWrap, out, "clamp", "clamp") end
     return out
   end)

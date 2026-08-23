@@ -4,7 +4,7 @@
 -- does not rewrite and verify hundreds of separate records during import.
 local Cache = {}
 
-Cache.FORMAT = "S2IMP51"
+Cache.FORMAT = "S2IMP52"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"
