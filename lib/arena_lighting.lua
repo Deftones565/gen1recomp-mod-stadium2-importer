@@ -47,7 +47,44 @@ local function copy3(value)
   return {value[1], value[2], value[3]}
 end
 
-function ArenaLighting.environment(stageIndex)
+local PARK_TIME = {
+  MORN = {
+    bands={{.63,.76,.93},{.70,.82,.96},{.78,.87,.97},{.86,.92,.98}},
+    modelTint={1,.96,.88}, ambient={.74,.71,.65}, diffuse={.26,.24,.20},
+    shadowStrength=.50,
+    arenaTint={1,.94,.84},
+  },
+  DAY = {
+    bands={{.55,.70,.91},{.60,.75,.94},{.67,.81,.96},{.76,.87,.97},{.84,.91,.98}},
+    modelTint={1,1,1}, ambient={AMBIENT,AMBIENT,AMBIENT},
+    diffuse={DIRECTIONAL,DIRECTIONAL,DIRECTIONAL}, shadowStrength=.62,
+    arenaTint={1,1,1},
+  },
+  EVE = {
+    bands={{.32,.40,.62},{.47,.50,.68},{.66,.59,.69},{.82,.68,.67}},
+    modelTint={1,.78,.66}, ambient={.58,.48,.44}, diffuse={.30,.23,.20},
+    shadowStrength=.43,
+    arenaTint={1,.72,.57},
+  },
+  NITE = {
+    bands={{.055,.075,.15},{.075,.105,.20},{.11,.15,.27},{.16,.21,.34}},
+    modelTint={.56,.64,.84}, ambient={.40,.44,.57}, diffuse={.18,.21,.30},
+    shadowStrength=.32,
+    arenaTint={.42,.50,.70},
+  },
+  DARK = {
+    bands={{.025,.035,.075},{.04,.055,.11},{.065,.085,.15}},
+    modelTint={.42,.48,.66}, ambient={.31,.34,.45}, diffuse={.13,.15,.22},
+    shadowStrength=.24,
+    arenaTint={.31,.36,.52},
+  },
+}
+
+local function replace3(result,name,source)
+  if source[name] then result[name]=copy3(source[name]) end
+end
+
+function ArenaLighting.environment(stageIndex,timeOfDay)
   local source = ArenaLighting.DEFAULT
   local result = {
     bands = {{source.bands[1][1], source.bands[1][2], source.bands[1][3]}},
@@ -66,6 +103,18 @@ function ArenaLighting.environment(stageIndex)
     result.backdrop = true
     result.outdoor = backdrop.outdoor == true
     result.backdropSource = backdrop.backdropSource
+  end
+  local period=tonumber(stageIndex)==28 and PARK_TIME[tostring(timeOfDay or ""):upper()]
+  if period then
+    result.bands={}
+    for index,band in ipairs(period.bands) do result.bands[index]=copy3(band) end
+    replace3(result,"ambient",period)
+    replace3(result,"diffuse",period)
+    replace3(result,"modelTint",period)
+    replace3(result,"arenaTint",period)
+    result.shadowStrength=period.shadowStrength
+    result.timeOfDay=tostring(timeOfDay):upper()
+    result.source=result.source.."+beta-gen2-time-of-day"
   end
   return result
 end

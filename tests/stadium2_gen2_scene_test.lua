@@ -100,6 +100,26 @@ near(arenaFrame.stadium.far,320,1e-8,
   "arena mode converts Stadium's 6400-unit far plane with the field scale")
 near(arenaFrame.focus[2],5.52,1e-6,
   "arena camera derives its vertical target from loaded model bounds")
+
+-- Battle Cinematics and older camera providers wrap the exported frame seam.
+-- Arena mode must enter that same function while still presenting the arena's
+-- ROM-authored frame as the provider fallback.
+local nativeFrame=Camera.frame
+local sawArenaFallback=false
+Camera.frame=function(width,height)
+  local frame=nativeFrame(width,height)
+  sawArenaFallback=frame.stadium~=nil
+  frame.externalCameraOwner="test"
+  return frame
+end
+local bridgedArenaFrame=Camera.sceneFrame(1280,720,{
+  arena=true,scale=.05,groundY=2,actors={player=modelActor,enemy=modelActor},
+})
+ok(sawArenaFallback and bridgedArenaFrame.externalCameraOwner=="test",
+  "arena camera enters the same replaceable Camera.frame seam as classic mode")
+near(bridgedArenaFrame.stadium.near,1,1e-8,
+  "yielding external camera preserves the ROM-authored arena frame")
+Camera.frame=nativeFrame
 Camera.setArenaTarget("enemy")
 Camera.setArenaMode(1)
 local stadiumShot=Camera.arenaFrame(1280,720,{

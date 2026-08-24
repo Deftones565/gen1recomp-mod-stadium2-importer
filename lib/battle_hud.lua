@@ -15,6 +15,10 @@ Hud.HUD_RECT = {
 -- Keep this as its own centred layer instead of letting it ride inside the
 -- player HUD band: the wide compositor snaps that band to the far screen edge.
 Hud.NICKNAME_MODAL_RECT = { 112, 56, 48, 40 }
+-- Crystal's MoveInfoBox is 11x5 tiles at (0,8). Its bottom tile row overlaps
+-- the ordinary lower battle band (y=96..143), so only the otherwise-lost
+-- upper 32 pixels need a separate compositor pass.
+Hud.CRYSTAL_MOVE_INFO_RECT = { 0, 64, 88, 32 }
 local unpack = table.unpack or unpack
 
 local frost, blurA, blurB, shader, gaugeShader, uiLayer, hudOnlyLayer, modalOnlyLayer
@@ -145,10 +149,24 @@ local function keyedPaperRect(x,y,w,h)
     or yesNo
 end
 
+local function crystalMovePaperRect(x,y,w,h)
+  -- MoveSelectionScreen type 0 draws two additional boxes over the ordinary
+  -- bottom message window: MoveInfoBox at (0,8,11,5), and the move-name list
+  -- at (4,12,16,6). Key only their opaque paper; Chrome's outlines, glyphs,
+  -- cursor and PP values are separate draws and remain untouched.
+  return (x==0 and y==64 and w==88 and h==40)
+    or (x==32 and y==96 and w==128 and h==48)
+end
+
 -- Exposed for the headless layout regression. All native Yes/No paper is
 -- removed: the compositor supplies the same frosted backing as the HUD.
 function Hud.keysPaperRect(x,y,w,h)
   return keyedPaperRect(x,y,w,h)
+end
+
+
+function Hud.keysCrystalMovePaperRect(x,y,w,h)
+  return crystalMovePaperRect(x,y,w,h)
 end
 
 function Hud.layer(draw,opts)
@@ -164,7 +182,9 @@ function Hud.layer(draw,opts)
     -- bars, sprites and animation objects still draw normally.
     g.rectangle=function(mode,x,y,w,h,...)
       local r,gg,b,a=g.getColor()
-      local paper=keyedPaperRect(x,y,w,h)
+      local crystalMovePaper=opts and opts.crystalMovePane
+        and crystalMovePaperRect(x,y,w,h)
+      local paper=keyedPaperRect(x,y,w,h) or crystalMovePaper
       if mode=="fill" and paper and r>.94 and gg>.94 and b>.94
           and (a or 1)>.94 then return end
       return rectangle(mode,x,y,w,h,...)
@@ -338,6 +358,8 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
   local ps=layout.panelScale or s
   local statusOwned=scene.statusHudOwned~=false
   local bottomVisible=scene.bottomUiVisible~=false
+  local crystalMovePane=scene.crystalMovePane==true
+    and screen.phase=="moves" and bottomVisible
   -- The detached Stadium HUD follows REAL battle visibility only.  Do not
   -- inherit BattleAnimClearHud here: that flag exists to blank the attacker's
   -- native BG HUD while a 2D move animation owns those tiles.  Detached
@@ -354,6 +376,10 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
     panel(scene,{layout.playerPanelX,layout.playerPanelY,pr[3]*ps,pr[4]*ps})
   end
   if bottomVisible then panel(scene,{box.lx,box.ly+96*s,160*s,48*s}) end
+  if crystalMovePane then
+    local r=Hud.CRYSTAL_MOVE_INFO_RECT
+    panel(scene,{box.lx+r[1]*s,box.ly+r[2]*s,r[3]*s,r[4]*s})
+  end
   g.setColor(1,1,1,1)
   local oldShader=g.getShader and g.getShader() or nil
   -- A different UI provider owns its own colors/alpha. Stadium's native-paper
@@ -371,6 +397,11 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
   if not statusOwned then ex,px=box.lx,box.lx end
   g.draw(upper,enemy,ex,layout.enemyY,0,ps,ps)
   g.draw(upper,player,px,layout.playerY,0,ps,ps)
+  if crystalMovePane then
+    local r=Hud.CRYSTAL_MOVE_INFO_RECT
+    local moveInfo=g.newQuad(r[1],r[2],r[3],r[4],160,144)
+    g.draw(layer,moveInfo,box.lx+r[1]*s,box.ly+r[2]*s,0,s,s)
+  end
   g.draw(layer,lower,box.lx,box.ly+96*s,0,s,s)
   if key then g.setShader(oldShader) end
 

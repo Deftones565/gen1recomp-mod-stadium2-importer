@@ -78,17 +78,9 @@ end
 function Scene.new(battle)
   local opts=actorOptions()
   local self=setmetatable({},Scene)
-  local arena,arenaError
-  if Importer.betaArenaEnabled() then
-    arena,arenaError=ArenaRuntime.random(battle,Importer)
-    if not arena then
-      warn("BETA ARENA TEST could not load a field; using the classic scene: "
-        ..tostring(arenaError))
-    end
-  end
   Presentation.init(self,{
     actors={player=Actor.new("player",opts),enemy=Actor.new("enemy",opts)},
-    warn=warn,label="Gen 1 battle",arena=arena,arenaMode=arena~=nil,
+    warn=warn,label="Gen 1 battle",
   })
   self.battle=battle
   self.game=battle and battle.game

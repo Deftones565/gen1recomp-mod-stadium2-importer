@@ -111,6 +111,7 @@ Camera.ZOOM_TIME = .18
 
 local state = { time=0, orbit=0, orbitGoal=0, pitch=0, pitchGoal=0,
   zoom=1, zoomGoal=1, arenaMode=0, arenaTarget="enemy" }
+local sceneFrameContext
 local tau = math.pi * 2
 local LOVE_CANVAS_Y = {1,0,0,0, 0,-1,0,0, 0,0,1,0, 0,0,0,1}
 local atan2 = math.atan2 or function(y,x) return math.atan(y,x) end
@@ -345,6 +346,15 @@ function Camera.arenaFrame(width,height,opts)
 end
 
 function Camera.frame(width, height)
+  -- Every owned battle scene enters through Camera.frame, including arena
+  -- composition. Camera mods historically wrap this exported function to
+  -- take camera authority. Keep the ROM-authored arena solve as the native
+  -- answer inside that same seam so an external owner can call its captured
+  -- provider frame, modify it, or yield without needing arena-specific code.
+  local active=sceneFrameContext
+  if active and active.arena==true then
+    return Camera.arenaFrame(width,height,active)
+  end
   local rig = Camera.RIG
   local drift = math.sin(state.time * tau / Camera.PAN_PERIOD) * Camera.PAN_YAW
   local yaw = drift-state.orbit*orbitRange()
@@ -388,6 +398,20 @@ function Camera.frame(width, height)
     eye={ex,eyeY,ez}, focus={rig.lookX,rig.lookY,0},
     letterbox={lx=ox,ly=oy,scale=fit,pw=width,ph=height},
   }
+end
+
+-- Scene-only dispatcher. It deliberately invokes the current Camera.frame
+-- field rather than a captured function: a camera mod may have replaced that
+-- public seam after loading Stadium 2 Importer. The scoped context lets the
+-- captured native frame return the correct classic/arena fallback and is
+-- always restored, including when an external camera raises.
+function Camera.sceneFrame(width,height,context)
+  local previous=sceneFrameContext
+  sceneFrameContext=type(context)=="table" and context or nil
+  local result={pcall(Camera.frame,width,height)}
+  sceneFrameContext=previous
+  if not result[1] then error(result[2],0) end
+  return result[2]
 end
 
 function Camera.project(frame, width, height, point)

@@ -138,13 +138,14 @@ function Scene:drawArena(context,marks)
     0,0,0,1,
   }
   local camera=context and context.camera or {}
+  local tint=environment.arenaTint or {1,1,1}
   local options={
     viewProjection=camera.viewProjection or camera.vp,
     viewMatrix=camera.view,
     normalMatrix={1,0,0,0,1,0,0,0,1},
     lightDir=environment.light,ambient=environment.ambient,
     diffuse=environment.diffuse,modernLighting=true,
-    tint={1,1,1,1},flipWinding=true,
+    tint={tint[1] or 1,tint[2] or 1,tint[3] or 1,1},flipWinding=true,
     sunMap=shadow.map,sunVP=shadow.sunVP,
     sunDark=shadow.sunDark,sunBias=shadow.sunBias,sunTexel=shadow.sunTexel,
   }
@@ -386,11 +387,12 @@ function Scene:render(requestedWidth,requestedHeight)
     self.environment=self:resolveEnvironment()
     local defaultFrame
     if self.arenaMode then
-      defaultFrame=Camera.arenaFrame(width,height,{
+      defaultFrame=Camera.sceneFrame(width,height,{
+        arena=true,
         scale=self.arenaScale,groundY=self.arenaGroundY,actors=self.actors,
       })
     else
-      defaultFrame=Camera.frame(width,height)
+      defaultFrame=Camera.sceneFrame(width,height)
     end
     local initialMarks=projectedMarks(self,defaultFrame,width,height)
     local cameraCtx=extensionContext(self,g,defaultFrame,width,height,renderWidth,renderHeight,initialMarks)

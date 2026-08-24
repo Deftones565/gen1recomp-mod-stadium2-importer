@@ -9,13 +9,14 @@ end
 package.loaded["mods.STADIUM2_IMPORTER.lib.importer"] = nil
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 local models, battle, shader, rapidashCut = true, true, "stadium", true
-local betaArena = false
+local betaArena, betaTod = false, false
 Importer.bind({ options={ get=function(_, key)
   if key == "stadium2_models" then return models end
   if key == "stadium2_battle" then return battle end
   if key == "stadium2_shader" then return shader end
   if key == "stadium2_rapidash_cut_fx" then return rapidashCut end
   if key == "stadium2_beta_arena_test" then return betaArena end
+  if key == "stadium2_beta_arena_tod" then return betaTod end
 end } })
 ok(Importer.modelsEnabled(), "Stadium 2 models default/ON state is enabled")
 ok(Importer.battleEnabled(), "Stadium 2 carried 3D battle default/ON state is enabled")
@@ -28,6 +29,10 @@ ok(not Importer.betaArenaEnabled(), "unfinished Stadium fields remain opt-in")
 betaArena=true
 ok(Importer.betaArenaEnabled(), "beta arena setting reaches the battle adapters")
 betaArena=false
+ok(not Importer.betaArenaTimeOfDayEnabled(), "beta Park time-of-day remains independently opt-in")
+betaTod=true
+ok(Importer.betaArenaTimeOfDayEnabled(), "beta Park time-of-day setting reaches arena lighting")
+betaTod=false
 shader = "cel"
 ok(Importer.shaderStyle() == "cel", "cel-shaded model option reaches the renderer configuration")
 shader = "invalid"
@@ -54,9 +59,12 @@ ok(main:find('key="stadium2_rapidash_cut_fx"',1,true)~=nil
     and main:find('type="toggle", default=true',1,true)~=nil,
   "importer exposes the opt-in Rapidash cut-particle option")
 ok(main:find('key="stadium2_beta_arena_test"',1,true)~=nil
-    and main:find('label="BETA ARENA TEST"',1,true)~=nil
+    and main:find('label="BETA CONTEXT ARENAS"',1,true)~=nil
     and main:find('type="toggle", default=false',1,true)~=nil,
-  "importer exposes unfinished random arenas as a default-OFF beta option")
+  "importer exposes contextual Gen 2 arenas as a default-OFF beta option")
+ok(main:find('key="stadium2_beta_arena_tod"',1,true)~=nil
+    and main:find('label="BETA PARK TIME OF DAY"',1,true)~=nil,
+  "importer exposes Park time-of-day lighting as a separate beta option")
 ok(main:find('label="STADIUM 2 BATTLE"', 1, true) ~= nil, "battle option uses the requested Stadium label")
 ok(not main:find("lib.battle_stage", 1, true), "stage wiring stays outside the bootstrap")
 ok(not main:find("RENDER QUALITY", 1, true) and not main:find("TEXTURE FILTERING", 1, true), "no unrelated Stadium renderer options are exposed")

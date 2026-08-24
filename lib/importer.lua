@@ -158,6 +158,15 @@ function Importer.betaArenaEnabled()
   return false
 end
 
+function Importer.betaArenaTimeOfDayEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,
+      "stadium2_beta_arena_tod")
+    if ok then return value==true end
+  end
+  return false
+end
+
 local function rendererOptions(options)
   local out = {}
   for key, value in pairs(type(options) == "table" and options or {}) do

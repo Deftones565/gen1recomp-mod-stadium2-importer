@@ -79,8 +79,10 @@ return function(mod)
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
-    { key="stadium2_beta_arena_test", label="BETA ARENA TEST", type="toggle", default=false,
-      help="Experimental: use one random unfinished Stadium 2 field for each new encounter. Turn OFF to use the established classic battle scene." },
+    { key="stadium2_beta_arena_test", label="BETA CONTEXT ARENAS", type="toggle", default=false,
+      help="Experimental, Gen 2 only: select Stadium 2 fields from the current gym, story battle, or indoor/outdoor encounter. Surfing keeps the classic scene; fishing uses Free Battle Park." },
+    { key="stadium2_beta_arena_tod", label="BETA PARK TIME OF DAY", type="toggle", default=false,
+      help="Experimental: when context arenas are enabled, tint Free Battle Park for Gen 2 morning, day, or night. Turn OFF for the arena's normal lighting." },
   })
 
   -- DSM animations are authored at 30 Hz, but advance from presented-frame
@@ -108,6 +110,7 @@ return function(mod)
   mod.exports.shaderStyle = Importer.shaderStyle
   mod.exports.rapidashCutEffectEnabled = Importer.rapidashCutEffectEnabled
   mod.exports.betaArenaEnabled = Importer.betaArenaEnabled
+  mod.exports.betaArenaTimeOfDayEnabled = Importer.betaArenaTimeOfDayEnabled
   mod.exports.battleStatus = Battle.status
   mod.exports.configureGame = Battle.configureGame
   mod.exports.presentation = BattlePresentation
@@ -233,8 +236,60 @@ return function(mod)
   end
 
 
+  local mapContext,pendingEncounter,lastTimeOfDay
+  mod.events:on("map.entered",function(ev)
+    local map=ev and ev.map
+    local def=map and map.def
+    local environment=def and def.environment
+    local outside
+    if environment~=nil then
+      outside=environment=="TOWN" or environment=="ROUTE"
+    end
+    mapContext={mapId=ev and ev.mapId or map and map.id,
+      environment=environment,outside=outside}
+    pendingEncounter=nil
+  end)
+
+  -- Observe the official chains without changing their answers. A successful
+  -- water roll is the engine's authoritative signal that a wild fight began
+  -- while surfing; fishing has its separate battleType on battle.started.
+  mod.hooks:wrap("encounter.species",function(next,enc,ctx)
+    local out=next(enc,ctx)
+    if out~=nil then
+      pendingEncounter={mapId=ctx and ctx.mapId,terrain=ctx and ctx.terrain,
+        environment=ctx and ctx.environment,timeOfDay=ctx and ctx.daytime}
+    end
+    return out
+  end,95)
+  mod.hooks:wrap("world.tod",function(next,tod,ctx)
+    local out=next(tod,ctx)
+    local hour=tonumber(ctx and ctx.hour)
+    -- Gen 2 calls 18:00 onward NITE. Preserve its authoritative period but
+    -- split the first three hours into a presentation-only warm evening; no
+    -- world clock, palette, encounter table, or other mod sees this alias.
+    lastTimeOfDay=out=="NITE" and hour and hour>=18 and hour<21 and "EVE" or out
+    return out
+  end,95)
+  mod.events:on("world.stepped",function() pendingEncounter=nil end)
+
   mod.events:on("battle.started", function(ev)
-    Battle.ensure(ev and ev.battle)
+    local current=mod.world and mod.world.current and mod.world:current() or nil
+    local mapId=current and current.mapId or mapContext and mapContext.mapId
+    local mapped=mapContext and mapContext.mapId==mapId and mapContext or nil
+    local encounter=pendingEncounter and pendingEncounter.mapId==mapId
+      and pendingEncounter or nil
+    local battle=ev and ev.battle
+    Battle.ensure(battle,{
+      generation=Battle.status().generation,mapId=mapId,
+      environment=(encounter and encounter.environment) or (mapped and mapped.environment),
+      outside=mapped and mapped.outside or nil,
+      terrain=encounter and encounter.terrain or nil,
+      timeOfDay=lastTimeOfDay or (encounter and encounter.timeOfDay),
+      kind=ev and ev.kind,trainerId=ev and ev.trainerId,
+      battleType=ev and ev.battleType,
+      battleTower=battle and battle.inBattleTowerBattle==true,
+    })
+    pendingEncounter=nil
   end)
 
   mod.events:on("battle.ended", function(ev)

@@ -70,6 +70,19 @@ ok(Hud.keysPaperRect(112,56,48,40),
   "nickname Yes/No paper is keyed for the same glass compositor as the HUD")
 ok(Hud.keysPaperRect(8,56,48,40),
   "shift Yes/No paper uses the same glass treatment")
+ok(Hud.CRYSTAL_MOVE_INFO_RECT[1]==0
+    and Hud.CRYSTAL_MOVE_INFO_RECT[2]==64
+    and Hud.CRYSTAL_MOVE_INFO_RECT[3]==88
+    and Hud.CRYSTAL_MOVE_INFO_RECT[4]==32,
+  "Crystal move info keeps only the native rows missing from the lower band")
+ok(Hud.keysCrystalMovePaperRect(0,64,88,40),
+  "Crystal TYPE/PP window paper is replaced by Stadium glass")
+ok(Hud.keysCrystalMovePaperRect(32,96,128,48),
+  "Crystal move-list window paper is replaced by Stadium glass")
+ok(not Hud.keysCrystalMovePaperRect(0,96,160,48),
+  "Crystal-specific key does not broaden the ordinary bottom-window key")
+ok(not Hud.keysCrystalMovePaperRect(32,96,120,48),
+  "Crystal move-list key requires the engine's exact authored rectangle")
 -- Other in-battle Yes/No boxes still use the centred upper-band fallback.
 screen.phase="ask-shift"
 layout=Hud.layout(scene,screen)
@@ -130,6 +143,32 @@ ok(draws[1].tex==hudOnly and draws[1].quad.y==0,
   "attack frame enemy status comes from persistent HUD-only capture")
 ok(draws[2].tex==hudOnly and draws[2].quad.y==48,
   "attack frame player status comes from persistent HUD-only capture")
+
+-- Crystal's move selector adds a TYPE/PP window above the ordinary bottom
+-- band. Restore only its upper 32 pixels; the final eight pixels are already
+-- present in the lower-band draw. Other Gen 2 games must not gain this pass.
+draws={}
+local crystalScene={width=1280,height=720,
+  hudBox={lx=320,ly=72,scale=4},presentCanvas=clean,
+  crystalMovePane=true}
+local moveScreen={showEnemyTrainer=false,showPlayerTrainer=false,
+  showEnemyHud=true,showPlayerHud=true,tutorial=false,phase="moves",
+  messageTimer=0,hudCleared=function() return false end}
+assert(Hud.composite(crystalScene,moveScreen,full,hudOnly,nil))
+ok(draws[3].tex==full and draws[3].quad.x==0 and draws[3].quad.y==64
+    and draws[3].quad.w==88 and draws[3].quad.h==32
+    and draws[3].x==320 and draws[3].y==328,
+  "Crystal restores the complete raised TYPE/PP pane at its authored position")
+ok(draws[4].tex==full and draws[4].quad.y==96,
+  "Crystal still draws the shared lower move-list band once")
+ok(#draws==4,
+  "Crystal move selection adds exactly one source-layer composition pass")
+
+draws={}
+crystalScene.crystalMovePane=false
+assert(Hud.composite(crystalScene,moveScreen,full,hudOnly,nil))
+ok(#draws==3 and draws[3].quad.y==96,
+  "Gold and Silver do not receive Crystal's additional move-info pane")
 
 -- Cooperative ownership regression: when another UI mod returns false from
 -- the official status/bottom hooks, Stadium must not use its detached HUD or

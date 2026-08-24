@@ -44,8 +44,8 @@ function Router.update(dt)
   return implementation and implementation.update(dt) or false
 end
 
-function Router.ensure(battle)
-  return implementation and implementation.ensure(battle) or false
+function Router.ensure(battle,context)
+  return implementation and implementation.ensure(battle,context) or false
 end
 
 function Router.finish(...)

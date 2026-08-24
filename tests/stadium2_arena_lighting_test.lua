@@ -32,6 +32,16 @@ ok(park.backdrop == true and park.outdoor == true and #park.bands == 5,
   "Academy park supplies an edge clear behind its ROM cyclorama")
 ok(ArenaLighting.environment(27).backdrop ~= true,
   "enclosed arena does not inherit the classic battle sky")
+local evening = ArenaLighting.environment(28,"EVE")
+local night = ArenaLighting.environment(28,"NITE")
+ok(evening.timeOfDay=="EVE" and evening.modelTint[2]<1
+    and evening.arenaTint[2]<evening.arenaTint[1],
+  "beta Park evening profile warms models and ROM-prelit field geometry")
+ok(night.timeOfDay=="NITE" and night.bands[1][3]>night.bands[1][1]
+    and night.shadowStrength<park.shadowStrength,
+  "beta Park night profile is darker, cooler, and softens shadows")
+ok(ArenaLighting.environment(27,"NITE").timeOfDay==nil,
+  "time-of-day profiles never leak into indoor fields")
 
 local colorState = Renderer.primitiveRenderState({stageIndex=0}, model.prims[1], {})
 local normalState = Renderer.primitiveRenderState({stageIndex=0}, model.prims[3], {})

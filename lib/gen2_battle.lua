@@ -11,8 +11,11 @@ local Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
 local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
+local ArenaSelector = require("mods.STADIUM2_IMPORTER.lib.arena_selector")
+local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local Unown = require("src.core.gen2.Unown")
+local GameVersion = require("src.core.GameVersion")
 
 local Gen2 = { COUNT = 251 }
 local modRef, installed, session
@@ -62,13 +65,17 @@ local function gen2ActorOptions()
   return {warn=warn,dexOf=dexOf,shiny=shiny,formFor=unownPack,label="Gen 2 battle"}
 end
 
-function Scene.new(battle)
+function Scene.new(battle,context)
   local actorOpts=gen2ActorOptions()
   local self=setmetatable({},Scene)
   local arena,arenaError
   if Importer.betaArenaEnabled() then
-    arena,arenaError=ArenaRuntime.random(battle,Importer)
-    if not arena then
+    local arenaIndex,reason=ArenaSelector.resolve(context)
+    self.arenaSelectionReason=reason
+    if arenaIndex~=nil then arena,arenaError=ArenaRuntime.load(arenaIndex,Importer) end
+    if arena and arenaIndex==28 and Importer.betaArenaTimeOfDayEnabled() then
+      arena.environment=ArenaLighting.environment(arenaIndex,context and context.timeOfDay)
+    elseif arenaIndex~=nil and not arena then
       warn("BETA ARENA TEST could not load a field; using the classic scene: "
         ..tostring(arenaError))
     end
@@ -472,7 +479,15 @@ local function installScreenHooks()
     -- snapped status HUD bands below and wears the same frosted glass as them.
     local nicknameModal=self.phase=="ask-nickname"
       and (self.messageTimer or 0)<=0
-    local layerOk,layer=pcall(Hud.layer,function() self:drawScene() end)
+    -- Crystal's MoveSelectionScreen has a second, raised TYPE/PP window at
+    -- native rows 64..103. The ordinary wide compositor only retains the
+    -- three 48px HUD bands, which cuts the upper 32px off that window. Mark
+    -- the capture and composition from the engine's active cart identity;
+    -- this must not depend on CRYSTAL_251 (or any other installed mod).
+    scene.crystalMovePane=GameVersion.engine()=="crystal"
+      and self.phase=="moves"
+    local layerOk,layer=pcall(Hud.layer,function() self:drawScene() end,
+      {crystalMovePane=scene.crystalMovePane})
     -- The reference wide compositor snaps status HUDs from a HUD-only texture
     -- and leaves battle text/windows in the centred Game Boy frame.  Do the same for
     -- AskNickname so opening the modal never changes the wide HUD geometry.
@@ -778,14 +793,14 @@ function Gen2.install()
   return true
 end
 
-function Gen2.ensure(battle)
+function Gen2.ensure(battle,context)
   if not (installed and battle and Importer.modelsEnabled()
       and Importer.battleEnabled() and Importer.available(configured)) then
     return false
   end
   if session and session.battle == battle then return true end
   Gen2.finish()
-  session = Scene.new(battle)
+  session = Scene.new(battle,context)
   session:sync()
   return true
 end
@@ -817,6 +832,7 @@ function Gen2.status()
     generation=2, active=session ~= nil,
     betaArena=session and session.arenaMode or false,
     arenaIndex=session and session.arenaIndex or nil,
+    arenaReason=session and session.arenaSelectionReason or nil,
     ui=session and {statusHudOwned=session.statusHudOwned==true,
       bottomUiVisible=session.bottomUiVisible~=false} or nil,
     shot=session and (session.presentCanvas or session.canvas) or nil,
