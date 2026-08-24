@@ -80,7 +80,7 @@ return function(mod)
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
     { key="stadium2_beta_arena_test", label="BETA CONTEXT ARENAS", type="toggle", default=false,
-      help="Experimental, Gen 2 only: select Stadium 2 fields from the current gym, story battle, or indoor/outdoor encounter. Surfing keeps the classic scene; fishing uses Free Battle Park." },
+      help="Experimental, Gen 2 trainer battles only: select Stadium 2 fields from the current gym, story battle, or indoor/outdoor location. All wild battles keep the classic scene." },
     { key="stadium2_beta_arena_tod", label="BETA PARK TIME OF DAY", type="toggle", default=false,
       help="Experimental: when context arenas are enabled, tint Free Battle Park for Gen 2 morning, day, or night. Turn OFF for the arena's normal lighting." },
   })
@@ -100,7 +100,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.11.0"
+  mod.exports.version = "0.12.0"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
@@ -282,7 +282,8 @@ return function(mod)
     Battle.ensure(battle,{
       generation=Battle.status().generation,mapId=mapId,
       environment=(encounter and encounter.environment) or (mapped and mapped.environment),
-      outside=mapped and mapped.outside or nil,
+      -- Preserve false: indoor is a meaningful classification, not absence.
+      outside=mapped and mapped.outside,
       terrain=encounter and encounter.terrain or nil,
       timeOfDay=lastTimeOfDay or (encounter and encounter.timeOfDay),
       kind=ev and ev.kind,trainerId=ev and ev.trainerId,

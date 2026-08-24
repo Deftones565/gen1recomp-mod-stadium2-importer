@@ -62,12 +62,17 @@ derived from the user's ROM and must not be distributed with the mod.
   a `CUT PARTICLES: ON/OFF` button on Rapidash (`F` is the keyboard shortcut).
 - `MODEL SHADER` selects the original `STADIUM` lighting or the `WATERCOLOR MANGA` style. Changes apply to existing battle models immediately.
 - `BATTLE AA` selects `OFF`, `2X`, or `4X` supersampling for the 3D arena while keeping the native interface crisp. The selected level is limited automatically by the device's texture support.
-- `BETA ARENA TEST` is disabled by default. When enabled, each new encounter
-  selects one random Stadium 2 battle field and uses its arena placement,
-  camera, lighting, materials, and animated effects for that encounter. Arena
-  rendering is still experimental; turn this option off at any time to keep
-  using the established classic battle scene. If a field cannot be loaded,
-  the encounter safely falls back to the classic scene.
+- `BETA CONTEXT ARENAS` is disabled by default and applies only to Gen 2.
+  Gyms, the Elite Four, Team Rocket, Rival battles, and other trainer encounters
+  select their matching Stadium 2 field. Outdoor trainer battles use Free
+  Battle Park and indoor trainer battles use Classroom. Every wild battle,
+  including fishing, surfing, roaming, and scripted wild Pokémon, deliberately
+  retains the established classic scene. Unknown or unavailable fields also
+  fall back safely to the classic scene.
+- `BETA PARK TIME OF DAY` is a separate disabled-by-default experiment. With
+  contextual arenas enabled, it gives Free Battle Park bright daytime,
+  presentation-only warm evening lighting, and darker night lighting without
+  changing the Gen 2 world clock or encounter tables.
 
 ## Battle camera controls
 
@@ -76,6 +81,22 @@ derived from the user's ROM and must not be distributed with the mod.
 - Use the controller right stick to control the camera.
 - Press `0` to reset the view.
 - On touchscreens, drag with one free finger and pinch with two. Touches that begin on virtual controls remain assigned to those controls.
+
+### Context arena visual tests
+
+Run the real Gen 2 encounter visual suite from the mod directory:
+
+```bash
+./tests/run_context_arena_visuals.sh
+```
+
+It starts separate wild, fishing, outdoor trainer, indoor trainer, and Violet
+Gym encounters through the live engine. Each case asserts the active arena
+state, index, and resolver reason before writing a clean Stadium scene image
+and a `-full-window` integration
+image to `/tmp/stadium2-context-arenas`. Set
+`STADIUM2_ARENA_VISUAL_DIR` to choose another output directory, or
+`POKEPORT_GAME=gold` / `silver` to run against a different Gen 2 game.
 
 ## Rendering and compatibility
 

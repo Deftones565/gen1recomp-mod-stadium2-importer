@@ -43,6 +43,14 @@ function Selector.resolve(context)
   local ctx=type(context)=="table" and context or {}
   if tonumber(ctx.generation)~=2 then return nil,"not-gen2" end
 
+  -- battle.started.kind is the engine's authoritative distinction. Stadium
+  -- fields are presentation for trainer encounters only: every wild path
+  -- (grass, cave, surf, fishing, roaming and scripted wild Pokémon) retains
+  -- the established classic battle scene, regardless of its current map.
+  local battleKind=key(ctx.kind)
+  if battleKind=="WILD" then return nil,"wild:classic" end
+  if battleKind~="TRAINER" then return nil,"unsupported-kind:classic" end
+
   local mapId=key(ctx.mapId)
   local trainerId=key(ctx.trainerId)
   local mapped=MAP_ARENAS[mapId]
@@ -58,13 +66,6 @@ function Selector.resolve(context)
 
   mapped=TRAINER_ARENAS[trainerId]
   if mapped~=nil then return mapped,"trainer:"..trainerId end
-
-  -- Fishing has an explicit Gen 2 battle type and is the one water encounter
-  -- for which Free Battle Park is a useful visual match.  A normal water roll
-  -- means surfing; no extracted Stadium field matches it, so retain the
-  -- established classic scene rather than knowingly choosing a bad field.
-  if ctx.battleType=="fish" then return 28,"fishing" end
-  if ctx.terrain=="water" then return nil,"surfing:classic" end
 
   if ctx.outside==true then return 28,"outdoor" end
   if ctx.outside==false then return 27,"indoor" end
