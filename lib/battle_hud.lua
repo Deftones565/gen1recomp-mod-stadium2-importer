@@ -1,4 +1,5 @@
 local Hud = { FROST=.55, TINT=.26, HEIGHT=72 }
+local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
 
 -- Exact native Gold HUD spans.  Snap the RECT to the window edge and move the
 -- full source band by the matching amount; moving a 160px band to x=0 leaves
@@ -18,7 +19,6 @@ local unpack = table.unpack or unpack
 
 local frost, blurA, blurB, shader, gaugeShader, uiLayer, hudOnlyLayer, modalOnlyLayer
 local fw, fh = 0, 0
-local modRef = nil
 local BLUR=[[
 uniform vec2 dir;
 vec4 effect(vec4 color,Image tex,vec2 tc,vec2 sc){
@@ -245,13 +245,9 @@ function Hud.modalLayer(draw)
 end
 
 local function panel(scene,rect)
-  -- DRAW HUD PANELS option: when OFF, suppress the frosted/tinted backing
-  -- glass entirely. The status cards and lower band still composite their HUD
-  -- text onto the raw 3D scene, just without the plate behind them.
-  if modRef and modRef.options then
-    local ok,enabled=pcall(modRef.options.get,modRef.options,"stadium2_hud_panels")
-    if ok and enabled==false then return true end
-  end
+  -- The glass plate is part of Stadium's authored UI, not a user toggle. It
+  -- is always drawn when Stadium owns this region; callers omit panel()
+  -- entirely when an official visibility hook gives the region to another UI.
   if not (scene and scene.width and scene.height) then return false end
   local g=love.graphics
   local x,y,w,h=rect[1],rect[2],rect[3],rect[4]
@@ -267,11 +263,6 @@ local function panel(scene,rect)
   g.setColor(1,1,1,Hud.TINT);g.rectangle("fill",x,y,w,h)
   g.setColor(1,1,1,1)
   return true
-end
-
--- Capture the mod handle so panel() can read the DRAW HUD PANELS option live.
-function Hud.configure(mod)
-  modRef = mod
 end
 
 function Hud.layout(scene,screen)
@@ -291,17 +282,28 @@ function Hud.layout(scene,screen)
   local snap=(not modal or nicknameModal)
     and not screen.showEnemyTrainer and not screen.showPlayerTrainer
   local er,pr=Hud.HUD_RECT.enemy,Hud.HUD_RECT.player
+  local viewport=BattleViewport.resolve(scene.width,scene.height,
+    (screen and screen.game) or scene.game)
   -- Same snap geometry as the established wide battle compositor: the
   -- rectangle itself touches the edge, while the full 160px source band is
   -- offset by that rectangle's native x inset.
-  local enemyX=snap and (-er[1]*s) or box.lx
-  local playerX=snap and (scene.width-(pr[1]+pr[3])*s) or box.lx
+  local panels=BattleViewport.statusPanels(viewport,box,s,er,pr)
+  local ps=snap and (panels.scale or s) or s
+  local enemyPanelX=snap and panels.enemyX or (box.lx+er[1]*s)
+  local playerPanelX=snap and panels.playerX or (box.lx+pr[1]*s)
+  local enemyPanelY=snap and panels.enemyY or (box.ly+er[2]*s)
+  local playerPanelY=snap and panels.playerY or (box.ly+pr[2]*s)
+  local enemyX=snap and (enemyPanelX-er[1]*ps) or box.lx
+  local playerX=snap and (playerPanelX-pr[1]*ps) or box.lx
   return {
-    box=box, scale=s, asking=asking, modal=modal,
+    box=box, scale=s, panelScale=ps, asking=asking, modal=modal,
     nicknameModal=nicknameModal, snap=snap,
     enemyX=enemyX, playerX=playerX,
-    enemyPanelX=snap and 0 or (box.lx+er[1]*s),
-    playerPanelX=snap and (scene.width-pr[3]*s) or (box.lx+pr[1]*s),
+    enemyY=enemyPanelY-er[2]*ps,
+    playerY=playerPanelY-(pr[2]-48)*ps,
+    enemyPanelX=enemyPanelX,playerPanelX=playerPanelX,
+    enemyPanelY=enemyPanelY,playerPanelY=playerPanelY,
+    viewport=viewport,
   }
 end
 
@@ -333,25 +335,30 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
   local g=love.graphics
   local layout=Hud.layout(scene,screen)
   local box,s=layout.box,layout.scale
+  local ps=layout.panelScale or s
+  local statusOwned=scene.statusHudOwned~=false
+  local bottomVisible=scene.bottomUiVisible~=false
   -- The detached Stadium HUD follows REAL battle visibility only.  Do not
   -- inherit BattleAnimClearHud here: that flag exists to blank the attacker's
   -- native BG HUD while a 2D move animation owns those tiles.  Detached
   -- snapped status cards are outside that animation layer and stay visible.
-  local enemyLive=screen.showEnemyHud and not screen.showEnemyTrainer
-  local playerLive=screen.showPlayerHud and not screen.showPlayerTrainer
+  local enemyLive=statusOwned and screen.showEnemyHud and not screen.showEnemyTrainer
+  local playerLive=statusOwned and screen.showPlayerHud and not screen.showPlayerTrainer
     and not screen.tutorial
   local ex,px=layout.enemyX,layout.playerX
   local er,pr=Hud.HUD_RECT.enemy,Hud.HUD_RECT.player
   if enemyLive then
-    panel(scene,{layout.enemyPanelX,box.ly+er[2]*s,er[3]*s,er[4]*s})
+    panel(scene,{layout.enemyPanelX,layout.enemyPanelY,er[3]*ps,er[4]*ps})
   end
   if playerLive then
-    panel(scene,{layout.playerPanelX,box.ly+pr[2]*s,pr[3]*s,pr[4]*s})
+    panel(scene,{layout.playerPanelX,layout.playerPanelY,pr[3]*ps,pr[4]*ps})
   end
-  panel(scene,{box.lx,box.ly+96*s,160*s,48*s})
+  if bottomVisible then panel(scene,{box.lx,box.ly+96*s,160*s,48*s}) end
   g.setColor(1,1,1,1)
   local oldShader=g.getShader and g.getShader() or nil
-  local key=getGaugeShader()
+  -- A different UI provider owns its own colors/alpha. Stadium's native-paper
+  -- key is valid only for the native status capture we claimed.
+  local key=statusOwned and getGaugeShader() or nil
   if key then g.setShader(key) end
   local enemy=g.newQuad(0,0,160,48,160,144)
   local player=g.newQuad(0,48,160,48,160,144)
@@ -360,9 +367,10 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
   -- not from the native battle scene.  Besides keeping AskNickname out of the
   -- player band, this is what prevents Gold's per-move BattleAnimClearHud from
   -- making a status card blink off for the duration of an attack.
-  local upper=(layout.snap and hudLayer) or layer
-  g.draw(upper,enemy,ex,box.ly,0,s,s)
-  g.draw(upper,player,px,box.ly+48*s,0,s,s)
+  local upper=statusOwned and ((layout.snap and hudLayer) or layer) or layer
+  if not statusOwned then ex,px=box.lx,box.lx end
+  g.draw(upper,enemy,ex,layout.enemyY,0,ps,ps)
+  g.draw(upper,player,px,layout.playerY,0,ps,ps)
   g.draw(layer,lower,box.lx,box.ly+96*s,0,s,s)
   if key then g.setShader(oldShader) end
 
@@ -373,7 +381,7 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
   -- This is intentionally after the gauge-key shader is removed: the nickname
   -- rectangle occupies the player HP/EXP source rows and must not inherit that
   -- tile-specific key.
-  if layout.asking and layout.modal then
+  if bottomVisible and layout.asking and layout.modal then
     local left=screen.phase=="ask-shift" and 8 or 112
     local r={left,56,48,40}
     local target={box.lx+r[1]*s,box.ly+r[2]*s,r[3]*s,r[4]*s}

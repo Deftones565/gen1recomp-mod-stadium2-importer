@@ -60,6 +60,9 @@ ok(main:find('key="stadium2_beta_arena_test"',1,true)~=nil
 ok(main:find('label="STADIUM 2 BATTLE"', 1, true) ~= nil, "battle option uses the requested Stadium label")
 ok(not main:find("lib.battle_stage", 1, true), "stage wiring stays outside the bootstrap")
 ok(not main:find("RENDER QUALITY", 1, true) and not main:find("TEXTURE FILTERING", 1, true), "no unrelated Stadium renderer options are exposed")
+ok(not main:find("stadium2_hud_panels",1,true)
+    and not main:find("DRAW HUD PANELS",1,true),
+  "Stadium glass panels are presentation chrome rather than a disableable option")
 ok(main:find('render_pipelines:register("stadium2_battle_clock"', 1, true) ~= nil,
   "battle clock uses the real-time presentation update path")
 ok(not main:find("Importer.step()\n    Battle.update(dt)", 1, true),

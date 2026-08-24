@@ -55,6 +55,17 @@ Hud.hudLayer=function(draw) if draw then draw() end; return {} end
 Hud.modalLayer=function(draw) calls.modal=calls.modal+1; if draw then draw() end; return {} end
 Hud.composite=function() calls.composite=calls.composite+1; return true end
 
+local statusHook
+local UIOwnership=require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
+UIOwnership.resetForTests()
+UIOwnership.bind({hooks={wrap=function(_,name,callback)
+  if name=="battle.status_hud_visible" then statusHook=callback end
+end}},function(candidate) return candidate and candidate.__stadiumActive==true end)
+function BattleState:statusHUDVisible()
+  return statusHook(function() return true end,self)~=false
+end
+function BattleState:bottomUIVisible() return true end
+
 package.loaded["mods.STADIUM2_IMPORTER.lib.gen2_battle"]=nil
 local Gen2=require("mods.STADIUM2_IMPORTER.lib.gen2_battle")
 Gen2.bind({log={warn=function() end}})
@@ -65,6 +76,7 @@ local battle={player=mon,data={pokemon={PIKACHU={dex=25}}},
   volatile=function() return {} end}
 assert(Gen2.ensure(battle))
 local screen=setmetatable({battle=battle,game={data=battle.data},
+  __stadiumActive=true,
   activeMon=function(_,side) return side=="player" and mon or nil end,
   showPlayerTrainer=false,showEnemyTrainer=false,
   picHidden={player=false,enemy=false},animPicState=function() return nil end,

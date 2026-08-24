@@ -11,6 +11,7 @@ local Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
 local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
+local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local Unown = require("src.core.gen2.Unown")
 
 local Gen2 = { COUNT = 251 }
@@ -87,6 +88,7 @@ function Scene.new(battle)
 end
 
 function Scene:release()
+  UIOwnership.release(self.screen)
   self.substituteActors.player:release()
   self.substituteActors.enemy:release()
   Presentation.release(self)
@@ -447,8 +449,11 @@ local function installScreenHooks()
       g.draw(picture, 0, 0, 0,
         width / picture:getWidth(), height / picture:getHeight())
     else
+      UIOwnership.release(self)
       return originalWide(self,width,height)
     end
+    scene.statusHudOwned=UIOwnership.claimStatus(self)
+    scene.bottomUiVisible=UIOwnership.bottomVisible(self)
     -- The native OBJ animation layer (Pokeballs, hit sparks, beams, etc.) must
     -- not be baked into the three HUD bands: those bands are snapped to
     -- different widescreen X positions, so an object crossing y=48/96 would
@@ -479,15 +484,19 @@ local function installScreenHooks()
     -- path: capture them independently and temporarily answer false to
     -- hudCleared while doing so.  Real visibility (send-out, faint, tutorial,
     -- trainer intro) still comes from showEnemyHud/showPlayerHud below.
-    local hudLayerOk,hudLayer
-    do
+    local hudLayerOk,hudLayer=true,nil
+    if scene.statusHudOwned then
+      hudLayerOk,hudLayer=pcall(UIOwnership.withNativeStatus,self,function()
       local had=rawget(self,"hudCleared")
       self.hudCleared=function() return false end
-      hudLayerOk,hudLayer=pcall(Hud.hudLayer,function() self:drawHud() end)
+      local ok,result=pcall(Hud.hudLayer,function() self:drawHud() end)
       self.hudCleared=had
+      if not ok then error(result,0) end
+      return result
+      end)
     end
     local modalLayerOk,modalLayer=true,nil
-    if nicknameModal then
+    if nicknameModal and scene.bottomUiVisible then
       -- Gold draws the nickname Yes/No box on top of its native player HUD.
       -- Capture it a second time with drawHud suppressed so transparent modal
       -- paper cannot reveal that native HUD inside the modal texture itself.
@@ -808,6 +817,8 @@ function Gen2.status()
     generation=2, active=session ~= nil,
     betaArena=session and session.arenaMode or false,
     arenaIndex=session and session.arenaIndex or nil,
+    ui=session and {statusHudOwned=session.statusHudOwned==true,
+      bottomUiVisible=session.bottomUiVisible~=false} or nil,
     shot=session and (session.presentCanvas or session.canvas) or nil,
     defect=session and session.defect or nil,
     visual=session and {

@@ -31,3 +31,5 @@ picked_stadium2.*
 
 # Generated Stadium battle-field exports (contain ROM-derived assets).
 /stadium2_arena_dump/
+
+/install-local.sh

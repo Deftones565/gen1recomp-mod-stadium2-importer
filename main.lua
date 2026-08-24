@@ -6,6 +6,7 @@ local ImportScreen = require("mods.STADIUM2_IMPORTER.lib.import_screen")
 local Fx = require("mods.STADIUM2_IMPORTER.lib.fx")
 local BattleSceneApi = require("mods.STADIUM2_IMPORTER.lib.battle_scene_api")
 local ModelApi = require("mods.STADIUM2_IMPORTER.lib.model_api")
+local BattleUIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 
 return function(mod)
   Importer.bind(mod)
@@ -13,6 +14,11 @@ return function(mod)
   Battle.bind(mod)
   BattleAA.bind(mod)
   BattleSceneApi.bind(Battle)
+  BattleUIOwnership.bind(mod,function(state)
+    local scene=Battle.currentScene()
+    return scene~=nil and (scene.battle==state or scene.screen==state
+      or (state and scene.battle==state.battle))
+  end)
   local Models = ModelApi.new(Importer)
   local importScreen
   local activatedSave
@@ -71,18 +77,11 @@ return function(mod)
     { key="stadium2_battle_aa", label="BATTLE AA", type="choice", default=0,
       choices={{"OFF",0},{"2X",2},{"4X",4}},
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
-    { key="stadium2_hud_panels", label="DRAW HUD PANELS", type="toggle", default=true,
-      help="Back the Stadium 2 status cards with the frosted glass plate. Turn OFF for a bare HUD on the 3D scene." },
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
     { key="stadium2_beta_arena_test", label="BETA ARENA TEST", type="toggle", default=false,
       help="Experimental: use one random unfinished Stadium 2 field for each new encounter. Turn OFF to use the established classic battle scene." },
   })
-
-  -- Hand the mod handle to the HUD module so its panels can read the
-  -- DRAW HUD PANELS option live.
-  local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
-  Hud.configure(mod)
 
   -- DSM animations are authored at 30 Hz, but advance from presented-frame
   -- real time. The speed-scaled logic clock can run many times per frame.

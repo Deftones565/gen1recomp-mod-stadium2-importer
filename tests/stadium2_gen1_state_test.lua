@@ -40,6 +40,40 @@ local scene=setmetatable({
   lastPicKind={player=nil,enemy=nil},animWasPlaying=false,readyFrame=true,
 },Scene)
 
+battle.kind="trainer"
+battle.enemyParty={{hp=1}}
+battle.playerPartyView=function() return {{hp=1}} end
+battle.introBalls=true
+local enemyBalls,playerBalls=Gen1._partyRows(battle,0)
+ok(enemyBalls and playerBalls,
+  "trainer intro exposes both temporary party-ball rows to Stadium")
+ok(not Gen1._partyRows(battle,4),
+  "sliding intro never detaches party-ball rows before their native position")
+battle.introBalls=nil
+battle.showEnemyBalls=true
+enemyBalls,playerBalls=Gen1._partyRows(battle,0)
+ok(enemyBalls and not playerBalls,
+  "replacement-enemy preview exposes only its temporary party-ball row")
+battle.showEnemyBalls=nil
+
+battle.introBalls={frame=1}
+battle.showEnemyBalls=true
+local scopedIntro,scopedEnemy
+Gen1._withNativePartyRowsSuppressed({statusHudOwned=true},battle,function()
+  scopedIntro,scopedEnemy=battle.introBalls,battle.showEnemyBalls
+end)
+ok(scopedIntro==nil and scopedEnemy==nil,
+  "owned Stadium host pass omits native party rows already copied into its cards")
+ok(type(battle.introBalls)=="table" and battle.showEnemyBalls==true,
+  "native party-row state is restored exactly after the render-only scope")
+local partyGuarded=pcall(Gen1._withNativePartyRowsSuppressed,
+  {statusHudOwned=true},battle,function() error("host party draw failed") end)
+ok(not partyGuarded and type(battle.introBalls)=="table"
+    and battle.showEnemyBalls==true,
+  "native party-row state is restored when the host draw fails")
+battle.introBalls=nil
+battle.showEnemyBalls=nil
+
 ok(scene:ownsSlot("player") and scene:ownsSlot("enemy"),
   "normal Gen 1 Pokemon slots are owned by the shared 3D actors")
 ok(scene:visualState("player")=="pokemon" and scene:visualState("enemy")=="pokemon",

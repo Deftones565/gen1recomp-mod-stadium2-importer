@@ -62,7 +62,6 @@ derived from the user's ROM and must not be distributed with the mod.
   a `CUT PARTICLES: ON/OFF` button on Rapidash (`F` is the keyboard shortcut).
 - `MODEL SHADER` selects the original `STADIUM` lighting or the `WATERCOLOR MANGA` style. Changes apply to existing battle models immediately.
 - `BATTLE AA` selects `OFF`, `2X`, or `4X` supersampling for the 3D arena while keeping the native interface crisp. The selected level is limited automatically by the device's texture support.
-- `DRAW HUD PANELS` enables or hides the frosted panels behind the Stadium status cards.
 - `BETA ARENA TEST` is disabled by default. When enabled, each new encounter
   selects one random Stadium 2 battle field and uses its arena placement,
   camera, lighting, materials, and animated effects for that encounter. Arena
@@ -83,6 +82,20 @@ derived from the user's ROM and must not be distributed with the mod.
 The same renderer is used by the normal and Watercolor Manga styles on desktop and mobile. It supports animated textures, per-model effects, normal and shiny palettes, alpha materials, additive effects, model and ground shadows, and adaptive graphics fallbacks for mobile GPUs.
 
 Battle animations advance from presentation time, so fast-forward does not alter their intended speed. Changing shader style or enabling models does not require rebuilding the imported packs.
+
+Stadium keeps its original widescreen glass-panel UI, but ownership is attached
+to Gen1Recomp's official `battle.status_hud_visible` and
+`battle.bottom_ui_visible` hooks. Each region is claimed independently: if
+another UI provider returns `false`, Stadium omits its corresponding captured
+HUD, glass panel, paper-key treatment, or lower panel while leaving the 3D
+scene, models, camera, effects, and battle logic untouched. Pixels contributed
+through `battle.overlay` remain in the engine-authored centred layer when a
+foreign UI owns those regions.
+
+The installed Gen 3 Inspired UI predates these visibility hooks. Stadium uses
+the same narrow, option-aware compatibility detection as Crystal 251 and Battle
+Art so its glass UI yields whenever that replacement battle UI is enabled. A
+disabled Gen 3 battle UI restores Stadium's presentation immediately.
 
 ## Integration API
 

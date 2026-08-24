@@ -24,6 +24,8 @@ ok(Camera.fitScale(1920,1080)==6,
   "1080p wide battle does not inflate to the classic 160-wide scale")
 ok(Camera.fitScale(2560,1600)==8,
   "large 16:10 display keeps HUD blocks proportional to the wide scene")
+ok(Camera.fitScale(1080,1920)==6,
+  "portrait uses Battle Art's native 160x144 width-limited fit")
 local ox,oy=Camera.fitOrigin(1920,1080,6)
 ok(ox==480 and oy==108,
   "wide scale keeps the native 160x144 coordinate frame centred")
@@ -223,8 +225,9 @@ ok(source:find("drawNicknameModal",1,true)==nil
   "nickname prompt separates snapped HUD and clean modal-only captures")
 
 ok(source:find('self.hudCleared=function() return false end',1,true)~=nil
-  and source:find('hudLayerOk,hudLayer=pcall(Hud.hudLayer',1,true)~=nil,
-  "detached Stadium HUD capture ignores Gold's per-move BattleAnimClearHud")
+  and source:find('pcall(UIOwnership.withNativeStatus',1,true)~=nil
+  and source:find('scene.statusHudOwned=UIOwnership.claimStatus(self)',1,true)~=nil,
+  "detached HUD uses the official cooperative claim and a scoped native capture")
 
 ok(source:find("scene.deferAnimationObjects",1,true)~=nil
   and source:find("self.animView.drawObjects",1,true)~=nil,

@@ -41,6 +41,17 @@ ok(layout.snap and layout.enemyX==-32 and layout.playerX==672,
   "ordinary widescreen battle snaps native HUD rects to the two screen edges")
 ok(layout.enemyPanelX==0 and layout.playerPanelX==960,
   "frost panels touch the same edges as their native HUD rectangles")
+local portraitScene={width=1080,height=1920,
+  hudBox={lx=60,ly=528,scale=6},presentCanvas=clean}
+local portraitLayout=Hud.layout(portraitScene,screen)
+ok(portraitLayout.viewport.orientation=="portrait",
+  "tall phone selects Battle Art's native portrait composition")
+ok(portraitLayout.panelScale==5
+    and portraitLayout.enemyPanelY==528
+    and portraitLayout.playerPanelY==864,
+  "portrait uses the next integer HUD rung at native vertical positions")
+ok(portraitLayout.enemyPanelX==10 and portraitLayout.playerPanelX==680,
+  "portrait uses Battle Art's foe inset and flush-right player card")
 -- AskNickname follows the detached wide compositor: the status
 -- HUDs stay snapped, while the Yes/No modal remains in the centred GB frame.
 screen.phase="ask-nickname"
@@ -72,9 +83,10 @@ ok(layout.enemyPanelX==352 and layout.playerPanelX==608,
 -- upper bands from the HUD-only capture, the bottom box from the full scene,
 -- and the Yes/No window from the full scene at its centred native position.
 local draws={}
+local panelRects=0
 love={graphics={
   setColor=function() end,
-  rectangle=function() end,
+  rectangle=function() panelRects=panelRects+1 end,
   getShader=function() return nil end,
   setShader=function() end,
   newShader=function() return {send=function() end} end,
@@ -83,6 +95,8 @@ love={graphics={
     draws[#draws+1]={tex=tex,quad=quad,x=x,y=y,sx=sx,sy=sy}
   end,
 }}
+assert(Hud.panel(scene,{0,0,80,32}))
+ok(panelRects>0,"an owned Stadium HUD region always draws its glass backplate")
 local full={name="full"}
 local hudOnly={name="hud"}
 local modalOnly={name="modal"}
@@ -116,5 +130,25 @@ ok(draws[1].tex==hudOnly and draws[1].quad.y==0,
   "attack frame enemy status comes from persistent HUD-only capture")
 ok(draws[2].tex==hudOnly and draws[2].quad.y==48,
   "attack frame player status comes from persistent HUD-only capture")
+
+-- Cooperative ownership regression: when another UI mod returns false from
+-- the official status/bottom hooks, Stadium must not use its detached HUD or
+-- modal captures. Preserve composable battle.overlay pixels in the centred
+-- native layer instead of dropping or edge-snapping another provider's UI.
+draws={}
+local yieldedScene={width=1280,height=720,
+  hudBox={lx=320,ly=72,scale=4},presentCanvas=clean,
+  statusHudOwned=false,bottomUiVisible=false}
+local yieldedScreen={showEnemyTrainer=false,showPlayerTrainer=false,
+  showEnemyHud=true,showPlayerHud=true,tutorial=false,phase="ask-nickname",
+  messageTimer=0}
+assert(Hud.composite(yieldedScene,yieldedScreen,full,hudOnly,modalOnly))
+ok(draws[1].tex==full and draws[1].x==320 and draws[1].quad.y==0,
+  "foreign status overlay remains centred instead of Stadium-snapped")
+ok(draws[2].tex==full and draws[2].x==320 and draws[2].quad.y==48,
+  "foreign player status overlay remains in its authored layer")
+ok(draws[3].tex==full and draws[3].quad.y==96,
+  "foreign bottom overlay remains composable without Stadium panel styling")
+ok(#draws==3,"yielded UI draws no Stadium restore, modal, or detached-HUD layers")
 
 print(("%d checks passed (Stadium 2 battle HUD paper key)"):format(checks))

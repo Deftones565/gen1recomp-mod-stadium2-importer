@@ -56,8 +56,27 @@ Camera.STADIUM = {
 function Camera.fitScale(width, height)
   width = math.max(1, tonumber(width) or 1)
   height = math.max(1, tonumber(height) or 1)
-  return math.max(1, math.floor(math.min(
-    width / Camera.WIDE_UI_WIDTH, height / Camera.UI_HEIGHT)))
+  -- Battle Art keeps portrait as the native 160x144 composition and lets the
+  -- background crop around it. Landscape retains Stadium's established
+  -- 304x144 wide field. Measure the rung in framebuffer pixels like the
+  -- engine Renderer, then convert it back to LOVE units for this compositor.
+  local baseWidth=height>width*1.20 and Camera.UI_WIDTH
+    or Camera.WIDE_UI_WIDTH
+  local dpi,pw,ph=1,width,height
+  if love and love.graphics and love.graphics.getDimensions
+      and love.graphics.getPixelDimensions then
+    local ok,w,h=pcall(love.graphics.getDimensions)
+    local pok,fullPw,fullPh=pcall(love.graphics.getPixelDimensions)
+    if ok and pok and tonumber(w) and tonumber(h) and w>0 and h>0
+        and tonumber(fullPw) and tonumber(fullPh) then
+      local dx,dy=fullPw/w,fullPh/h
+      dpi=math.max(1e-6,math.min(dx,dy))
+      pw,ph=width*dx,height*dy
+    end
+  end
+  local physical=math.max(1,math.floor(math.min(
+    pw/baseWidth,ph/Camera.UI_HEIGHT)))
+  return physical/dpi
 end
 
 function Camera.fitOrigin(width, height, scale)

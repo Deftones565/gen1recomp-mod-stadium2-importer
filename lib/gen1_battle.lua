@@ -12,6 +12,8 @@ local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
 local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
+local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
+local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
 
 local Gen1={COUNT=251}
 local modRef,installed,session
@@ -22,11 +24,11 @@ local controlOriginals={}
 local pointerHookInstalled=false
 local freeTouches,pinch={},nil
 local unpack=table.unpack or unpack
+local function pack(...) return {n=select("#",...),...} end
 
 local SOURCE_ANCHOR={player={26,96},enemy={124,56}}
 local HUD_RECT={enemy={8,0,80,32},player={72,56,88,40}}
 local TEXT_RECT={box={0,96,160,48},moves={0,64,88,32},mimic={0,56,128,40}}
-
 local function clamp(v,lo,hi)
   return math.max(lo,math.min(hi,tonumber(v) or lo))
 end
@@ -34,6 +36,24 @@ end
 local function warn(message)
   local log=modRef and modRef.log
   if log and log.warn then pcall(log.warn,log,"%s",tostring(message)) end
+end
+
+-- Gen1Recomp's intro/replacement party rows are emitted outside the
+-- statusHUDVisible guard. Stadium has already copied just their six ball tiles
+-- into its owned cards, so hide the two presentation flags from the following
+-- native text/effect pass. Restore exact raw values even when drawing fails;
+-- battle timing and state never observe this synchronous render-only scope.
+local function withNativePartyRowsSuppressed(scene,battle,fn)
+  if not (scene and scene.statusHudOwned and battle) then return fn() end
+  local intro=rawget(battle,"introBalls")
+  local enemy=rawget(battle,"showEnemyBalls")
+  battle.introBalls=nil
+  battle.showEnemyBalls=nil
+  local result=pack(pcall(fn))
+  battle.introBalls=intro
+  battle.showEnemyBalls=enemy
+  if not result[1] then error(result[2],0) end
+  return unpack(result,2,result.n)
 end
 
 local function dexOf(data,mon)
@@ -82,6 +102,7 @@ function Scene.new(battle)
 end
 
 function Scene:release()
+  UIOwnership.release(self.battle)
   self.substituteActors.player:release()
   self.substituteActors.enemy:release()
   Presentation.release(self)
@@ -307,6 +328,20 @@ local function hudLive(battle,slide)
   return enemy and true or false,player and true or false
 end
 
+-- DrawAllPokeballs and ReplaceFaintedEnemyMon reuse the native HUD bands, but
+-- their long black underline is Game Boy background chrome rather than part of
+-- a party-status indicator. Detached Stadium cards need only the six 8x8 ball
+-- tiles; the card itself supplies the modern background and edge treatment.
+local function partyRows(battle,slide)
+  if not battle or slide~=0 then return false,false end
+  local intro=battle.introBalls==true
+  local enemy=(battle.showEnemyBalls and battle.enemyParty)
+    or (intro and battle.enemyParty
+      and (battle.kind=="trainer" or battle.kind=="link"))
+  local player=intro and type(battle.playerPartyView)=="function"
+  return enemy and true or false,player and true or false
+end
+
 local function textRects(battle)
   if not battle or battle.blankForAskName then return {} end
   local out={TEXT_RECT.box}
@@ -320,24 +355,29 @@ function Scene:captureHud(slide)
   local battle=self.battle
   local had=rawget(battle,"colorMode")
   battle.colorMode=function() return false end
-  local ok,layer=pcall(Hud.hudLayer,function()
-    originals.drawHUDs(battle,slide)
+  local ok,layer=pcall(UIOwnership.withNativeStatus,battle,function()
+    return Hud.hudLayer(function() originals.drawHUDs(battle,slide) end)
   end)
   battle.colorMode=had
   if not ok then error(layer,0) end
   return layer
 end
 
--- Build the full-window world image that Renderer.worldOverride consumes.
--- Status bands are detached from the 160x144 battle canvas, while the message
--- box remains in the centred native frame. Only presentation pixels move.
+-- Preserve Stadium's established glass-panel composition, but build each
+-- independently owned region only after the official visibility hooks leave
+-- it available. A foreign UI therefore removes the competing Stadium region
+-- without changing the 3D scene, camera, models or battle logic.
 function Scene:composeWorld()
   if not (self.readyFrame and self.hudBox and love and love.graphics) then
     return self.presentCanvas or self.canvas
   end
   local battle=self.battle
   local slide=(battle.introSlide or 0)*4
-  local hudLayer=self:captureHud(slide)
+  local statusOwned=UIOwnership.claimStatus(battle)
+  local bottomVisible=UIOwnership.bottomVisible(battle)
+  self.statusHudOwned=statusOwned
+  self.bottomUiVisible=bottomVisible
+  local hudLayer=statusOwned and self:captureHud(slide) or nil
   local target,sx,sy=self:copyForComposite()
   if not target then return self.presentCanvas or self.canvas end
 
@@ -351,30 +391,51 @@ function Scene:composeWorld()
     g.scale(sx,sy)
     local box,s=self.hudBox,self.hudBox.scale
     local enemyLive,playerLive=hudLive(battle,slide)
+    local enemyBalls,playerBalls=partyRows(battle,slide)
+    enemyLive=statusOwned and enemyLive
+    playerLive=statusOwned and playerLive
+    enemyBalls=statusOwned and enemyBalls
+    playerBalls=statusOwned and playerBalls
     local er,pr=HUD_RECT.enemy,HUD_RECT.player
+    local viewport=BattleViewport.resolve(self.width,self.height,battle.game)
+    local panels=BattleViewport.statusPanels(viewport,box,s,er,pr)
+    local ps=panels.scale or s
+    local enemyPanelX,enemyPanelY=panels.enemyX,panels.enemyY
+    local playerPanelX,playerPanelY=panels.playerX,panels.playerY
 
-    if enemyLive then Hud.panel(self,{0,box.ly+er[2]*s,er[3]*s,er[4]*s}) end
-    if playerLive then
-      Hud.panel(self,{self.width-pr[3]*s,box.ly+pr[2]*s,pr[3]*s,pr[4]*s})
+    if enemyLive or enemyBalls then
+      Hud.panel(self,{enemyPanelX,enemyPanelY,er[3]*ps,er[4]*ps})
     end
-    for _,r in ipairs(textRects(battle)) do
-      Hud.panel(self,{box.lx+r[1]*s,box.ly+r[2]*s,r[3]*s,r[4]*s})
+    if playerLive or playerBalls then
+      Hud.panel(self,{playerPanelX,playerPanelY,pr[3]*ps,pr[4]*ps})
+    end
+    if bottomVisible then
+      for _,r in ipairs(textRects(battle)) do
+        Hud.panel(self,{box.lx+r[1]*s,box.ly+r[2]*s,r[3]*s,r[4]*s})
+      end
     end
 
     if hudLayer then
       g.setColor(1,1,1,1)
-      local enemy=g.newQuad(0,0,160,48,160,144)
-      local player=g.newQuad(0,48,160,48,160,144)
-      -- Native HP/caught-marker tiles carry white paper. Key that paper out
-      -- exactly like the shared Gen 2 HUD so only ink/gauge/icon pixels sit
-      -- on the frosted Stadium panels.
       local oldShader=g.getShader and g.getShader() or nil
       local key=Hud.gaugeShader and Hud.gaugeShader() or nil
       if key then g.setShader(key) end
-      -- Move the source band far enough that the actual HUD rectangle, not its
-      -- built-in Game Boy inset, touches the corresponding window edge.
-      g.draw(hudLayer,enemy,-er[1]*s,box.ly,0,s,s)
-      g.draw(hudLayer,player,self.width-(pr[1]+pr[3])*s,box.ly+48*s,0,s,s)
+      if enemyBalls then
+        local row=g.newQuad(24,16,48,8,160,144)
+        g.draw(hudLayer,row,enemyPanelX+16*ps,enemyPanelY+16*ps,0,ps,ps)
+      elseif enemyLive then
+        local enemy=g.newQuad(0,0,160,48,160,144)
+        g.draw(hudLayer,enemy,enemyPanelX-er[1]*ps,
+          enemyPanelY-er[2]*ps,0,ps,ps)
+      end
+      if playerBalls then
+        local row=g.newQuad(88,80,48,8,160,144)
+        g.draw(hudLayer,row,playerPanelX+16*ps,playerPanelY+24*ps,0,ps,ps)
+      elseif playerLive then
+        local player=g.newQuad(0,48,160,48,160,144)
+        g.draw(hudLayer,player,playerPanelX-pr[1]*ps,
+          playerPanelY-(pr[2]-48)*ps,0,ps,ps)
+      end
       if key then g.setShader(oldShader) end
     end
     g.pop()
@@ -383,7 +444,7 @@ function Scene:composeWorld()
   g.setBlendMode(oldBlend or "alpha",oldAlpha)
   g.setColor(1,1,1,1)
   if not ok then error(err,0) end
-  self.hudSnapped=true
+  self.hudSnapped=statusOwned
   return target
 end
 
@@ -422,6 +483,7 @@ local function installHooks()
     scene:sync()
     if not scene.readyFrame then scene:render() end
     if not scene.readyFrame or scene.defect then
+      UIOwnership.release(self)
       return originals.draw(self,unpack(args))
     end
 
@@ -429,19 +491,22 @@ local function installHooks()
     scene.composedWorld=world
     scene.composeReady=world~=nil
 
-    -- The host battle now contributes UI only. render.compose places this
-    -- 160x144 native layer at the SAME 304x144-derived scale as the shared 3D
-    -- camera, so a large or HiDPI window cannot re-inflate the Gen 1 UI.
+    -- The host battle contributes its centred native text/effect layer only.
+    -- composeWorld already placed every Stadium-owned glass/status region;
+    -- official visibility hooks suppress the corresponding native region.
     love.graphics.clear(0,0,0,0)
     self.stadium2ImporterGen1Shot=scene
     scene.hudSnapped=false
-    -- composeWorld already put the detached HUD in the world image.
-    scene.hudSnapped=true
+    scene.hudSnapped=scene.statusHudOwned==true
 
     local hadColor=rawget(self,"colorMode")
     self.colorMode=function() return false end
     local ok,result=pcall(function()
-      return withFullPaperRemoved(function() return originals.draw(self,unpack(args)) end)
+      return withNativePartyRowsSuppressed(scene,self,function()
+        return withFullPaperRemoved(function()
+          return originals.draw(self,unpack(args))
+        end)
+      end)
     end)
     self.colorMode=hadColor
     self.stadium2ImporterGen1Shot=nil
@@ -482,12 +547,6 @@ local function installHooks()
   end
 
   originals.drawHUDs=BattleState.drawHUDs
-  function BattleState:drawHUDs(slide)
-    local scene=active(self)
-    if scene and scene.hudSnapped then return end
-    return originals.drawHUDs(self,slide)
-  end
-
   originals.drawTextArea=BattleState.drawTextArea
   function BattleState:drawTextArea(...)
     local args={...}
@@ -802,6 +861,8 @@ function Gen1.status()
     active=session~=nil,
     betaArena=session and session.arenaMode or false,
     arenaIndex=session and session.arenaIndex or nil,
+    ui=session and {statusHudOwned=session.statusHudOwned==true,
+      bottomUiVisible=session.bottomUiVisible~=false} or nil,
     shot=session and (session.compositeCanvas or session.presentCanvas or session.canvas) or nil,
     defect=session and session.defect or nil,
     cameraInput=session and {stickX=session.stickX or 0,stickY=session.stickY or 0} or nil,
@@ -829,6 +890,8 @@ Gen1.Actor=Actor
 Gen1.Scene=Scene
 Gen1._animationProjection=animationProjection
 Gen1._hudLive=hudLive
+Gen1._partyRows=partyRows
 Gen1._textRects=textRects
+Gen1._withNativePartyRowsSuppressed=withNativePartyRowsSuppressed
 
 return Gen1
