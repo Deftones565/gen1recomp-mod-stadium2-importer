@@ -314,6 +314,36 @@ local function bindPlaythroughStorage(base)
   return handle, context
 end
 
+local function standaloneViewerMod(base)
+  local Storage = require("src.mods.Storage")
+  local modPath = base .. "/mods/STADIUM2_IMPORTER"
+  local game = { save = {
+    version = "stadium2_viewer",
+    meta = { playthroughId = "standalone" },
+  } }
+  return {
+    path = modPath,
+    game = game,
+    storage = Storage.new("STADIUM2_IMPORTER_VIEWER", love.filesystem),
+    options = { get = function(_, key)
+      if key == "stadium2_shader" then return shaderStyle end
+      if key == "stadium2_rapidash_cut_fx" then return rapidashCutEffect end
+    end },
+    read = function(_, relative)
+      relative = tostring(relative or "")
+      if relative == "" or relative:sub(1, 1) == "/"
+          or relative:find("..", 1, true) then
+        return nil
+      end
+      local file = io.open(modPath .. "/" .. relative, "rb")
+      if not file then return nil end
+      local bytes = file:read("*a")
+      file:close()
+      return bytes
+    end,
+  }
+end
+
 local function warn(message)
   print("[stadium2-visual-test] " .. tostring(message))
 end
@@ -988,7 +1018,15 @@ local function initialise()
   local ok, result = pcall(function()
     Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
     local handle, contextOrError = bindPlaythroughStorage(root)
-    if not handle then error(contextOrError, 0) end
+    if not handle then
+      warn("CACHE_SCOPE selected playthrough unavailable: " .. tostring(contextOrError))
+      handle = standaloneViewerMod(root)
+      contextOrError = {
+        gameVersion = "stadium2_viewer",
+        playthroughId = "standalone",
+        dataRoot = love.filesystem.getSaveDirectory(),
+      }
+    end
     Importer.bind(handle)
     Importer.setPlaythroughReady(true)
     warn(("CACHE_SCOPE game=%s playthrough=%s root=%s")

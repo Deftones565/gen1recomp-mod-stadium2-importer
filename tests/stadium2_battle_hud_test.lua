@@ -73,8 +73,8 @@ ok(Hud.keysPaperRect(8,56,48,40),
 ok(Hud.CRYSTAL_MOVE_INFO_RECT[1]==0
     and Hud.CRYSTAL_MOVE_INFO_RECT[2]==64
     and Hud.CRYSTAL_MOVE_INFO_RECT[3]==88
-    and Hud.CRYSTAL_MOVE_INFO_RECT[4]==32,
-  "Crystal move info keeps only the native rows missing from the lower band")
+    and Hud.CRYSTAL_MOVE_INFO_RECT[4]==40,
+  "Crystal move info keeps its complete authored window")
 ok(Hud.keysCrystalMovePaperRect(0,64,88,40),
   "Crystal TYPE/PP window paper is replaced by Stadium glass")
 ok(Hud.keysCrystalMovePaperRect(32,96,128,48),
@@ -83,15 +83,16 @@ ok(not Hud.keysCrystalMovePaperRect(0,96,160,48),
   "Crystal-specific key does not broaden the ordinary bottom-window key")
 ok(not Hud.keysCrystalMovePaperRect(32,96,120,48),
   "Crystal move-list key requires the engine's exact authored rectangle")
--- Other in-battle Yes/No boxes still use the centred upper-band fallback.
+-- Other in-battle Yes/No boxes no longer pull the detached status cards back
+-- into the centred native frame.
 screen.phase="ask-shift"
 layout=Hud.layout(scene,screen)
-ok(layout.modal and not layout.snap,
-  "shift Yes/No still becomes a centred native-width overlay")
-ok(layout.enemyX==320 and layout.playerX==320,
-  "centred Yes/No fallback keeps both upper UI bands together")
-ok(layout.enemyPanelX==352 and layout.playerPanelX==608,
-  "centred fallback preserves Gold's native HUD insets")
+ok(layout.modal and layout.snap,
+  "shift Yes/No preserves detached status-card placement")
+ok(layout.enemyX==-32 and layout.playerX==672,
+  "shift prompt keeps both status cards at the screen edges")
+ok(layout.enemyPanelX==0 and layout.playerPanelX==960,
+  "shift prompt keeps Stadium panels attached to their cards")
 -- Functional compositor regression: AskNickname must source the two snapped
 -- upper bands from the HUD-only capture, the bottom box from the full scene,
 -- and the Yes/No window from the full scene at its centred native position.
@@ -117,10 +118,10 @@ local compositeScreen={showEnemyTrainer=false,showPlayerTrainer=false,
   showEnemyHud=true,showPlayerHud=true,tutorial=false,phase="ask-nickname",
   messageTimer=0,hudCleared=function() return false end}
 assert(Hud.composite(scene,compositeScreen,full,hudOnly,modalOnly))
-ok(draws[1].tex==hudOnly and draws[1].quad.y==0 and draws[1].x==-32,
-  "nickname enemy band comes from the HUD-only snapped capture")
-ok(draws[2].tex==hudOnly and draws[2].quad.y==48 and draws[2].x==672,
-  "nickname player band comes from the HUD-only snapped capture")
+ok(draws[1].tex==hudOnly and draws[1].quad.y==0 and draws[1].x==0,
+  "nickname enemy card comes from the HUD-only snapped capture")
+ok(draws[2].tex==hudOnly and draws[2].quad.y==56 and draws[2].x==960,
+  "nickname player card comes from the HUD-only snapped capture")
 ok(draws[3].tex==full and draws[3].quad.y==96 and draws[3].x==320,
   "nickname message box remains in the centred full battle layer")
 ok(draws[4].tex==clean and draws[4].x==768 and draws[4].y==296,
@@ -141,12 +142,11 @@ local attackScreen={showEnemyTrainer=false,showPlayerTrainer=false,
 assert(Hud.composite(scene,attackScreen,full,hudOnly,nil))
 ok(draws[1].tex==hudOnly and draws[1].quad.y==0,
   "attack frame enemy status comes from persistent HUD-only capture")
-ok(draws[2].tex==hudOnly and draws[2].quad.y==48,
+ok(draws[2].tex==hudOnly and draws[2].quad.y==56,
   "attack frame player status comes from persistent HUD-only capture")
 
--- Crystal's move selector adds a TYPE/PP window above the ordinary bottom
--- band. Restore only its upper 32 pixels; the final eight pixels are already
--- present in the lower-band draw. Other Gen 2 games must not gain this pass.
+-- Crystal's move selector is composed as one authored y=64..143 region so the
+-- overlapping TYPE/PP and move-list borders cannot split or double.
 draws={}
 local crystalScene={width=1280,height=720,
   hudBox={lx=320,ly=72,scale=4},presentCanvas=clean,
@@ -156,13 +156,11 @@ local moveScreen={showEnemyTrainer=false,showPlayerTrainer=false,
   messageTimer=0,hudCleared=function() return false end}
 assert(Hud.composite(crystalScene,moveScreen,full,hudOnly,nil))
 ok(draws[3].tex==full and draws[3].quad.x==0 and draws[3].quad.y==64
-    and draws[3].quad.w==88 and draws[3].quad.h==32
+    and draws[3].quad.w==160 and draws[3].quad.h==80
     and draws[3].x==320 and draws[3].y==328,
-  "Crystal restores the complete raised TYPE/PP pane at its authored position")
-ok(draws[4].tex==full and draws[4].quad.y==96,
-  "Crystal still draws the shared lower move-list band once")
-ok(#draws==4,
-  "Crystal move selection adds exactly one source-layer composition pass")
+  "Crystal restores its joined TYPE/PP and move-list composition")
+ok(#draws==3,
+  "Crystal move selection draws the joined source region exactly once")
 
 draws={}
 crystalScene.crystalMovePane=false
