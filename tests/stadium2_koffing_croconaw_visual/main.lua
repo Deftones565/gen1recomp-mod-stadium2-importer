@@ -65,6 +65,13 @@ local function findRoot()
 end
 
 local function installModLoader(base)
+  -- The standalone viewer runs outside the engine Loader, but it should use
+  -- the same persistence implementation as an installed mod. Make the engine
+  -- modules available even when LOVE was launched from another directory.
+  local rootPath = base .. "/?.lua;" .. base .. "/?/init.lua;"
+  if not package.path:find(rootPath, 1, true) then
+    package.path = rootPath .. package.path
+  end
   local loaders = package.searchers or package.loaders
   table.insert(loaders, 2, function(name)
     local prefix = "mods.STADIUM2_IMPORTER"
@@ -75,6 +82,40 @@ local function installModLoader(base)
     if not chunk then return "\n\t" .. tostring(err) end
     return chunk
   end)
+end
+
+local function viewerMod(base)
+  local Storage = require("src.mods.Storage")
+  local modPath = base .. "/mods/STADIUM2_IMPORTER"
+  local game = {
+    save = {
+      version = "stadium2_viewer",
+      meta = { playthroughId = "standalone" },
+    },
+  }
+
+  return {
+    path = modPath,
+    game = game,
+    -- Keep test data separate from every real save while retaining the exact
+    -- engine storage semantics (including portable mode when it is enabled).
+    storage = Storage.new("STADIUM2_IMPORTER_VIEWER", love.filesystem),
+    options = { get = function(_, key)
+      if key == "stadium2_shader" then return shaderStyle end
+    end },
+    read = function(_, relative)
+      relative = tostring(relative or "")
+      if relative == "" or relative:sub(1, 1) == "/"
+          or relative:find("..", 1, true) then
+        return nil
+      end
+      local handle = io.open(modPath .. "/" .. relative, "rb")
+      if not handle then return nil end
+      local bytes = handle:read("*a")
+      handle:close()
+      return bytes
+    end,
+  }
 end
 
 local function warn(message)
@@ -326,9 +367,8 @@ local function initialise()
   installModLoader(root)
   local ok, result = pcall(function()
     Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
-    Importer.bind({ options={ get=function(_, key)
-      if key == "stadium2_shader" then return shaderStyle end
-    end } })
+    Importer.bind(viewerMod(root))
+    Importer.setPlaythroughReady(true)
     Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_presentation")
     Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
     DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
