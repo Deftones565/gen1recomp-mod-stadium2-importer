@@ -2,6 +2,7 @@ local Build = require("mods.STADIUM2_IMPORTER.lib.build")
 local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
+local RapidashCut = require("mods.STADIUM2_IMPORTER.lib.effects.rapidash_cut")
 local EffectRenderer = require("mods.STADIUM2_IMPORTER.lib.effect_renderer")
 local Sampler = require("mods.STADIUM2_IMPORTER.lib.sampler")
 local RenderContract = require("mods.STADIUM2_IMPORTER.lib.render_contract")
@@ -9,6 +10,15 @@ local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_te
 
 local Renderer = {}
 Renderer.__index = Renderer
+
+-- Pineco's eye cards are authored as culled RDP decals at the shell surface.
+-- Use the same tiny reduced-depth-buffer stabilization as ordinary decals;
+-- a large pull can move a rear-facing eye in front of the opaque shell.
+Renderer.PINECO_DECAL_DEPTH_BIAS = 4/65535
+-- Arena floor markings are an authored top layer. Give them enough separation
+-- to remain stable on 16/24-bit depth buffers while still allowing genuinely
+-- nearer walls and battlers (drawn with ordinary depth) to occlude them.
+Renderer.ARENA_COPLANAR_DEPTH_BIAS = 32/65535
 
 Renderer.FORMAT = {
   { "VertexPosition", "float", 3 },
@@ -18,10 +28,11 @@ Renderer.FORMAT = {
 }
 
 local SHADER = [[
-varying vec3 vNormal;
-varying vec3 vSun;
-varying vec2 vGeneratedUV;
-varying vec3 vEyeNormal;
+#define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
+varying STADIUM_FLOAT vec3 vNormal;
+varying STADIUM_FLOAT vec3 vSun;
+varying STADIUM_FLOAT vec2 vGeneratedUV;
+varying STADIUM_FLOAT vec3 vEyeNormal;
 #ifdef VERTEX
 uniform mat4 mvp;
 uniform mat4 modelMatrix;
@@ -34,21 +45,28 @@ uniform vec3 billboardCenter;
 uniform vec3 billboardRight;
 uniform vec3 billboardUp;
 uniform vec2 billboardSize;
+uniform float decalDepthBias;
 attribute vec3 VertexNormal;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
   if (billboardEnabled > 0.5) {
     vertex_position.xyz = billboardCenter
       + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
-      + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
+      + billboardUp * ((1.0 - VertexTexCoord.y) * billboardSize.y);
   }
   vNormal = normalize(normalMatrix * VertexNormal);
   vEyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
   vGeneratedUV=(vEyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
   vSun = (sunVP * (modelMatrix * vertex_position)).xyz;
-  return mvp*vertex_position;
+  vec4 clip=mvp*vertex_position;
+  // Authored graph layers and model decals can share depth in a 16-bit mobile
+  // buffer. Move each ranked layer a few depth units toward the camera;
+  // unranked ordinary geometry keeps strict depth testing.
+  clip.z-=decalDepthBias*clip.w;
+  return clip;
 }
 #endif
 #ifdef PIXEL
+uniform Image MainTex;
 uniform vec3 lightDir;
 uniform vec3 ambient;
 uniform vec3 diffuse;
@@ -71,9 +89,26 @@ uniform float sunBias;
 uniform vec2 sunTexel;
 uniform float effectIntensityMode;
 uniform float lightingEnabled;
+uniform float modernLightingEnabled;
 uniform float celShadingEnabled;
 uniform float textureGenEnabled;
 uniform vec2 textureCoordinateScale;
+uniform vec2 secondaryCoordinateScale;
+uniform vec2 primaryWrapMode;
+uniform vec2 secondaryWrapMode;
+uniform float boundedUVEnabled;
+uniform float smoothTextureFiltering;
+uniform float n64CombinerEnabled;
+uniform float n64CombinerCycles;
+uniform float n64CombinerCoverage;
+uniform float n64CoveragePassthrough;
+uniform float primaryIntensityAlpha;
+uniform float secondaryIntensityAlpha;
+uniform float primitiveLodFraction;
+uniform vec4 n64ColorCycle0;
+uniform vec4 n64AlphaCycle0;
+uniform vec4 n64ColorCycle1;
+uniform vec4 n64AlphaCycle1;
 float shadowDepth(vec2 uv) {
   vec4 c=Texel(sunMap,uv);
   return c.r+c.g*(1.0/255.0);
@@ -81,6 +116,16 @@ float shadowDepth(vec2 uv) {
 float sunlight(vec3 p) {
   if (sunEnabled<0.5 || p.x<0.0 || p.x>1.0 || p.y<0.0 || p.y>1.0 || p.z>1.0) return 1.0;
   float z=p.z-sunBias;
+#ifdef GL_ES
+  // Packed 8-bit shadow depth plus mediump interpolation makes four binary
+  // PCF comparisons disagree within a primitive on mobile. One filtered,
+  // softly-thresholded comparison keeps the same shadow strength without the
+  // speckled surface noise.
+  float mapDepth=shadowDepth(p.xy);
+  float edge=max(sunBias,1.0/255.0);
+  float lit=smoothstep(mapDepth-edge,mapDepth+edge,z);
+  return 1.0-sunDark*lit;
+#else
   // Four taps, as before, but distributed as a rotated 3x3 footprint. This
   // widens the penumbra and avoids square stair-steps without another fetch.
   float lit=step(z,shadowDepth(p.xy+sunTexel*vec2(-1.5,-0.5)))
@@ -88,12 +133,35 @@ float sunlight(vec3 p) {
     +step(z,shadowDepth(p.xy+sunTexel*vec2(1.5,0.5)))
     +step(z,shadowDepth(p.xy+sunTexel*vec2(-0.5,1.5)));
   return 1.0-sunDark*(1.0-lit*0.25);
+#endif
 }
-vec4 sample3(Image image, vec2 uv, vec2 size) {
-  vec2 p = uv * size - vec2(0.5);
-  vec2 base = floor(p);
-  vec2 f = fract(p);
-  vec2 texel = vec2(1.0) / size;
+float foldTextureCoordinate(float value, float mode) {
+  if (mode < 0.5) return clamp(value, 0.0, 1.0);
+  if (mode < 1.5) return mod(value, 1.0);
+  if (mode > 2.5) return clamp(1.0-abs(value-1.0), 0.0, 1.0);
+  float mirrored = mod(value, 2.0);
+  return mirrored <= 1.0 ? mirrored : 2.0 - mirrored;
+}
+STADIUM_FLOAT vec2 foldTextureUV(STADIUM_FLOAT vec2 uv, vec2 mode) {
+  return vec2(foldTextureCoordinate(uv.x, mode.x),
+    foldTextureCoordinate(uv.y, mode.y));
+}
+vec4 sample3(Image image, STADIUM_FLOAT vec2 uv, vec2 size, vec2 wrapMode) {
+  // Keep the 3-point filter's floor/fract work inside one texture tile.
+  // Mobile fragment shaders can use mediump arithmetic, where multiplying a
+  // large repeated/scrolled UV by the texture size destroys the fractional
+  // texel position and produces primitive-local crawling/noise.
+  // Mirror+clamp has no direct LÖVE sampler equivalent and must always be
+  // folded here. Other modes only need shader folding on bounded-UV targets.
+  if (boundedUVEnabled > 0.5 || wrapMode.x > 2.5 || wrapMode.y > 2.5)
+    uv = foldTextureUV(uv, wrapMode);
+  // Large Stadium field polygons need ordinary filtered sampling and mipmaps;
+  // the N64 three-point reconstruction is intentionally retained for Pokemon.
+  if (smoothTextureFiltering > 0.5) return Texel(image, uv);
+  STADIUM_FLOAT vec2 p = uv * size - vec2(0.5);
+  STADIUM_FLOAT vec2 base = floor(p);
+  STADIUM_FLOAT vec2 f = fract(p);
+  STADIUM_FLOAT vec2 texel = vec2(1.0) / size;
   if (f.x + f.y < 1.0) {
     vec2 o = (base + vec2(0.5)) * texel;
     return Texel(image, o) * (1.0-f.x-f.y)
@@ -105,21 +173,133 @@ vec4 sample3(Image image, vec2 uv, vec2 size) {
     + Texel(image, o - vec2(texel.x,0.0)) * (1.0-f.y)
     + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.x);
 }
-vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
-  vec2 uv=mix(texture_coords*textureCoordinateScale,vGeneratedUV,textureGenEnabled);
-  vec4 texel = sample3(texture, uv + textureScroll.xy, primarySize);
+vec3 n64ColorAB(float source, vec4 combined, vec4 texel0, vec4 texel1,
+    vec4 primitive, vec4 shade, vec4 environment) {
+  if (source < 0.5) return combined.rgb;
+  if (source < 1.5) return texel0.rgb;
+  if (source < 2.5) return texel1.rgb;
+  if (source < 3.5) return primitive.rgb;
+  if (source < 4.5) return shade.rgb;
+  if (source < 5.5) return environment.rgb;
+  if (source < 6.5) return vec3(1.0);
+  return vec3(0.0);
+}
+vec3 n64ColorC(float source, vec4 combined, vec4 texel0, vec4 texel1,
+    vec4 primitive, vec4 shade, vec4 environment) {
+  if (source < 0.5) return combined.rgb;
+  if (source < 1.5) return texel0.rgb;
+  if (source < 2.5) return texel1.rgb;
+  if (source < 3.5) return primitive.rgb;
+  if (source < 4.5) return shade.rgb;
+  if (source < 5.5) return environment.rgb;
+  if (source < 6.5) return vec3(1.0);
+  if (source < 7.5) return vec3(combined.a);
+  if (source < 8.5) return vec3(texel0.a);
+  if (source < 9.5) return vec3(texel1.a);
+  if (source < 10.5) return vec3(primitive.a);
+  if (source < 11.5) return vec3(shade.a);
+  if (source < 12.5) return vec3(environment.a);
+  if (source < 13.5) return vec3(0.0);
+  if (source < 14.5) return vec3(primitiveLodFraction);
+  return vec3(0.0);
+}
+vec3 n64ColorD(float source, vec4 combined, vec4 texel0, vec4 texel1,
+    vec4 primitive, vec4 shade, vec4 environment) {
+  if (source < 0.5) return combined.rgb;
+  if (source < 1.5) return texel0.rgb;
+  if (source < 2.5) return texel1.rgb;
+  if (source < 3.5) return primitive.rgb;
+  if (source < 4.5) return shade.rgb;
+  if (source < 5.5) return environment.rgb;
+  if (source < 6.5) return vec3(1.0);
+  return vec3(0.0);
+}
+float n64Alpha(float source, vec4 combined, vec4 texel0, vec4 texel1,
+    vec4 primitive, vec4 shade, vec4 environment) {
+  if (source < 0.5) return combined.a;
+  if (source < 1.5) return texel0.a;
+  if (source < 2.5) return texel1.a;
+  if (source < 3.5) return primitive.a;
+  if (source < 4.5) return shade.a;
+  if (source < 5.5) return environment.a;
+  if (source < 6.5) return 1.0;
+  return 0.0;
+}
+float n64AlphaC(float source, vec4 combined, vec4 texel0, vec4 texel1,
+    vec4 primitive, vec4 shade, vec4 environment) {
+  // Alpha-C source zero is LOD_FRACTION, unlike the combined-alpha source
+  // used by the other alpha selector positions. Source six is the authored
+  // primitive LOD fraction stored in gDPSetPrimColor's low byte.
+  if (source < 0.5) return 0.0;
+  if (source > 5.5 && source < 6.5) return primitiveLodFraction;
+  return n64Alpha(source,combined,texel0,texel1,primitive,shade,environment);
+}
+vec4 n64Cycle(vec4 selectors, vec4 alphaSelectors, vec4 combined,
+    vec4 texel0, vec4 texel1, vec4 primitive, vec4 shade, vec4 environment) {
+  vec3 rgb=(n64ColorAB(selectors.x,combined,texel0,texel1,primitive,shade,environment)
+      -n64ColorAB(selectors.y,combined,texel0,texel1,primitive,shade,environment))
+    *n64ColorC(selectors.z,combined,texel0,texel1,primitive,shade,environment)
+    +n64ColorD(selectors.w,combined,texel0,texel1,primitive,shade,environment);
+  float alpha=(n64Alpha(alphaSelectors.x,combined,texel0,texel1,primitive,shade,environment)
+      -n64Alpha(alphaSelectors.y,combined,texel0,texel1,primitive,shade,environment))
+    *n64AlphaC(alphaSelectors.z,combined,texel0,texel1,primitive,shade,environment)
+    +n64Alpha(alphaSelectors.w,combined,texel0,texel1,primitive,shade,environment);
+  return clamp(vec4(rgb,alpha),0.0,1.0);
+}
+void effect() {
+  vec4 color=VaryingColor;
+  STADIUM_FLOAT vec2 texture_coords=VaryingTexCoord.st;
+  STADIUM_FLOAT vec2 screen_coords=love_PixelCoord;
+  STADIUM_FLOAT vec2 uv=mix(texture_coords*textureCoordinateScale,
+    vGeneratedUV,textureGenEnabled);
+  STADIUM_FLOAT vec2 secondaryUV=mix(texture_coords*secondaryCoordinateScale,
+    vGeneratedUV,textureGenEnabled);
+  vec4 texel0 = sample3(MainTex, uv + textureScroll.xy, primarySize, primaryWrapMode);
+  // Cached N64 I textures remain opaque RGBA for Pokemon effect shaders.
+  // Phase-5 combiners, however, address the source intensity as both RGB and
+  // alpha, so restore that channel only when the CPU marks this ROM input.
+  if (primaryIntensityAlpha > 0.5) texel0.a = texel0.r;
+  vec4 texel1 = texel0;
+  vec4 texel = texel0;
   if (secondaryEnabled > 0.5) {
-    vec4 other = sample3(secondaryTexture, uv + textureScroll.zw, secondarySize);
-    texel = mix(texel, other, secondaryMix);
+    vec4 other = sample3(secondaryTexture, secondaryUV + textureScroll.zw, secondarySize,
+      secondaryWrapMode);
+    if (secondaryIntensityAlpha > 0.5) other.a = other.r;
+    texel1 = other;
+    // The slime display list uses an opaque framebuffer blend. Its combiner
+    // still lerps both RGB layers, but its generated alpha must not make the
+    // body translucent in LOVE's alpha-blended model pass. Keep TEXEL0 alpha,
+    // which retains any authored cutout while matching the opaque body draw.
+    texel = vec4(mix(texel.rgb, other.rgb, secondaryMix), texel.a);
   }
   if (effectIntensityMode > 0.5) {
     float intensity = texel.r;
-    float gasAlpha = intensity * primitiveColor.a * color.a * sceneTint.a;
+    // I4 dynamic particles have no authored alpha and derive coverage from
+    // intensity (mode 1). The shared flame's IA8 render tile uses
+    // intensity for colour but TEXEL0_ALPHA for coverage (mode 2).
+    float coverage = effectIntensityMode > 1.5 ? texel.a : intensity;
+    float gasAlpha = coverage * primitiveColor.a * color.a * sceneTint.a;
     if (gasAlpha <= alphaCutoff) discard;
     vec3 gasColor = mix(environmentColor.rgb, primitiveColor.rgb, intensity);
-    return vec4(gasColor * color.rgb * sceneTint.rgb, gasAlpha);
+    love_PixelColor=vec4(gasColor * color.rgb * sceneTint.rgb, gasAlpha);
+    return;
   }
-  texel *= color * primitiveColor;
+  if (n64CombinerEnabled > 0.5) {
+    vec4 combined=n64Cycle(n64ColorCycle0,n64AlphaCycle0,vec4(0.0),
+      texel0,texel1,primitiveColor,color,environmentColor);
+    if (n64CombinerCycles > 1.5)
+      combined=n64Cycle(n64ColorCycle1,n64AlphaCycle1,combined,
+        texel0,texel1,primitiveColor,color,environmentColor);
+    // An opaque RDP render profile writes RGB even when its otherwise-unused
+    // combiner alpha is zero. The CPU enables this only for ROM-proven zero
+    // alpha equations in opaque/cutout arena queues; translucent cards retain
+    // their authored alpha equation.
+    if (n64CoveragePassthrough > 0.5)
+      combined.a=texel0.a*color.a;
+    texel=combined;
+  } else {
+    texel *= color * primitiveColor;
+  }
   if (texel.a <= alphaCutoff) discard;
   vec3 n=normalize(vNormal);
   float stadiumShade=clamp(0.7725+n.x*0.06+n.y*0.225+n.z*0.11,0.30,1.0);
@@ -129,36 +309,32 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
   // portion so self-shadowing cannot crush already-dark faces toward black.
   float shadowVisibility=sunlight(vSun);
   float litShade=0.30+(stadiumShade-0.30)*shadowVisibility;
+  // Scene lightDir is the direction rays travel (also used by shadow maps).
+  // Lambert needs the vector from the surface back toward the light.
+  float modernDiffuse=max(dot(n,-normalize(lightDir)),0.0);
+  vec3 modernShade=clamp(ambient+diffuse*modernDiffuse*shadowVisibility,
+    vec3(0.0),vec3(1.0));
   float mangaAmount=celShadingEnabled*lightingEnabled;
-  float washShade=floor(litShade*3.0+0.5)/3.0;
-  litShade=mix(litShade,washShade,mangaAmount);
-  vec3 lighting=mix(vec3(1.0),vec3(litShade),lightingEnabled);
+  float styleShade=mix(litShade,dot(modernShade,vec3(0.299,0.587,0.114)),
+    modernLightingEnabled);
+  float washShade=floor(styleShade*3.0+0.5)/3.0;
+  vec3 authoredLighting=mix(vec3(litShade),modernShade,modernLightingEnabled);
+  authoredLighting=mix(authoredLighting,vec3(washShade),mangaAmount);
+  vec3 lighting=mix(vec3(1.0),authoredLighting,lightingEnabled);
   vec3 shaded=combined * lighting * sceneTint.rgb;
-  float watercolorScreenScale=max(1.0,1080.0/max(1.0,love_ScreenSize.y));
-  if(watercolorScreenScale<=1.0001){
+  if (mangaAmount > 0.001) {
     // Watercolor-manga mode stays in the existing material pass. A warm paper
     // lift, muted pigment and screen-stable irregularity suggest a physical
     // wash; the grazing-angle term lays ink inside the silhouette without a
     // second expanded-mesh outline draw.
-    float paperNoise=fract(sin(dot(floor(screen_coords.xy*0.5),
+    STADIUM_FLOAT float watercolorScreenScale=
+      max(1.0,1080.0/max(1.0,love_ScreenSize.y));
+    STADIUM_FLOAT vec2 watercolorCoords=
+      screen_coords.xy*watercolorScreenScale;
+    STADIUM_FLOAT float paperNoise=fract(sin(dot(floor(watercolorCoords*0.5),
       vec2(12.9898,78.233)))*43758.5453)-0.5;
-    float broadWash=sin(screen_coords.x*0.021+screen_coords.y*0.017)*0.5
-      +sin(screen_coords.x*0.009-screen_coords.y*0.013)*0.5;
-    float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
-    float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
-    vec3 watercolor=mix(vec3(pigmentGray),shaded,0.82)*pigmentVariation;
-    watercolor=mix(vec3(1.0,0.965,0.885),watercolor,0.94);
-    float ink=1.0-smoothstep(0.025,0.15,abs(vEyeNormal.z));
-    float hatch=smoothstep(0.58,0.76,
-      fract((screen_coords.x+screen_coords.y)*0.115+paperNoise*0.35));
-    float inkMark=ink*(0.22+0.78*hatch);
-    watercolor*=mix(1.0,0.18,inkMark);
-    shaded=mix(shaded,watercolor,mangaAmount);
-  }else{
-    vec2 watercolorCoords=screen_coords.xy*watercolorScreenScale;
-    float paperNoise=fract(sin(dot(floor(watercolorCoords*0.5),
-      vec2(12.9898,78.233)))*43758.5453)-0.5;
-    float broadWash=sin(watercolorCoords.x*0.021+watercolorCoords.y*0.017)*0.5
+    STADIUM_FLOAT float broadWash=
+      sin(watercolorCoords.x*0.021+watercolorCoords.y*0.017)*0.5
       +sin(watercolorCoords.x*0.009-watercolorCoords.y*0.013)*0.5;
     float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
     float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
@@ -172,8 +348,163 @@ vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) 
     shaded=mix(shaded,watercolor,mangaAmount);
   }
   shaded=mix(shaded,vec3(1.0),flashAmount);
-  return vec4(shaded,
+  love_PixelColor=vec4(shaded,
     texel.a * mix(1.0, environmentColor.a, environmentMix) * sceneTint.a);
+}
+#endif
+]]
+
+-- Android uses the simpler Stadium lighting path from v0.10.7. Keep the
+-- current material contract (billboards, generated UVs, dual textures and
+-- effect intensity), but avoid the procedural Manga work, manual 3-point
+-- filtering and packed model self-shadow sampling that are fragile on GLES.
+local MOBILE_SHADER = [[
+#define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
+varying STADIUM_FLOAT vec3 vNormal;
+varying STADIUM_FLOAT vec2 vGeneratedUV;
+#ifdef VERTEX
+uniform mat4 mvp;
+uniform mat4 viewMatrix;
+uniform mat3 normalMatrix;
+uniform vec2 textureGenScale;
+uniform float billboardEnabled;
+uniform vec3 billboardCenter;
+uniform vec3 billboardRight;
+uniform vec3 billboardUp;
+uniform vec2 billboardSize;
+uniform float decalDepthBias;
+attribute vec3 VertexNormal;
+vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  if (billboardEnabled > 0.5) {
+    vertex_position.xyz = billboardCenter
+      + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
+      + billboardUp * ((1.0 - VertexTexCoord.y) * billboardSize.y);
+  }
+  vNormal=normalize(normalMatrix*VertexNormal);
+  vec3 eyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
+  vGeneratedUV=(eyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
+  vec4 clip=mvp*vertex_position;
+  clip.z-=decalDepthBias*clip.w;
+  return clip;
+}
+#endif
+#ifdef PIXEL
+uniform Image MainTex;
+uniform vec4 primitiveColor;
+uniform vec4 environmentColor;
+uniform float environmentMix;
+uniform Image secondaryTexture;
+uniform float secondaryEnabled;
+uniform float secondaryMix;
+uniform vec4 textureScroll;
+uniform float alphaCutoff;
+uniform vec4 sceneTint;
+uniform float flashAmount;
+uniform float effectIntensityMode;
+uniform float lightingEnabled;
+uniform float modernLightingEnabled;
+uniform vec3 lightDir;
+uniform vec3 ambient;
+uniform vec3 diffuse;
+uniform float textureGenEnabled;
+uniform vec2 textureCoordinateScale;
+uniform vec2 secondaryCoordinateScale;
+uniform float n64CombinerEnabled;
+uniform float n64CombinerCycles;
+uniform float n64CombinerCoverage;
+uniform float primitiveLodFraction;
+uniform vec4 n64ColorCycle0;
+uniform vec4 n64AlphaCycle0;
+uniform vec4 n64ColorCycle1;
+uniform vec4 n64AlphaCycle1;
+vec3 mobileColorAB(float source,vec4 combined,vec4 texel0,vec4 texel1,
+    vec4 primitive,vec4 shade,vec4 environment) {
+  if(source<0.5)return combined.rgb;if(source<1.5)return texel0.rgb;
+  if(source<2.5)return texel1.rgb;if(source<3.5)return primitive.rgb;
+  if(source<4.5)return shade.rgb;if(source<5.5)return environment.rgb;
+  if(source<6.5)return vec3(1.0);return vec3(0.0);
+}
+vec3 mobileColorC(float source,vec4 combined,vec4 texel0,vec4 texel1,
+    vec4 primitive,vec4 shade,vec4 environment) {
+  if(source<0.5)return combined.rgb;if(source<1.5)return texel0.rgb;
+  if(source<2.5)return texel1.rgb;if(source<3.5)return primitive.rgb;
+  if(source<4.5)return shade.rgb;if(source<5.5)return environment.rgb;
+  if(source<6.5)return vec3(1.0);if(source<7.5)return vec3(combined.a);
+  if(source<8.5)return vec3(texel0.a);if(source<9.5)return vec3(texel1.a);
+  if(source<10.5)return vec3(primitive.a);if(source<11.5)return vec3(shade.a);
+  if(source<12.5)return vec3(environment.a);if(source<13.5)return vec3(0.0);
+  if(source<14.5)return vec3(primitiveLodFraction);return vec3(0.0);
+}
+float mobileAlpha(float source,vec4 combined,vec4 texel0,vec4 texel1,
+    vec4 primitive,vec4 shade,vec4 environment) {
+  if(source<0.5)return combined.a;if(source<1.5)return texel0.a;
+  if(source<2.5)return texel1.a;if(source<3.5)return primitive.a;
+  if(source<4.5)return shade.a;if(source<5.5)return environment.a;
+  if(source<6.5)return 1.0;return 0.0;
+}
+float mobileAlphaC(float source,vec4 combined,vec4 texel0,vec4 texel1,
+    vec4 primitive,vec4 shade,vec4 environment) {
+  if(source<0.5)return 0.0;
+  if(source>5.5&&source<6.5)return primitiveLodFraction;
+  return mobileAlpha(source,combined,texel0,texel1,primitive,shade,environment);
+}
+vec4 mobileN64Cycle(vec4 selectors,vec4 alphaSelectors,vec4 combined,
+    vec4 texel0,vec4 texel1,vec4 primitive,vec4 shade,vec4 environment) {
+  vec3 rgb=(mobileColorAB(selectors.x,combined,texel0,texel1,primitive,shade,environment)
+    -mobileColorAB(selectors.y,combined,texel0,texel1,primitive,shade,environment))
+    *mobileColorC(selectors.z,combined,texel0,texel1,primitive,shade,environment)
+    +mobileColorAB(selectors.w,combined,texel0,texel1,primitive,shade,environment);
+  float alpha=(mobileAlpha(alphaSelectors.x,combined,texel0,texel1,primitive,shade,environment)
+    -mobileAlpha(alphaSelectors.y,combined,texel0,texel1,primitive,shade,environment))
+    *mobileAlphaC(alphaSelectors.z,combined,texel0,texel1,primitive,shade,environment)
+    +mobileAlpha(alphaSelectors.w,combined,texel0,texel1,primitive,shade,environment);
+  return clamp(vec4(rgb,alpha),0.0,1.0);
+}
+void effect() {
+  vec4 color=VaryingColor;
+  STADIUM_FLOAT vec2 uv=mix(VaryingTexCoord.st*textureCoordinateScale,
+    vGeneratedUV,textureGenEnabled);
+  STADIUM_FLOAT vec2 secondaryUV=mix(VaryingTexCoord.st*secondaryCoordinateScale,
+    vGeneratedUV,textureGenEnabled);
+  vec4 texel0=Texel(MainTex,uv+textureScroll.xy);
+  vec4 texel1=texel0;
+  vec4 texel=texel0;
+  if (secondaryEnabled > 0.5) {
+    vec4 other=Texel(secondaryTexture,secondaryUV+textureScroll.zw);
+    texel1=other;
+    texel=vec4(mix(texel.rgb,other.rgb,secondaryMix),texel.a);
+  }
+  if (effectIntensityMode > 0.5) {
+    float intensity=texel.r;
+    float coverage=effectIntensityMode > 1.5 ? texel.a : intensity;
+    float gasAlpha=coverage*primitiveColor.a*color.a*sceneTint.a;
+    if (gasAlpha <= alphaCutoff) discard;
+    vec3 gasColor=mix(environmentColor.rgb,primitiveColor.rgb,intensity);
+    love_PixelColor=vec4(gasColor*color.rgb*sceneTint.rgb,gasAlpha);
+    return;
+  }
+  if(n64CombinerEnabled>0.5) {
+    vec4 combined=mobileN64Cycle(n64ColorCycle0,n64AlphaCycle0,vec4(0.0),
+      texel0,texel1,primitiveColor,color,environmentColor);
+    if(n64CombinerCycles>1.5)
+      combined=mobileN64Cycle(n64ColorCycle1,n64AlphaCycle1,combined,
+        texel0,texel1,primitiveColor,color,environmentColor);
+    if(n64CombinerCycles>1.5&&n64CombinerCoverage<0.5)
+      combined.a=texel0.a*color.a;
+    texel=combined;
+  } else texel*=color*primitiveColor;
+  if (texel.a <= alphaCutoff) discard;
+  vec3 n=normalize(vNormal);
+  float stadiumShade=clamp(0.7725+n.x*0.06+n.y*0.225+n.z*0.11,0.30,1.0);
+  float modernDiffuse=max(dot(n,-normalize(lightDir)),0.0);
+  vec3 modernShade=clamp(ambient+diffuse*modernDiffuse,vec3(0.0),vec3(1.0));
+  vec3 combined=mix(texel.rgb,texel.rgb*environmentColor.rgb,environmentMix);
+  vec3 authoredLighting=mix(vec3(stadiumShade),modernShade,modernLightingEnabled);
+  vec3 lighting=mix(vec3(1.0),authoredLighting,lightingEnabled);
+  vec3 shaded=combined*lighting*sceneTint.rgb;
+  shaded=mix(shaded,vec3(1.0),flashAmount);
+  love_PixelColor=vec4(shaded,
+    texel.a*mix(1.0,environmentColor.a,environmentMix)*sceneTint.a);
 }
 #endif
 ]]
@@ -211,13 +542,16 @@ uniform vec3 billboardCenter;
 uniform vec3 billboardRight;
 uniform vec3 billboardUp;
 uniform vec2 billboardSize;
+uniform float decalDepthBias;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
   if (billboardEnabled > 0.5) {
     vertex_position.xyz = billboardCenter
       + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
-      + billboardUp * ((1.0 - VertexTexCoord.y * 0.5) * billboardSize.y);
+      + billboardUp * ((1.0 - VertexTexCoord.y) * billboardSize.y);
   }
-  return mvp * vertex_position;
+  vec4 clip=mvp*vertex_position;
+  clip.z-=decalDepthBias*clip.w;
+  return clip;
 }
 #endif
 #ifdef PIXEL
@@ -228,7 +562,8 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords) {
   vec4 texel = Texel(image, texture_coords);
   if (effectIntensityMode > 0.5) {
     float intensity = texel.r;
-    float alpha = intensity * primitiveColor.a * color.a;
+    float coverage = effectIntensityMode > 1.5 ? texel.a : intensity;
+    float alpha = coverage * primitiveColor.a * color.a;
     if (alpha <= 0.001) discard;
     return vec4(mix(environmentColor.rgb, primitiveColor.rgb, intensity) * color.rgb, alpha);
   }
@@ -240,13 +575,31 @@ vec4 effect(vec4 color, Image image, vec2 texture_coords, vec2 screen_coords) {
 ]]
 
 Renderer.SHADER_SOURCE = SHADER
+Renderer.MOBILE_SHADER_SOURCE = MOBILE_SHADER
 Renderer.CAMERA_SHADER_SOURCE = CAMERA_SHADER
 
-function Renderer.compileShaderAudit()
+function Renderer.shaderSource(forceMediump)
+  if not forceMediump then return SHADER end
+  return (SHADER:gsub("#define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP",
+    "#define STADIUM_FLOAT mediump", 1))
+end
+
+function Renderer.compileShaderAudit(forceMediump)
   if not (love and love.graphics and love.graphics.newShader) then
     return false, "LÖVE shader compiler unavailable"
   end
-  local ok, shader = pcall(love.graphics.newShader, SHADER)
+  local ok, shader = pcall(love.graphics.newShader,
+    Renderer.shaderSource(forceMediump))
+  if not ok or not shader then return false, tostring(shader) end
+  if shader.release then pcall(shader.release, shader) end
+  return true
+end
+
+function Renderer.compileMobileShaderAudit()
+  if not (love and love.graphics and love.graphics.newShader) then
+    return false, "LÖVE shader compiler unavailable"
+  end
+  local ok, shader = pcall(love.graphics.newShader, MOBILE_SHADER)
   if not ok or not shader then return false, tostring(shader) end
   if shader.release then pcall(shader.release, shader) end
   return true
@@ -474,15 +827,36 @@ local function sourceFrame(anim, time, loop)
   return start + ((raw - start) % span), false
 end
 
-local function makeMesh(prim)
+function Renderer.meshRows(prim)
   local rows = {}
   local us, vs = Sampler.uvScale(prim.sampler, prim.textureScale)
+  local minU,maxU,minV,maxV=math.huge,-math.huge,math.huge,-math.huge
+  for i=1,prim.nverts do
+    local u,v=(prim.uv[i*2-1] or 0)*us,(prim.uv[i*2] or 0)*vs
+    minU,maxU=math.min(minU,u),math.max(maxU,u)
+    minV,maxV=math.min(minV,v),math.max(maxV,v)
+  end
+  local anchorU,anchorV=0,0
+  -- Callback textures can have a different resolution and therefore a
+  -- non-integral coordinate scale. Their phase cannot use the source
+  -- texture's periodic origin safely.
+  if not prim.callbackOffset then
+    local wrapS,wrapT=Sampler.wrap(prim.sampler)
+    anchorU=Sampler.coordinateAnchor(minU,maxU,wrapS)
+    anchorV=Sampler.coordinateAnchor(minV,maxV,wrapT)
+  end
   for i = 1, prim.nverts do
     local color = prim.vertexSemantics == "color" and prim.color or nil
-    rows[i] = { 0, 0, 0, prim.uv[i * 2 - 1] * us, prim.uv[i * 2] * vs, 0, 1, 0,
+    rows[i] = { 0, 0, 0, prim.uv[i * 2 - 1] * us-anchorU,
+      prim.uv[i * 2] * vs-anchorV, 0, 1, 0,
       color and color[i * 4 - 3] / 255 or 1, color and color[i * 4 - 2] / 255 or 1,
       color and color[i * 4 - 1] / 255 or 1, color and color[i * 4] / 255 or 1 }
   end
+  return rows,anchorU,anchorV
+end
+
+local function makeMesh(prim)
+  local rows = Renderer.meshRows(prim)
   if not (love and love.graphics and love.graphics.newMesh) then return nil, rows end
   local ok, mesh = pcall(love.graphics.newMesh, Renderer.FORMAT, rows, "triangles", "dynamic")
   if not ok then return nil, rows end
@@ -511,7 +885,9 @@ local function sendFlameBillboard(shader, part, view, model)
     pcall(shader.send, shader, "billboardEnabled", 0)
     return
   end
-  local tipA, tipB, baseA, baseB = part.rows[1], part.rows[2],
+  -- Literal shared-object Vtx order: 1/4 are the two top corners and 9/10
+  -- are the base. (The intervening records are not regular row pairs.)
+  local tipA, tipB, baseA, baseB = part.rows[1], part.rows[4],
     part.rows[9], part.rows[10]
   local center = { (baseA[1] + baseB[1]) * .5,
     (baseA[2] + baseB[2]) * .5, (baseA[3] + baseB[3]) * .5 }
@@ -531,6 +907,35 @@ local function sendFlameBillboard(shader, part, view, model)
   pcall(shader.send, shader, "billboardEnabled", 1)
 end
 
+-- Fragment 26 gives Gastly a species-specific camera matrix before submitting
+-- its gas quad.  Convert the camera axes back into model-local space so the
+-- ordinary model MVP produces the same screen-facing result.  The three rows
+-- of an orthogonal view-model rotation are its inverse basis; normalizing them
+-- also removes the battle scene's uniform model scale.
+local function cameraFacingAxes(view, model)
+  local vm = matMul(view or identity(), model or identity())
+  local rx,ry,rz = normalize3(vm[1],vm[2],vm[3])
+  local ux,uy,uz = normalize3(vm[5],vm[6],vm[7])
+  local fx,fy,fz = normalize3(vm[9],vm[10],vm[11])
+  return {right={rx,ry,rz},up={ux,uy,uz},forward={fx,fy,fz}}
+end
+
+local function dynamicObjectRuntime(model, runtime)
+  local values = {}
+  for name,value in pairs(type(runtime) == "table" and runtime or {}) do
+    values[name]=value
+  end
+  if model and tonumber(model.species) == 92 then
+    if values.dynamicObjectGastlyAlternate == nil then
+      values.dynamicObjectGastlyAlternate = model.variant == "shiny"
+    end
+    if values.dynamicObjectAlpha == nil and values.modelAlphaByte == nil then
+      values.modelAlphaByte = 255
+    end
+  end
+  return values
+end
+
 local function makeCanvas(w, h, msaa)
   if not (love and love.graphics and love.graphics.newCanvas) then return nil end
   msaa = math.max(0, floor(tonumber(msaa) or 0))
@@ -540,10 +945,13 @@ local function makeCanvas(w, h, msaa)
   end
   if not okColor then return nil end
   local depth
-  local okDepth, d = pcall(love.graphics.newCanvas, w, h, { format = "depth24stencil8", readable = false, dpiscale = 1, msaa = msaa })
-  if okDepth then depth = d end
+  for _,format in ipairs({"depth24stencil8","depth24","depth16","depth32f"}) do
+    local okDepth,d=pcall(love.graphics.newCanvas,w,h,
+      {format=format,readable=false,dpiscale=1,msaa=msaa})
+    if okDepth and d then depth=d break end
+  end
   if color.setFilter then pcall(color.setFilter, color, "linear", "linear") end
-  return color, depth
+  return color, depth, depth == nil
 end
 
 local function imageDimensions(image, fallback)
@@ -554,30 +962,317 @@ local function imageDimensions(image, fallback)
   return (fallback and fallback.w) or 1,(fallback and fallback.h) or 1
 end
 
+local function resolvedTextureWrap(prim, material, set)
+  local wrapS, wrapT = Sampler.wrap(prim and prim.sampler)
+  if material then
+    wrapS = material.wrapS or wrapS
+    wrapT = material.wrapT or wrapT
+  end
+  if set and set.samplers and set.samplers[1] then
+    wrapS, wrapT = Sampler.wrap(set.samplers[1])
+  end
+  if set and set.wrap then wrapS, wrapT = set.wrap, set.wrap end
+  return wrapS, wrapT
+end
+
+function Renderer.callbackPrimaryWrap(prim, material, set, primaryOwned)
+  return resolvedTextureWrap(prim, material, primaryOwned and set or nil)
+end
+
+function Renderer.callbackSecondaryWrap(set)
+  if type(set) == "table" and set.samplers and set.samplers[2] then
+    return Sampler.wrap(set.samplers[2])
+  end
+  local wrap = type(set) == "table" and set.wrap or nil
+  return wrap or "clamp", wrap or "clamp"
+end
+
+-- N64 intensity images expose the same channel as colour and alpha. Cached
+-- host textures intentionally keep opaque alpha because Pokemon-specific
+-- effect shaders derive coverage in different ways. General phase-5 arena
+-- combiners can recover the correct input from either callback metadata or
+-- an ordinary model texture without changing that shared cache contract.
+function Renderer.phase5IntensityAlpha(material, set, model, primaryIndex)
+  if not (material and material.phase5 and material.combiner) then
+    return false, false
+  end
+  local formats = type(set) == "table" and set.formats or nil
+  local primaryFormat = formats and formats[1]
+  if primaryFormat == nil then
+    local texture = model and model.textures and model.textures[primaryIndex]
+    primaryFormat = texture and texture.format
+  end
+  return primaryFormat == 4, formats and formats[2] == 4 or false
+end
+
+local function sendTextureWrapMode(shader, uniform, wrapS, wrapT)
+  if not (shader and shader.send) then return end
+  pcall(shader.send, shader, uniform,
+    {Sampler.wrapCode(wrapS), Sampler.wrapCode(wrapT)})
+end
+
+local function sendN64Combiner(shader, material)
+  if not (shader and shader.send) then return false end
+  local combiner = material and material.phase5 and material.combiner
+  if type(combiner) ~= "table" then
+    pcall(shader.send, shader, "n64CombinerEnabled", 0)
+    return false
+  end
+  pcall(shader.send, shader, "n64ColorCycle0", combiner.color0)
+  pcall(shader.send, shader, "n64AlphaCycle0", combiner.alpha0)
+  pcall(shader.send, shader, "n64ColorCycle1", combiner.color1)
+  pcall(shader.send, shader, "n64AlphaCycle1", combiner.alpha1)
+  pcall(shader.send, shader, "n64CombinerCycles", combiner.cycles or 2)
+  pcall(shader.send, shader, "n64CombinerCoverage", combiner.coverage and 1 or 0)
+  pcall(shader.send, shader, "primitiveLodFraction",
+    tonumber(material.primitiveLodFraction) or 0)
+  pcall(shader.send, shader, "n64CombinerEnabled", 1)
+  return true
+end
+
+local function physicalTextureWrap(mode)
+  -- The combined N64 mode is emulated by foldTextureCoordinate. Keep the GPU
+  -- sampler clamped for the 3-point filter's edge taps.
+  return mode == "mirrorclamp" and "clamp" or mode
+end
+
+local function foldedTextureScroll(scroll, wrapS, wrapT, enabled)
+  if not enabled then
+    return scroll and scroll[1] or 0, scroll and scroll[2] or 0
+  end
+  return Sampler.foldOffset(scroll and scroll[1] or 0, wrapS),
+    Sampler.foldOffset(scroll and scroll[2] or 0, wrapT)
+end
+
+function Renderer.shouldBoundTextureUV(options)
+  if type(options) == "table" and options.boundedTextureUV ~= nil then
+    return options.boundedTextureUV == true
+  end
+  if Renderer.isMobileGraphics() then return true end
+  if love and love.graphics and love.graphics.getSupported then
+    local ok,supported=pcall(love.graphics.getSupported)
+    if ok and type(supported)=="table" and supported.pixelshaderhighp == false then
+      return true
+    end
+  end
+  return false
+end
+
+local function graphicsRendererLabel()
+  if not (love and love.graphics and love.graphics.getRendererInfo) then return false end
+  local ok,name,version,vendor,device=pcall(love.graphics.getRendererInfo)
+  if not ok then return false end
+  return table.concat({tostring(name or ""),tostring(version or ""),
+    tostring(vendor or ""),tostring(device or "")}," "):lower()
+end
+
+function Renderer.isAndroidGraphics()
+  local label=graphicsRendererLabel()
+  if not label then return false end
+  -- The sandbox does not expose love.system. Android is the GLES target used
+  -- by the engine; Metal remains on the full shader for desktop Macs.
+  return label:find("opengl es",1,true)~=nil or label:find("gles",1,true)~=nil
+end
+
+function Renderer.isMobileGraphics()
+  local label=graphicsRendererLabel()
+  if not label then return false end
+  return label:find("opengl es",1,true)~=nil or label:find("gles",1,true)~=nil
+    or label:find("metal",1,true)~=nil
+end
+
+function Renderer.shouldUseSimpleMobileShader(options)
+  if type(options)=="table" and options.simpleMobileShader~=nil then
+    return options.simpleMobileShader==true
+  end
+  return Renderer.isAndroidGraphics()
+end
+
+function Renderer.activeShaderSource(options)
+  options=type(options)=="table" and options or {}
+  if Renderer.shouldUseSimpleMobileShader(options) then
+    return MOBILE_SHADER,"mobile-simple"
+  end
+  return Renderer.shaderSource(options.forceMediumpShader==true),"lit"
+end
+
+function Renderer.shouldReceiveModelSunShadows(options)
+  if type(options)=="table" and options.modelSunShadows~=nil then
+    return options.modelSunShadows==true
+  end
+  -- Android/iOS keep the shared cast-shadow pass for the arena, but packed
+  -- self-shadow depth is unstable across GLES tile renderers and obscures
+  -- texture details with acne. Desktop retains the reference self-shadow.
+  return not Renderer.isMobileGraphics()
+end
+
+local function isArenaModel(model)
+  return model and model.staticPose == true and tonumber(model.species) == 0
+end
+
+function Renderer.arenaCombinerCoveragePassthrough(model, prim, material)
+  local combiner = material and material.phase5 and material.combiner
+  if not isArenaModel(model) or not combiner or not combiner.alphaOutputZero then
+    return false
+  end
+  local mode = prim and prim.arenaAlphaMode
+  return mode == "opaque" or mode == "cutout"
+end
+
+local function textureAlphaMode(texture)
+  local rgba = texture and texture.rgba
+  if type(rgba) ~= "string" then return "opaque" end
+  local transparent = false
+  for offset = 4, #rgba, 4 do
+    local alpha = rgba:byte(offset)
+    if alpha > 0 and alpha < 255 then return "blend" end
+    if alpha == 0 then transparent = true end
+  end
+  return transparent and "cutout" or "opaque"
+end
+
+-- Translate the ROM texture coverage into a modern depth queue. This is
+-- arena-only: Pokemon retain their established face/decal behavior and the
+-- public drawScene API remains opaque/additive compatible.
+function Renderer.prepareArenaRenderQueues(model, parts, materialProvider,
+    textureProvider)
+  if not isArenaModel(model) or type(parts) ~= "table" then return nil end
+  local counts = { opaque = 0, cutout = 0, blend = 0, shadow = 0,
+    additive = 0 }
+  for _, part in ipairs(parts) do
+    local prim = part.prim or {}
+    local mode = prim.alphaMode
+    local textureIndex = type(textureProvider) == "function"
+      and textureProvider(prim) or prim.tex
+    if mode ~= "cutout" and mode ~= "blend" and mode ~= "opaque" then
+      mode = textureAlphaMode(model.textures and model.textures[textureIndex])
+    end
+    local material = type(materialProvider) == "function"
+      and materialProvider(prim) or prim.material
+    local color = material and material.primitiveColor
+    local materialAlpha = type(color) == "table" and tonumber(color[4]) or 1
+    local combiner = material and material.phase5 and material.combiner
+    if combiner and combiner.alphaOutputZero == true then
+      -- This RDP profile does not consume combiner alpha. Vertex/material
+      -- alpha must not move it into host blending, where a structural zero
+      -- would discard the whole draw. Retain only real image coverage.
+      mode = textureAlphaMode(model.textures and model.textures[textureIndex])
+    elseif materialAlpha < 0.999
+        and (not combiner or combiner.alphaUsesPrimitive == true) then
+      mode = "blend"
+    end
+    local neutralDark = type(color) == "table"
+      and math.max(color[1] or 1, color[2] or 1, color[3] or 1) <= 0.55
+      and math.abs((color[1] or 1) - (color[2] or 1)) <= 0.04
+      and math.abs((color[2] or 1) - (color[3] or 1)) <= 0.04
+    prim.arenaAlphaMode = mode
+    prim.arenaMaterialAlpha = materialAlpha
+    prim.arenaCompositeMode = mode == "blend" and neutralDark
+      and "shadow" or mode
+    prim.arenaQueue = prim.additive == true and "additive"
+      or (mode == "blend" and "translucent" or "opaque")
+    local countKey = prim.additive == true and "additive"
+      or prim.arenaCompositeMode
+    counts[countKey] = counts[countKey] + 1
+  end
+  return counts
+end
+
+local function partViewDepth(part, modelMatrixValue, viewMatrix)
+  if type(modelMatrixValue) ~= "table" or type(viewMatrix) ~= "table" then
+    return nil
+  end
+  local rows, idx = part and part.rows, part and part.prim and part.prim.idx
+  if type(rows) ~= "table" or type(idx) ~= "table" or #idx == 0 then return nil end
+  local x, y, z, count, seen = 0, 0, 0, 0, {}
+  for _, vertexIndex in ipairs(idx) do
+    if not seen[vertexIndex] and rows[vertexIndex] then
+      seen[vertexIndex] = true
+      local row = rows[vertexIndex]
+      x, y, z, count = x + row[1], y + row[2], z + row[3], count + 1
+    end
+  end
+  if count == 0 then return nil end
+  x, y, z = x / count, y / count, z / count
+  local cameraMatrix = matMul(viewMatrix, modelMatrixValue)
+  return cameraMatrix[9] * x + cameraMatrix[10] * y
+    + cameraMatrix[11] * z + cameraMatrix[12]
+end
+
+function Renderer.arenaRenderOrder(model, parts, pass, modelMatrixValue, viewMatrix)
+  if not isArenaModel(model) then return parts end
+  local first, later = {}, {}
+  for _, part in ipairs(parts or {}) do
+    local queue = part.prim and part.prim.arenaQueue or "opaque"
+    if pass == "additive" then
+      if queue == "additive" then first[#first + 1] = part end
+    elseif queue == "opaque" then
+      first[#first + 1] = part
+    elseif queue == "translucent" then
+      later[#later + 1] = part
+    end
+  end
+  table.sort(later, function(a, b)
+    local authoredA = a.prim and a.prim.arenaAuthoredSubmissionOrder == true
+    local authoredB = b.prim and b.prim.arenaAuthoredSubmissionOrder == true
+    if authoredA or authoredB then
+      local layerA = tonumber(a.prim and a.prim.arenaSubmissionLayer) or -1
+      local layerB = tonumber(b.prim and b.prim.arenaSubmissionLayer) or -1
+      if layerA ~= layerB then return layerA < layerB end
+      return (a.sourcePartIndex or 0) < (b.sourcePartIndex or 0)
+    end
+    local az = partViewDepth(a, modelMatrixValue, viewMatrix)
+    local bz = partViewDepth(b, modelMatrixValue, viewMatrix)
+    if az and bz and math.abs(az - bz) > 0.00001 then
+      return az < bz -- camera space looks down -Z: farther surfaces first
+    end
+    local al = tonumber(a.prim and a.prim.coplanarLayer) or 0
+    local bl = tonumber(b.prim and b.prim.coplanarLayer) or 0
+    if al ~= bl then return al < bl end
+    return (a.sourcePartIndex or 0) < (b.sourcePartIndex or 0)
+  end)
+  for _, part in ipairs(later) do first[#first + 1] = part end
+  return first
+end
+
 function Renderer.new(model, options)
   if type(model) ~= "table" or not model.prims then return nil, "model required" end
   options = type(options) == "table" and options or {}
+  model = RapidashCut.augment(model)
+  local smoothArenaTextures = isArenaModel(model)
+    and options.arenaTextureFilter ~= "nearest"
   local idleIndex = Pack.contextIndex(model, "idle") or (model.anims[1] and 1 or nil)
   local self = setmetatable({
     model = model,
     parts = {},
     time = 0,
+    displayTime = 0,
     animIndex = nil,
     loop = true,
     frame = 0,
     finished = false,
     yaw = tonumber(options.yaw) or 0,
     pitch = tonumber(options.pitch) or 0,
+    boundedTextureUV = Renderer.shouldBoundTextureUV(options),
+    receiveModelSunShadows = Renderer.shouldReceiveModelSunShadows(options),
+    decalDepthBias = math.max(0,tonumber(options.decalDepthBias) or (4/65535)),
     fov = tonumber(options.fov) or (35 * pi / 180),
     lightDir = options.lightDir or { 0.35, 0.7, 0.62 },
     ambient = options.ambient or { 0.46, 0.46, 0.46 },
     diffuse = options.diffuse or { 0.72, 0.72, 0.72 },
     flipY = options.flipY ~= false,
-    textureFilter = options.textureFilter == "linear" and "linear" or "nearest",
-    anisotropy = math.max(1, tonumber(options.anisotropy) or 4),
+    textureFilter = smoothArenaTextures and "linear"
+      or (options.textureFilter == "linear" and "linear" or "nearest"),
+    anisotropy = math.max(1, tonumber(options.anisotropy)
+      or (smoothArenaTextures and 16 or 4)),
+    smoothArenaTextures = smoothArenaTextures,
     shaderStyle = options.shaderStyle == "cel" and "cel" or "stadium",
     shaderStyleProvider = type(options.shaderStyleProvider) == "function"
       and options.shaderStyleProvider or nil,
+    rapidashCutEffectProvider=type(options.rapidashCutEffectProvider)=="function"
+      and options.rapidashCutEffectProvider or nil,
+    rapidashCutEffectOverride=options.rapidashCutEffect~=nil
+      and (options.rapidashCutEffect==true) or nil,
     handlerRuntime = {},
     randomSeed = math.floor(tonumber(options.randomSeed) or 1),
     handlerState = {},
@@ -590,12 +1285,36 @@ function Renderer.new(model, options)
     local mesh, rows = makeMesh(prim)
     local used = {}
     for _, vi in ipairs(prim.idx or {}) do used[vi] = true end
-    self.parts[i] = { prim = prim, mesh = mesh, rows = rows, visible = {}, used = used }
+    self.parts[i] = { prim = prim, mesh = mesh, rows = rows, visible = {},
+      used = used, sourcePartIndex = i }
+  end
+  if model.species == 204 then
+    -- The source layout declares the two eye cards before the shell, while
+    -- Stadium submits RDP decal surfaces after the opaque model layer. LOVE
+    -- has one immediate mesh queue, so preserve the same layer order here.
+    local opaque, decals = {}, {}
+    for _, part in ipairs(self.parts) do
+      local eye = part.prim.decal and part.prim.texAnim >= 0
+      local target = eye and decals or opaque
+      target[#target + 1] = part
+    end
+    for _, part in ipairs(decals) do opaque[#opaque + 1] = part end
+    self.parts = opaque
   end
   if love and love.graphics and love.graphics.newShader then
-    local ok, shader = pcall(love.graphics.newShader, SHADER)
+    -- Stadium fields require the ROM's general two-cycle combiner. The small
+    -- Pokemon-only mobile shader intentionally omits that machinery, so use
+    -- the mediump-compatible full path for arenas on GLES as well.
+    local shaderSource,shaderTier
+    if isArenaModel(model) then
+      shaderSource,shaderTier=Renderer.shaderSource(Renderer.isMobileGraphics()),
+        "arena-combiner"
+    else
+      shaderSource,shaderTier=Renderer.activeShaderSource(options)
+    end
+    local ok, shader = pcall(love.graphics.newShader,shaderSource)
     if ok and shader then
-      self.shader, self.shaderTier = shader, "lit"
+      self.shader, self.shaderTier = shader,shaderTier
     else
       self.shaderError = tostring(shader)
       local fallbackOK, fallback = pcall(love.graphics.newShader, CAMERA_SHADER)
@@ -616,11 +1335,246 @@ function Renderer.new(model, options)
       { modelContext = self, node = self }, self.handlerState)
   end
   self:updatePose(true)
+  Renderer.prepareArenaRenderQueues(model, self.parts, function(prim)
+    return self:currentMaterial(prim)
+  end, function(prim)
+    return self:currentTexture(prim)
+  end)
+  Renderer.resolveArenaCoplanarLayers(model, self.parts)
   self.bindAnchor=self:geometryAnchor()
   self.bindBounds = self:poseBounds()
   if not model.staticPose then self.animIndex = idleIndex end
   self:updatePose(true)
   return self
+end
+
+local function coordinateKey(value)
+  value = tonumber(value) or 0
+  return tostring(math.floor(value * 1000 + (value >= 0 and .5 or -.5)))
+end
+
+local function triangleKey(part, at)
+  local idx, rows = part and part.prim and part.prim.idx, part and part.rows
+  if not (idx and rows) then return nil end
+  local points = {}
+  for corner = 0, 2 do
+    local row = rows[idx[at + corner]]
+    if not row then return nil end
+    points[#points + 1] = coordinateKey(row[1]) .. ","
+      .. coordinateKey(row[2]) .. "," .. coordinateKey(row[3])
+  end
+  table.sort(points)
+  return table.concat(points, "|")
+end
+
+local function planarInfo(part)
+  local idx, rows = part and part.prim and part.prim.idx, part and part.rows
+  if not (idx and rows and #idx >= 3) then return nil end
+  local minX, maxX, minY, maxY, minZ, maxZ = math.huge, -math.huge,
+    math.huge, -math.huge, math.huge, -math.huge
+  for _, vertexIndex in ipairs(idx) do
+    local row = rows[vertexIndex]
+    if not row then return nil end
+    minX, maxX = math.min(minX, row[1]), math.max(maxX, row[1])
+    minY, maxY = math.min(minY, row[2]), math.max(maxY, row[2])
+    minZ, maxZ = math.min(minZ, row[3]), math.max(maxZ, row[3])
+  end
+  if maxY - minY > .001 then return nil end
+  return { y=(minY+maxY)*.5, minX=minX, maxX=maxX, minZ=minZ, maxZ=maxZ,
+    area=math.max(0,maxX-minX)*math.max(0,maxZ-minZ) }
+end
+
+local function pointInTriangleXZ(x, z, a, b, c)
+  local function cross(p, q)
+    return (x-q[1])*(p[3]-q[3])-(p[1]-q[1])*(z-q[3])
+  end
+  local d1, d2, d3 = cross(a,b), cross(b,c), cross(c,a)
+  local epsilon = .001
+  local negative = d1 < -epsilon or d2 < -epsilon or d3 < -epsilon
+  local positive = d1 > epsilon or d2 > epsilon or d3 > epsilon
+  return not (negative and positive)
+end
+
+local function planarPartsOverlap(smaller, larger)
+  local smallIdx, largeIdx = smaller.prim.idx, larger.prim.idx
+  for at = 1, smaller.prim.nidx or 0, 3 do
+    local a, b, c = smaller.rows[smallIdx[at]], smaller.rows[smallIdx[at+1]],
+      smaller.rows[smallIdx[at+2]]
+    if a and b and c then
+      local x, z = (a[1]+b[1]+c[1])/3, (a[3]+b[3]+c[3])/3
+      for other = 1, larger.prim.nidx or 0, 3 do
+        local p, q, r = larger.rows[largeIdx[other]], larger.rows[largeIdx[other+1]],
+          larger.rows[largeIdx[other+2]]
+        if p and q and r and pointInTriangleXZ(x,z,p,q,r) then return true end
+      end
+    end
+  end
+  return false
+end
+
+-- Current arena packs carry Stadium's graph submission layer and use it
+-- directly below. The geometric analysis that follows is retained only for
+-- legacy packs which predate that metadata.
+function Renderer.resolveArenaCoplanarLayers(model, parts)
+  if not isArenaModel(model) or type(parts) ~= "table" then return 0 end
+  local seen, layers, beneath, originalOrder = {}, {}, {}, {}
+  local authoredLayers = {}
+  for index, part in ipairs(parts) do
+    originalOrder[part] = index
+    if part.prim then
+      part.prim.coplanarLayer = nil
+      part.prim.arenaAuthoredSubmissionOrder = nil
+      part.prim.arenaSubmissionRank = nil
+      local layer = tonumber(part.prim.arenaSubmissionLayer)
+      if layer ~= nil then authoredLayers[layer] = true end
+    end
+  end
+  -- Stadium does not discover coplanar surfaces from geometry. func_8003CC14
+  -- submits graph layers in ascending order and keeps display-list order
+  -- inside each layer. Reproduce that contract directly whenever the packed
+  -- arena carries the ROM metadata. The rank supplies a tiny deterministic
+  -- host depth separation; it is derived solely from authored layers.
+  if next(authoredLayers) ~= nil then
+    local orderedLayers = {}
+    for layer in pairs(authoredLayers) do orderedLayers[#orderedLayers + 1] = layer end
+    table.sort(orderedLayers)
+    local rankByLayer = {}
+    for index, layer in ipairs(orderedLayers) do rankByLayer[layer] = index - 1 end
+    local ranked = 0
+    for _, part in ipairs(parts) do
+      local prim = part.prim or {}
+      local layer = tonumber(prim.arenaSubmissionLayer)
+      prim.arenaAuthoredSubmissionOrder = true
+      if layer ~= nil then
+        local rank = rankByLayer[layer] or 0
+        prim.arenaSubmissionRank = rank
+        if rank > 0 then prim.coplanarLayer, ranked = rank, ranked + 1 end
+      end
+    end
+    table.sort(parts, function(a, b)
+      local layerA = tonumber(a.prim and a.prim.arenaSubmissionLayer) or -1
+      local layerB = tonumber(b.prim and b.prim.arenaSubmissionLayer) or -1
+      if layerA ~= layerB then return layerA < layerB end
+      local sourceA = tonumber(a.sourcePartIndex) or originalOrder[a]
+      local sourceB = tonumber(b.sourcePartIndex) or originalOrder[b]
+      if sourceA ~= sourceB then return sourceA < sourceB end
+      return originalOrder[a] < originalOrder[b]
+    end)
+    return ranked
+  end
+  local function placeAbove(upper, lower)
+    if not upper or not lower or upper == lower then return end
+    layers[upper] = true
+    beneath[upper] = beneath[upper] or {}
+    beneath[upper][lower] = true
+  end
+  for partIndex, part in ipairs(parts) do
+    for at = 1, tonumber(part.prim and part.prim.nidx) or 0, 3 do
+      local key = triangleKey(part, at)
+      local previous = key and seen[key]
+      if previous and previous.partIndex ~= partIndex then
+        local previousCount = tonumber(previous.part.prim.nidx) or math.huge
+        local currentCount = tonumber(part.prim.nidx) or math.huge
+        local previousLayer = tonumber(previous.part.prim.arenaSubmissionLayer)
+        local currentLayer = tonumber(part.prim.arenaSubmissionLayer)
+        local overlay
+        if previousLayer and currentLayer and previousLayer ~= currentLayer then
+          -- Stadium submits these through distinct graph layers. A larger
+          -- layer is the authoritative upper surface; triangle count is only
+          -- a fallback for legacy caches which predate the ROM metadata.
+          overlay = currentLayer > previousLayer and part or previous.part
+        else
+          overlay = currentCount < previousCount and part or previous.part
+        end
+        local base = overlay == part and previous.part or part
+        placeAbove(overlay, base)
+      elseif key then
+        seen[key] = { partIndex = partIndex, part = part }
+      end
+    end
+  end
+  local planar, planarByPart = {}, {}
+  for index, part in ipairs(parts) do
+    planar[index] = planarInfo(part)
+    planarByPart[part] = planar[index]
+  end
+  for left = 1, #parts - 1 do
+    local a = planar[left]
+    if a then for right = left + 1, #parts do
+      local b = planar[right]
+      if b and math.abs(a.y-b.y) <= .001
+          and math.min(a.maxX,b.maxX) > math.max(a.minX,b.minX)
+          and math.min(a.maxZ,b.maxZ) > math.max(a.minZ,b.minZ) then
+        local smaller, larger = parts[left], parts[right]
+        local smallInfo, largeInfo = a, b
+        if b.area < a.area or (b.area == a.area
+            and (tonumber(parts[right].prim.nidx) or 0)
+              < (tonumber(parts[left].prim.nidx) or 0)) then
+          smaller, larger, smallInfo, largeInfo = parts[right], parts[left], b, a
+        end
+        local leftLayer = tonumber(parts[left].prim.arenaSubmissionLayer)
+        local rightLayer = tonumber(parts[right].prim.arenaSubmissionLayer)
+        if leftLayer and rightLayer and leftLayer ~= rightLayer then
+          smaller, larger = rightLayer > leftLayer and parts[right] or parts[left],
+            rightLayer > leftLayer and parts[left] or parts[right]
+          smallInfo, largeInfo = planarByPart[smaller], planarByPart[larger]
+        end
+        local authoredLayerOrder = leftLayer and rightLayer
+          and leftLayer ~= rightLayer
+        local ordinaryTexture = smaller.prim.sourceTextureMissing == false
+          and not smaller.prim.callbackTextureRequired
+        local callbackOverlay = authoredLayerOrder
+          and smaller.prim.callbackTextureRequired == true
+        if (ordinaryTexture or callbackOverlay)
+            and smallInfo.area < math.huge
+            and planarPartsOverlap(smaller, larger) then
+          placeAbove(smaller, larger)
+        end
+      end
+    end end
+  end
+  -- Coplanar arena art is not always a two-surface stack. Arena 00, for
+  -- example, has a field, a complete centre graphic, then a smaller graphic
+  -- over that. A single shared decal offset leaves the upper two fighting.
+  -- Preserve every ROM-authored containment level and give each successive
+  -- layer its own depth separation.
+  local resolving = {}
+  local function layerOf(part)
+    if type(layers[part]) == "number" then return layers[part] end
+    if resolving[part] then return 1 end
+    resolving[part] = true
+    local layer = 1
+    for lower in pairs(beneath[part] or {}) do
+      local lowerLayer = layers[lower] and layerOf(lower) or 0
+      layer = math.max(layer, lowerLayer + 1)
+    end
+    resolving[part] = nil
+    layers[part] = layer
+    return layer
+  end
+  for part in pairs(layers) do layerOf(part) end
+  for part, layer in pairs(layers) do
+    part.prim.coplanarLayer = layer
+  end
+  local ordinary, overlay, count = {}, {}, 0
+  for _, part in ipairs(parts) do
+    if type(layers[part]) == "number" then
+      overlay[#overlay + 1], count = part, count + 1
+    else ordinary[#ordinary + 1] = part end
+  end
+  table.sort(overlay, function(a,b)
+    local al, bl = layers[a], layers[b]
+    if al ~= bl then return al < bl end
+    local ai, bi = planarByPart[a], planarByPart[b]
+    local aa, ba = ai and ai.area or math.huge, bi and bi.area or math.huge
+    if aa ~= ba then return aa > ba end
+    local an, bn = tonumber(a.prim.nidx) or 0, tonumber(b.prim.nidx) or 0
+    if an ~= bn then return an > bn end
+    return originalOrder[a] < originalOrder[b]
+  end)
+  for _, part in ipairs(overlay) do ordinary[#ordinary + 1] = part end
+  for i = 1, #parts do parts[i] = ordinary[i] end
+  return count
 end
 
 function Renderer:currentShaderStyle()
@@ -682,6 +1636,28 @@ function Renderer:setHandlerRuntime(runtime, defer)
   if not defer then self:updateHandlers() end
 end
 
+function Renderer:rapidashCutEffectEnabled()
+  if not (self.model and self.model.cutRapidashEffect) then return false end
+  if self.rapidashCutEffectOverride~=nil then return self.rapidashCutEffectOverride end
+  if self.rapidashCutEffectProvider then
+    local ok,value=pcall(self.rapidashCutEffectProvider)
+    if ok and value~=nil then return value==true end
+  end
+  return true
+end
+
+function Renderer:setRapidashCutEffect(enabled)
+  self.rapidashCutEffectOverride=enabled==true
+  if not self.rapidashCutEffectOverride then
+    for _,effect in pairs(self.handlerState and self.handlerState.dynamicObjectsBySite or {}) do
+      if tonumber(effect.species)==78 then
+        effect.emitters,effect.particles,effect.lastFrame={},{},nil
+      end
+    end
+  end
+  return self.rapidashCutEffectOverride
+end
+
 function Renderer:handlerValues()
   local values = {
     species = self.model and self.model.species,
@@ -690,13 +1666,18 @@ function Renderer:handlerValues()
     textureFrame = self.frame,
     -- func_81005B50 reads a global display-frame counter, not the model's
     -- looping animation frame. Keep this material moving across anim loops.
-    materialFrame = math.floor(self.time * 60),
+    materialFrame = math.floor(self.displayTime * 60),
     time = self.time,
     randomSeed = self.randomSeed,
     modelContext = self,
     node = self,
   }
   for key, value in pairs(self.handlerRuntime or {}) do values[key] = value end
+  if self.model and self.model.cutRapidashEffect then
+    local enabled=self:rapidashCutEffectEnabled()
+    values.dynamicObjectEnabled=enabled
+    values.dynamicObjectUpdateEnabled=enabled
+  end
   return values
 end
 
@@ -710,6 +1691,16 @@ function Renderer:updateHandlers()
   -- a static frame), even though its textures appeared to update.
   self.handlerState, self.deferred = Handlers.runExtension(self.model.handlers, 5,
     self:handlerValues(), self.handlerState)
+  -- Arena phase-5 controllers animate both texture selection and material
+  -- alpha. Refresh only the arena queues after evaluating the live frame;
+  -- Pokemon/classic rendering remains unchanged.
+  if isArenaModel(self.model) and self.parts then
+    Renderer.prepareArenaRenderQueues(self.model, self.parts, function(prim)
+      return self:currentMaterial(prim)
+    end, function(prim)
+      return self:currentTexture(prim)
+    end)
+  end
 end
 
 function Renderer:updatePose(force)
@@ -727,6 +1718,9 @@ function Renderer:updatePose(force)
   self.handlerRuntime = type(self.handlerRuntime) == "table" and self.handlerRuntime or {}
   self.handlerRuntime.dynamicObjectEmitters = Renderer.dynamicObjectEmitters(self.model, mats)
   self:updateHandlers()
+  local stageScale = tonumber(self.handlerState and self.handlerState.stageScale) or 1
+  if stageScale ~= (self.appliedStageScale or 1) then changed = true end
+  self.appliedStageScale = stageScale
   if not changed then return false end
   for _, item in pairs(self.handlerState and self.handlerState.operations or {}) do
     local transform = item.result and item.result.transform
@@ -739,7 +1733,7 @@ function Renderer:updatePose(force)
       for row = 1, 3 do for col = 1, 3 do matrix[row][col] = matrix[row][col] * transform.scale end end
     end
   end
-  local root = self.model.rootScale or 1
+  local root = (self.model.rootScale or 1) * stageScale
   self.handlerBoneAnchors = {}
   for key, item in pairs(self.handlerState and self.handlerState.operations or {}) do
     if item.result and item.result.operation == "dynamic-object-renderer" then
@@ -872,7 +1866,9 @@ end
 
 function Renderer:step(dt)
   self.poseDT=math.max(0,tonumber(dt) or 0)
-  self.time = self.time + math.max(0, tonumber(dt) or 0)
+  local elapsed=math.max(0,tonumber(dt) or 0)
+  self.time = self.time + elapsed
+  self.displayTime = (self.displayTime or 0) + elapsed
   self:updatePose(false)
   self.poseDT=nil
   return not self.finished
@@ -903,12 +1899,20 @@ function Renderer:callbackOwnsTexture(prim)
   if prim.callbackTextureRequired then return true end
   local record = callbackRecord(self.model, prim.callbackOffset)
   if not record then return false end
+  if record.descriptor == 0x81000038 then return true end
   if record.descriptor == 0x81000050 then return true end
   if record.descriptor == DualTexture.DESCRIPTOR then
-    -- Command 0x08 decorates the complete preceding draw. Its generated
-    -- material replaces body inputs; alpha face decals establish a local
-    -- authored material and remain outside the callback.
-    return DualTexture.ownsPrimitive(prim, record.descriptor)
+    -- The callback replaces a uniform body carrier (or an authored copy of
+    -- its primary tile). Detailed local atlases at the same site contain
+    -- features such as Muk's eyes and mouth and remain outside both scrollers.
+    local authored = Pack.textureIndex(self.model, prim, self.animIndex,
+      self.frame, self.auxIndex,
+      self.handlerRuntime and self.handlerRuntime.callbackFrame)
+    local dynamic = self.handlerState and self.handlerState.textureBySite
+    local callback = dynamic and dynamic[prim.callbackOffset]
+    return DualTexture.ownsAuthoredTexture(prim,
+      self.model.textures and self.model.textures[authored],
+      self.model.textures and self.model.textures[callback], record.descriptor)
   end
   return false
 end
@@ -916,11 +1920,42 @@ end
 function Renderer:callbackUsesMaterialFx(prim)
   if not prim or prim.decal or not prim.callbackOffset then return false end
   local record = callbackRecord(self.model, prim.callbackOffset)
-  -- Texture ownership and material ownership are intentionally separate.
-  -- The slime builder's second scrolling layer affects body surfaces even
-  -- when their authored primary texture contains detail. Alpha eye/mouth
-  -- decals remain outside the body material.
-  return record ~= nil and record.descriptor == DualTexture.DESCRIPTOR
+  -- Authored eye UVs remain fixed, but the ROM callback still supplies the
+  -- color combiner and independently scrolling secondary slime tile.
+  if not record then return false end
+  if record.descriptor == DualTexture.DESCRIPTOR then return true end
+  -- Pokemon phase-5 nodes have the ROM contract "replace untextured": their
+  -- generated material belongs only to the callback-owned surface, while an
+  -- opaque local eye atlas at the same node keeps its display-list material.
+  -- Field phase-5 nodes are different: their locally textured floor carrier
+  -- is TEXEL0 and must still receive the callback's TEXEL1 mask/combiner.
+  if record.descriptor == 0x81000140 or record.descriptor == 0x81000148 then
+    return isArenaModel(self.model) or prim.callbackTextureRequired == true
+  end
+  return false
+end
+
+function Renderer:currentMaterial(prim)
+  local site = prim and prim.callbackOffset
+  local dynamic = self.handlerState and self.handlerState.materialBySite
+  local material = site and dynamic and dynamic[site] or nil
+  local record = site and callbackRecord(self.model, site) or nil
+  if material and not isArenaModel(self.model) and record
+      and (record.descriptor == 0x81000140
+      or record.descriptor == 0x81000148)
+      and not (prim and prim.callbackTextureRequired == true) then
+    -- func_810033DC/func_8100343C submit generated phase-5 state only for the
+    -- untextured callback draw. A locally textured primitive at the same node
+    -- retains its display-list material.
+    material = nil
+  end
+  return material or (prim and prim.material)
+end
+
+function Renderer.callbackTextureScroll(set, primaryOwned)
+  if type(set) ~= "table" then return nil, nil end
+  return primaryOwned and set.scroll and set.scroll[1] or nil,
+    set.scroll and set.scroll[2] or nil
 end
 
 function Renderer:currentTexture(prim)
@@ -939,7 +1974,8 @@ end
 -- callback can replace that texture with a differently-sized image and its
 -- own zero-shift tile. Convert back to the same raw N64 S/T coordinate space
 -- before sampling the callback image.
-function Renderer.callbackTextureCoordinateScale(model, prim, textureIndex)
+function Renderer.callbackTextureCoordinateScale(model, prim, textureIndex,
+    targetSampler)
   if type(prim) ~= "table" or not textureIndex then return 1, 1 end
   local source = model and model.textures and model.textures[prim.tex]
   local target = model and model.textures and model.textures[textureIndex]
@@ -951,7 +1987,9 @@ function Renderer.callbackTextureCoordinateScale(model, prim, textureIndex)
   local us, vs = Sampler.uvScale(prim.sampler, prim.textureScale)
   if us == 0 then us = 1 end
   if vs == 0 then vs = 1 end
-  return sourceW / targetW / us, sourceH / targetH / vs
+  local targetUS, targetVS = Sampler.uvScale(targetSampler)
+  return sourceW / targetW * targetUS / us,
+    sourceH / targetH * targetVS / vs
 end
 
 function Renderer:worldMetrics()
@@ -968,8 +2006,9 @@ end
 
 -- Draw into the caller's currently-bound color/depth target. The battle scene
 -- uses this path so every actor shares the same camera and depth buffer.
-function Renderer.koffingGasGeometryState(particle, anchor, sourceGeometry, textureWidth, textureHeight)
-  return EffectRenderer.billboardGeometry(particle, anchor, sourceGeometry, textureWidth, textureHeight)
+function Renderer.koffingGasGeometryState(particle, anchor, sourceGeometry, textureWidth, textureHeight, axes)
+  return EffectRenderer.billboardGeometry(particle, anchor, sourceGeometry,
+    textureWidth, textureHeight, axes)
 end
 
 function Renderer.koffingGasMaterialState(age)
@@ -1032,13 +2071,15 @@ function Renderer.dynamicObjectEmitters(model, matrices)
   else
     for _, record in ipairs(model.handlers and model.handlers.records or {}) do
       if record.family == "dynamic-object-renderer" then
-        local bone = math.floor(tonumber(record.bone) or -1)
-        local matrix = matrices[bone + 1]
-        if bone >= 0 and matrix and not seen[bone] then
-          seen[bone] = true
-          emitters[#emitters + 1] = { index=#emitters, bone=bone,
-            origin={matrix[1][4]*root,matrix[2][4]*root,matrix[3][4]*root},
-            reference={reference[1],reference[2],reference[3]} }
+        for _,rawBone in ipairs(record.emitterBones or {record.bone}) do
+          local bone = math.floor(tonumber(rawBone) or -1)
+          local matrix = matrices[bone + 1]
+          if bone >= 0 and matrix and not seen[bone] then
+            seen[bone] = true
+            emitters[#emitters + 1] = { index=#emitters, bone=bone,
+              origin={matrix[1][4]*root,matrix[2][4]*root,matrix[3][4]*root},
+              reference={reference[1],reference[2],reference[3]} }
+          end
         end
       end
     end
@@ -1049,18 +2090,44 @@ end
 function Renderer.primitiveRenderState(model, prim, options)
   options = type(options) == "table" and options or {}
   local carrier = dynamicObjectCarrier(model, prim)
+  -- Most animated face/detail submissions are small rigid shell sections,
+  -- not free-standing cards. Stadium composes them under per-node matrices;
+  -- preserving their local G_CULL_BACK bit after our unified scene winding
+  -- removes eyes (and Pikachu's head fill). Pineco is the ROM-backed
+  -- exception: its two eyes are isolated one-triangle cards and must remain
+  -- one-sided so their backs cannot be seen through the shell.
+  local pinecoEye = tonumber(model and model.species) == 204
+    and prim and prim.decal == true and (tonumber(prim.texAnim) or -1) >= 0
+    and prim.nverts == 3 and prim.nidx == 3
+  local twoSidedDetail = options.disableCulling == true
+    and not carrier and not pinecoEye and prim
+    and (prim.decal == true or (tonumber(prim.texAnim) or -1) >= 0)
   return {
     dynamicObjectCarrier = carrier,
     -- Carrier profiles contain merged callback billboard copies, not ordinary
     -- body geometry. Mixed profiles classify individual payload primitives so
     -- callback-inheriting body meshes remain in the static/shadow passes.
     drawStatic = not carrier,
-    cullEnabled = prim and prim.cull == true
-      and (carrier or options.disableCulling ~= true),
+    -- A broad scene override can keep imperfect imported body winding visible,
+    -- but it must not make one-sided eye/face decals visible through a model.
+    -- Preserve the ROM's culling bit for decals and callback carriers.
+    cullEnabled = prim and prim.cull == true and not twoSidedDetail
+      and (carrier or prim.decal == true or options.disableCulling ~= true),
     lightingEnabled = not carrier and (prim == nil or prim.lighting ~= false),
-    castsShadow = not carrier,
+    castsShadow = not carrier and (not prim or prim.arenaAlphaMode ~= "blend"),
     textureGenEnabled = prim and math.floor((prim.geometryMode or 0) / 0x40000) % 2 == 1,
   }
+end
+
+-- Resolve the LOVE mesh cull mode without changing the ROM metadata retained
+-- on each primitive. Arena modules need special handling below.
+function Renderer.meshCullMode(model, flipY, flipWinding, enabled)
+  -- Field modules mix inward- and outward-facing submissions. Stadium's
+  -- fixed battle camera made their authored cull state safe, but an orbiting
+  -- model-viewer camera can otherwise discard whole arena assemblies.
+  if not enabled or isArenaModel(model) then return "none" end
+  local front = (flipY == true) ~= (flipWinding == true)
+  return front and "front" or "back"
 end
 
 function Renderer:drawDynamicObjects(pass, model, options)
@@ -1070,8 +2137,13 @@ function Renderer:drawDynamicObjects(pass, model, options)
   local dynamic = self.handlerState and self.handlerState.dynamicObjectsBySite
   if type(dynamic) ~= "table" then return end
   local metrics = self:worldMetrics()
+  local runtime = dynamicObjectRuntime(self.model, self.handlerRuntime)
+  local gastlyAxes = self.model and tonumber(self.model.species) == 92
+    and cameraFacingAxes(options and options.viewMatrix, model) or nil
   for site, effect in pairs(dynamic) do
-    if effect.family == "dynamic-object" or effect.family == "koffing-gas" then
+    if (effect.family == "dynamic-object" or effect.family == "koffing-gas")
+        and not (tonumber(effect.species)==78
+          and not self:rapidashCutEffectEnabled()) then
       local bounds = metrics.bounds or {}
       local fallbackAnchor = self.handlerBoneAnchors and self.handlerBoneAnchors[site] or {
         ((bounds.minX or 0) + (bounds.maxX or 0)) * 0.5,
@@ -1083,9 +2155,17 @@ function Renderer:drawDynamicObjects(pass, model, options)
       if g.setBlendMode then g.setBlendMode("alpha", "alphamultiply") end
       pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
       pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
+      sendTextureWrapMode(self.shader, "primaryWrapMode", "clamp", "clamp")
+      sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
+      pcall(self.shader.send, self.shader, "boundedUVEnabled",
+        self.boundedTextureUV and 1 or 0)
       pcall(self.shader.send, self.shader, "environmentMix", 0)
+      pcall(self.shader.send, self.shader, "n64CombinerEnabled", 0)
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
       pcall(self.shader.send, self.shader, "effectIntensityMode", 1)
+      -- Dynamic quads carry their final CPU-authored positions.  Clear a
+      -- preceding flame primitive's shader billboard before drawing them.
+      pcall(self.shader.send, self.shader, "billboardEnabled", 0)
       if g.setColor then g.setColor(1,1,1,1) end
       local emitters = effect.emitters
       if type(emitters) ~= "table" or #emitters == 0 then
@@ -1097,7 +2177,7 @@ function Renderer:drawDynamicObjects(pass, model, options)
           local particle = emitter.particles and emitter.particles[i]
           if particle and particle.active then
             local materialState = EffectRenderer.materialState(effect.species or 109,
-              particle.age, self.handlerRuntime)
+              particle.age, runtime)
             local frame = materialState and materialState.frame or 1
             frame = math.max(1, math.min(#(effect.textureSlots or {}), frame))
             local textureIndex = effect.textureSlots and effect.textureSlots[frame]
@@ -1112,7 +2192,9 @@ function Renderer:drawDynamicObjects(pass, model, options)
               end
               if entry.mesh then
                 local tw,th=imageDimensions(texture,self.model.textures[textureIndex])
-                local geometry = EffectRenderer.billboardGeometry(particle, anchor, effect.geometry, tw, th)
+                local axes = tonumber(effect.species) == 92 and gastlyAxes or nil
+                local geometry = EffectRenderer.billboardGeometry(particle, anchor,
+                  effect.geometry, tw, th, axes)
                 local rows = entry.rows
                 for vi = 1, 4 do
                   local source = geometry.vertices[vi]
@@ -1141,6 +2223,8 @@ end
 
 function Renderer:drawScene(pass, model, options)
   options = type(options) == "table" and options or {}
+  local modernLighting = options.modernLighting
+  if modernLighting == nil then modernLighting = isArenaModel(self.model) end
   local g = love and love.graphics
   if not (g and self.shader) then return false, "graphics unavailable" end
   local vp = options.viewProjection
@@ -1151,6 +2235,11 @@ function Renderer:drawScene(pass, model, options)
   local opaqueOnly = pass == "opaque"
   local ok, err = pcall(function()
     g.setShader(self.shader)
+    -- LOVE multiplies the mesh's VertexColor (our N64 SHADE input) by its
+    -- process-global draw colour. Stadium submits SHADE unchanged; a colour
+    -- left behind by the viewer/HUD otherwise replaces the material term in
+    -- the arena 01/02/04 Poké Ball combiners.
+    if g.setColor then g.setColor(1, 1, 1, 1) end
     pcall(self.shader.send, self.shader, "mvp", "row", matMul(vp, model))
     pcall(self.shader.send, self.shader, "modelMatrix", "row", model)
     pcall(self.shader.send, self.shader, "viewMatrix", "row", options.viewMatrix or identity())
@@ -1165,52 +2254,87 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send, self.shader, "secondarySize", {1,1})
     pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
     pcall(self.shader.send, self.shader, "alphaCutoff", 0.01)
-    pcall(self.shader.send, self.shader, "sceneTint", options.tint or {1,1,1,1})
+    local tint = options.tint or {1,1,1,1}
+    local stageColor = self.handlerState and self.handlerState.stageColor
+    if stageColor then
+      tint = {
+        (tint[1] or 1) * (stageColor[1] or 1),
+        (tint[2] or 1) * (stageColor[2] or 1),
+        (tint[3] or 1) * (stageColor[3] or 1),
+        (tint[4] or 1) * (stageColor[4] or 1),
+      }
+    end
+    pcall(self.shader.send, self.shader, "sceneTint", tint)
     pcall(self.shader.send, self.shader, "flashAmount", options.flashAmount or 0)
     pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
+    pcall(self.shader.send, self.shader, "n64CoveragePassthrough", 0)
+    pcall(self.shader.send, self.shader, "primaryIntensityAlpha", 0)
+    pcall(self.shader.send, self.shader, "secondaryIntensityAlpha", 0)
     pcall(self.shader.send, self.shader, "lightingEnabled", 1)
+    pcall(self.shader.send, self.shader, "modernLightingEnabled",
+      modernLighting == true and 1 or 0)
     pcall(self.shader.send, self.shader, "celShadingEnabled",
       self:currentShaderStyle() == "cel" and 1 or 0)
     pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
     pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
     pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
+    pcall(self.shader.send, self.shader, "decalDepthBias", 0)
+    sendTextureWrapMode(self.shader, "primaryWrapMode", "clamp", "clamp")
+    sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
+    pcall(self.shader.send, self.shader, "boundedUVEnabled",
+      self.boundedTextureUV and 1 or 0)
+    pcall(self.shader.send, self.shader, "smoothTextureFiltering",
+      self.smoothArenaTextures and 1 or 0)
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
-    pcall(self.shader.send, self.shader, "sunEnabled", options.sunMap and 1 or 0)
+    pcall(self.shader.send, self.shader, "sunEnabled",
+      options.sunMap and self.receiveModelSunShadows and 1 or 0)
     if options.sunMap then pcall(self.shader.send,self.shader,"sunMap",options.sunMap) end
     pcall(self.shader.send,self.shader,"sunDark",options.sunDark or 0.68)
     pcall(self.shader.send,self.shader,"sunBias",options.sunBias or 0.002)
     pcall(self.shader.send,self.shader,"sunTexel",options.sunTexel or {1/1024,1/1024})
     -- Keep ordinary geometry on strict depth comparison so eye decals cannot
-    -- leak through nearer beaks or muzzles. Alpha decal primitives switch to
-    -- equal-depth comparison without writing depth when they are drawn.
+    -- leak through nearer beaks or muzzles. Alpha-cutout decal primitives
+    -- accept equal depth; explicitly early ROM cutouts can retain Z writes.
     if g.setDepthMode then
       g.setDepthMode(RenderContract.MODEL_DEPTH_COMPARE, not additiveOnly)
     end
     if g.setBlendMode then
       g.setBlendMode(additiveOnly and "add" or "alpha", "alphamultiply")
     end
-    for partIndex, part in ipairs(self.parts) do
+    local drawParts = Renderer.arenaRenderOrder(self.model, self.parts, pass,
+      model, options.viewMatrix)
+    for drawIndex, part in ipairs(drawParts) do
+      local partIndex = part.sourcePartIndex or drawIndex
       local additive = part.prim.additive == true
       local renderState = Renderer.primitiveRenderState(self.model, part.prim, options)
       if part.mesh and renderState.drawStatic
           and (not self.debugOnlyPrimitive or self.debugOnlyPrimitive == partIndex)
           and ((additiveOnly and additive) or (opaqueOnly and not additive)
           or (not additiveOnly and not opaqueOnly)) then
+        if g.setBlendMode and isArenaModel(self.model) then
+          if additive then
+            g.setBlendMode("add", "alphamultiply")
+          elseif part.prim.arenaAlphaMode == "blend"
+              or part.prim.arenaAlphaMode == "cutout" then
+            g.setBlendMode("alpha", "alphamultiply")
+          else
+            g.setBlendMode("replace", "premultiplied")
+          end
+        end
         if g.setMeshCullMode then
-          local front = self.flipY ~= (options.flipWinding == true)
-          g.setMeshCullMode(renderState.cullEnabled
-            and (front and "front" or "back") or "none")
+          g.setMeshCullMode(Renderer.meshCullMode(self.model, self.flipY,
+            options.flipWinding, renderState.cullEnabled))
         end
         local texture = Pack.image(self.model, self:currentTexture(part.prim))
         local site = part.prim.callbackOffset
-        local dynamic = self.handlerState and self.handlerState.materialBySite
-        local material = site and dynamic and dynamic[site] or part.prim.material
+        local material = self:currentMaterial(part.prim)
         local attributes = self.handlerState and self.handlerState.attributesBySite
         local attribute = site and attributes and attributes[site]
         local color = attribute and attribute.color or
           (material and material.primitiveColor) or {1,1,1,1}
         pcall(self.shader.send, self.shader, "effectIntensityMode",
-          material and material.intensity and 1 or 0)
+          part.prim.effect == "fire" and 2
+            or (material and material.intensity and 1 or 0))
         pcall(self.shader.send, self.shader, "primitiveColor", color)
         pcall(self.shader.send, self.shader, "lightingEnabled",
           renderState.lightingEnabled and 1 or 0)
@@ -1218,24 +2342,61 @@ function Renderer:drawScene(pass, model, options)
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
           g.setDepthMode(compare, write)
         end
+        local decalBias = self.decalDepthBias
+        if part.prim.coplanarLayer then
+          decalBias = Renderer.ARENA_COPLANAR_DEPTH_BIAS
+            * math.max(1, tonumber(part.prim.coplanarLayer) or 1)
+        elseif self.model.species == 204 and part.prim.decal
+            and part.prim.texAnim >= 0 then
+          decalBias = Renderer.PINECO_DECAL_DEPTH_BIAS
+        end
+        pcall(self.shader.send,self.shader,"decalDepthBias",
+          (part.prim.decal or part.prim.coplanarLayer) and decalBias or 0)
         pcall(self.shader.send, self.shader, "environmentColor",
           material and material.environmentColor or {1,1,1,1})
+        local n64Combiner = sendN64Combiner(self.shader, material)
+        pcall(self.shader.send, self.shader, "n64CoveragePassthrough",
+          Renderer.arenaCombinerCoveragePassthrough(
+            self.model, part.prim, material) and 1 or 0)
         pcall(self.shader.send, self.shader, "environmentMix",
-          material and material.combine and
+          not n64Combiner and material and material.combine and
           (material.combine[1] ~= 0 or material.combine[2] ~= 0) and 1 or 0)
         local sets = self.handlerState and self.handlerState.textureSetBySite
         local set = self:callbackUsesMaterialFx(part.prim)
           and site and sets and sets[site] or nil
         local textureIndex = self:currentTexture(part.prim)
+        local primaryIntensity, secondaryIntensity =
+          Renderer.phase5IntensityAlpha(material, set, self.model, textureIndex)
+        pcall(self.shader.send, self.shader, "primaryIntensityAlpha",
+          primaryIntensity and 1 or 0)
+        pcall(self.shader.send, self.shader, "secondaryIntensityAlpha",
+          secondaryIntensity and 1 or 0)
+        local primaryOwned = set and self:callbackOwnsTexture(part.prim) or false
+        local wrapS, wrapT = Renderer.callbackPrimaryWrap(part.prim, material,
+          set, primaryOwned)
+        sendTextureWrapMode(self.shader, "primaryWrapMode", wrapS, wrapT)
         local uvScaleS, uvScaleT = 1, 1
         if set then
           uvScaleS, uvScaleT = Renderer.callbackTextureCoordinateScale(
-            self.model, part.prim, textureIndex)
+            self.model, part.prim, textureIndex,
+            set.samplers and set.samplers[1])
         end
         pcall(self.shader.send, self.shader, "textureCoordinateScale",
           {uvScaleS, uvScaleT})
+        local secondaryScaleS, secondaryScaleT = 1, 1
+        if set and set[2] then
+          secondaryScaleS, secondaryScaleT = Renderer.callbackTextureCoordinateScale(
+            self.model, part.prim, set[2],
+            set.samplers and set.samplers[2])
+        end
+        pcall(self.shader.send, self.shader, "secondaryCoordinateScale",
+          {secondaryScaleS, secondaryScaleT})
         local secondary = set and Pack.image(self.model, set[2]) or nil
         if secondary then
+          local secondaryWrapS, secondaryWrapT =
+            Renderer.callbackSecondaryWrap(set)
+          sendTextureWrapMode(self.shader, "secondaryWrapMode",
+            secondaryWrapS, secondaryWrapT)
           if secondary.setWrap and set.wrap then
             pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
           end
@@ -1243,23 +2404,29 @@ function Renderer:drawScene(pass, model, options)
           local sw, sh = imageDimensions(secondary,self.model.textures[set[2]])
           pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
           pcall(self.shader.send, self.shader, "secondaryMix", set.mix or 100/255)
-          local a, b = set.scroll and set.scroll[1], set.scroll and set.scroll[2]
+          local a, b = Renderer.callbackTextureScroll(set, primaryOwned)
+          local aS, aT = foldedTextureScroll(a, wrapS, wrapT,
+            self.boundedTextureUV)
+          local bS, bT = foldedTextureScroll(b, secondaryWrapS, secondaryWrapT,
+            self.boundedTextureUV)
           pcall(self.shader.send, self.shader, "textureScroll", {
-            a and a[1] or 0, a and a[2] or 0, b and b[1] or 0, b and b[2] or 0})
+            aS, aT, bS, bT})
           pcall(self.shader.send, self.shader, "secondaryEnabled", 1)
         else
           pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
+          sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
           pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
         end
-        pcall(self.shader.send, self.shader, "alphaCutoff", additive and 0.001 or 0.01)
+        local arenaAlphaMode = part.prim.arenaAlphaMode
+        pcall(self.shader.send, self.shader, "alphaCutoff",
+          additive and 0.001 or arenaAlphaMode == "cutout" and 0.05
+            or (arenaAlphaMode == "blend" and 0.001 or 0.01))
         if texture then
           if texture.setFilter then pcall(texture.setFilter, texture, self.textureFilter,
             self.textureFilter, self.anisotropy) end
           if texture.setWrap then
-            local wrapS, wrapT = Sampler.wrap(part.prim.sampler)
-            if material then wrapS, wrapT = material.wrapS or wrapS, material.wrapT or wrapT end
-            if set and set.wrap then wrapS, wrapT = set.wrap, set.wrap end
-            pcall(texture.setWrap, texture, wrapS, wrapT)
+            pcall(texture.setWrap, texture, physicalTextureWrap(wrapS),
+              physicalTextureWrap(wrapT))
           end
           local tw, th = imageDimensions(texture,
             self.model.textures[self:currentTexture(part.prim)])
@@ -1313,6 +2480,8 @@ end
 
 function Renderer:renderToCanvas(width, height, options)
   options = type(options) == "table" and options or {}
+  local modernLighting = options.modernLighting
+  if modernLighting == nil then modernLighting = isArenaModel(self.model) end
   width = math.max(1, floor(tonumber(width) or 96))
   height = math.max(1, floor(tonumber(height) or 96))
   if not (love and love.graphics) then return nil, "graphics unavailable" end
@@ -1320,7 +2489,7 @@ function Renderer:renderToCanvas(width, height, options)
   if not self.canvas or self.canvasW ~= width or self.canvasH ~= height or self.canvasMSAA ~= msaa then
     if self.canvas and self.canvas.release then pcall(self.canvas.release, self.canvas) end
     if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
-    self.canvas, self.depth = makeCanvas(width, height, msaa)
+    self.canvas, self.depth, self.temporaryDepth = makeCanvas(width, height, msaa)
     self.canvasW, self.canvasH, self.canvasMSAA = width, height, msaa
   end
   if not self.canvas then return nil, "canvas unavailable" end
@@ -1334,15 +2503,16 @@ function Renderer:renderToCanvas(width, height, options)
   if g.getDepthMode then oldDepthCompare, oldDepthWrite = g.getDepthMode() end
   local oldCull = g.getMeshCullMode and g.getMeshCullMode() or nil
   local ok, err = pcall(function()
-    if self.depth then
-      g.setCanvas({ self.canvas, depthstencil = self.depth })
-    else
-      g.setCanvas(self.canvas)
-    end
+    if self.depth then g.setCanvas({self.canvas,depthstencil=self.depth})
+    elseif self.temporaryDepth then g.setCanvas({self.canvas,depth=true})
+    else g.setCanvas(self.canvas) end
     g.clear(0, 0, 0, 0, true, true)
     -- Match the scene renderer's per-primitive body/decal depth contract.
     if g.setDepthMode then g.setDepthMode(RenderContract.MODEL_DEPTH_COMPARE, true) end
     if self.shader then g.setShader(self.shader) end
+    -- renderToCanvas shares LOVE's global colour state with callers too.
+    -- Keep authored vertex SHADE independent from preceding UI rendering.
+    if g.setColor then g.setColor(1, 1, 1, 1) end
 
     local model = self.model
     local camera = self:fitCamera(width, height, options)
@@ -1370,59 +2540,126 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "sceneTint", {1,1,1,1})
       pcall(self.shader.send, self.shader, "flashAmount", 0)
       pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
+      pcall(self.shader.send, self.shader, "n64CoveragePassthrough", 0)
+      pcall(self.shader.send, self.shader, "primaryIntensityAlpha", 0)
+      pcall(self.shader.send, self.shader, "secondaryIntensityAlpha", 0)
       pcall(self.shader.send, self.shader, "lightingEnabled", 1)
+      pcall(self.shader.send, self.shader, "modernLightingEnabled",
+        modernLighting == true and 1 or 0)
       pcall(self.shader.send, self.shader, "celShadingEnabled",
         self:currentShaderStyle() == "cel" and 1 or 0)
       pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
       pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
       pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
+      pcall(self.shader.send, self.shader, "decalDepthBias", 0)
+      sendTextureWrapMode(self.shader, "primaryWrapMode", "clamp", "clamp")
+      sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
+      pcall(self.shader.send, self.shader, "boundedUVEnabled",
+        self.boundedTextureUV and 1 or 0)
+      pcall(self.shader.send, self.shader, "smoothTextureFiltering",
+        self.smoothArenaTextures and 1 or 0)
     end
 
     local function drawPass(additive)
       if g.setBlendMode then
         if additive then g.setBlendMode("add", "alphamultiply") else g.setBlendMode("alpha", "alphamultiply") end
       end
-      for partIndex, part in ipairs(self.parts) do
+      local pass = additive and "additive" or "opaque"
+      local drawParts = Renderer.arenaRenderOrder(self.model, self.parts, pass,
+        mm, view)
+      for drawIndex, part in ipairs(drawParts) do
+        local partIndex = part.sourcePartIndex or drawIndex
         local renderState=Renderer.primitiveRenderState(self.model,part.prim)
         if part.mesh and renderState.drawStatic and part.prim.additive == additive
             and (not self.debugOnlyPrimitive or self.debugOnlyPrimitive == partIndex) then
+          if g.setBlendMode and isArenaModel(self.model) then
+            if additive then
+              g.setBlendMode("add", "alphamultiply")
+            elseif part.prim.arenaAlphaMode == "blend"
+                or part.prim.arenaAlphaMode == "cutout" then
+              g.setBlendMode("alpha", "alphamultiply")
+            else
+              g.setBlendMode("replace", "premultiplied")
+            end
+          end
           if g.setMeshCullMode then
-            g.setMeshCullMode(part.prim.cull and (self.flipY and "front" or "back") or "none")
+            g.setMeshCullMode(Renderer.meshCullMode(self.model, self.flipY,
+              false, part.prim.cull == true))
           end
           local texture = Pack.image(model, self:currentTexture(part.prim))
           local site = part.prim.callbackOffset
-          local dynamic = self.handlerState and self.handlerState.materialBySite
-          local material = site and dynamic and dynamic[site] or part.prim.material
+          local material = self:currentMaterial(part.prim)
           local attributes = self.handlerState and self.handlerState.attributesBySite
           local attribute = site and attributes and attributes[site]
           local primitiveColor = attribute and attribute.color
             or (material and material.primitiveColor) or { 1, 1, 1, 1 }
+          local sets = self.handlerState and self.handlerState.textureSetBySite
+          local set = self:callbackUsesMaterialFx(part.prim)
+            and site and sets and sets[site] or nil
+          local textureIndex = self:currentTexture(part.prim)
+          local primaryOwned=set and self:callbackOwnsTexture(part.prim) or false
+          local wrapS,wrapT=Renderer.callbackPrimaryWrap(part.prim,material,
+            set,primaryOwned)
           if g.setDepthMode then
             local compare, write = RenderContract.depthState(part.prim, not additive)
             g.setDepthMode(compare, write)
           end
           if self.shader then
+            local decalBias = self.decalDepthBias
+            if part.prim.coplanarLayer then
+              decalBias = Renderer.ARENA_COPLANAR_DEPTH_BIAS
+                * math.max(1, tonumber(part.prim.coplanarLayer) or 1)
+            elseif self.model.species == 204 and part.prim.decal
+                and part.prim.texAnim >= 0 then
+              decalBias = Renderer.PINECO_DECAL_DEPTH_BIAS
+            end
+            pcall(self.shader.send,self.shader,"decalDepthBias",
+              (part.prim.decal or part.prim.coplanarLayer) and decalBias or 0)
+          end
+          if self.shader then
             pcall(self.shader.send, self.shader, "effectIntensityMode",
-              material and material.intensity and 1 or 0)
+              part.prim.effect == "fire" and 2
+                or (material and material.intensity and 1 or 0))
             pcall(self.shader.send, self.shader, "primitiveColor",
               primitiveColor)
             pcall(self.shader.send, self.shader, "environmentColor",
               material and material.environmentColor or { 1, 1, 1, 1 })
+            local n64Combiner=sendN64Combiner(self.shader,material)
+            pcall(self.shader.send,self.shader,"n64CoveragePassthrough",
+              Renderer.arenaCombinerCoveragePassthrough(
+                self.model,part.prim,material) and 1 or 0)
             pcall(self.shader.send, self.shader, "environmentMix",
-              material and material.combine and (material.combine[1] ~= 0 or material.combine[2] ~= 0) and 1 or 0)
-            local sets = self.handlerState and self.handlerState.textureSetBySite
-            local set = self:callbackUsesMaterialFx(part.prim)
-              and site and sets and sets[site] or nil
-            local textureIndex = self:currentTexture(part.prim)
+              not n64Combiner and material and material.combine
+                and (material.combine[1] ~= 0 or material.combine[2] ~= 0) and 1 or 0)
+            local primaryIntensity,secondaryIntensity=
+              Renderer.phase5IntensityAlpha(material,set,model,textureIndex)
+            pcall(self.shader.send,self.shader,"primaryIntensityAlpha",
+              primaryIntensity and 1 or 0)
+            pcall(self.shader.send,self.shader,"secondaryIntensityAlpha",
+              secondaryIntensity and 1 or 0)
+            sendTextureWrapMode(self.shader,"primaryWrapMode",wrapS,wrapT)
             local uvScaleS,uvScaleT=1,1
             if set then
               uvScaleS,uvScaleT=Renderer.callbackTextureCoordinateScale(
-                model,part.prim,textureIndex)
+                model,part.prim,textureIndex,
+                set.samplers and set.samplers[1])
             end
             pcall(self.shader.send,self.shader,"textureCoordinateScale",
               {uvScaleS,uvScaleT})
+            local secondaryScaleS,secondaryScaleT=1,1
+            if set and set[2] then
+              secondaryScaleS,secondaryScaleT=Renderer.callbackTextureCoordinateScale(
+                model,part.prim,set[2],
+                set.samplers and set.samplers[2])
+            end
+            pcall(self.shader.send,self.shader,"secondaryCoordinateScale",
+              {secondaryScaleS,secondaryScaleT})
             local secondary = set and Pack.image(model, set[2]) or nil
             if secondary then
+              local secondaryWrapS,secondaryWrapT=
+                Renderer.callbackSecondaryWrap(set)
+              sendTextureWrapMode(self.shader,"secondaryWrapMode",
+                secondaryWrapS,secondaryWrapT)
               if secondary.setWrap and set.wrap then
                 pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
               end
@@ -1430,17 +2667,24 @@ function Renderer:renderToCanvas(width, height, options)
               local sw,sh=imageDimensions(secondary,model.textures[set[2]])
               pcall(self.shader.send, self.shader, "secondarySize", {sw,sh})
               pcall(self.shader.send, self.shader, "secondaryMix", set.mix or (100 / 255))
-              local a, b = set.scroll and set.scroll[1], set.scroll and set.scroll[2]
+              local a,b=Renderer.callbackTextureScroll(set,primaryOwned)
+              local aS,aT=foldedTextureScroll(a,wrapS,wrapT,
+                self.boundedTextureUV)
+              local bS,bT=foldedTextureScroll(b,secondaryWrapS,secondaryWrapT,
+                self.boundedTextureUV)
               pcall(self.shader.send, self.shader, "textureScroll", {
-                a and a[1] or 0, a and a[2] or 0,
-                b and b[1] or 0, b and b[2] or 0,
+                aS,aT,bS,bT,
               })
               pcall(self.shader.send, self.shader, "secondaryEnabled", 1)
             else
               pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
+              sendTextureWrapMode(self.shader,"secondaryWrapMode","clamp","clamp")
               pcall(self.shader.send, self.shader, "textureScroll", { 0, 0, 0, 0 })
             end
-            pcall(self.shader.send, self.shader, "alphaCutoff", additive and 0.001 or 0.01)
+            local arenaAlphaMode = part.prim.arenaAlphaMode
+            pcall(self.shader.send, self.shader, "alphaCutoff",
+              additive and 0.001 or arenaAlphaMode == "cutout" and 0.05
+                or (arenaAlphaMode == "blend" and 0.001 or 0.01))
           end
           if texture and texture.setFilter then
             pcall(texture.setFilter, texture, self.textureFilter, self.textureFilter, self.anisotropy)
@@ -1456,13 +2700,8 @@ function Renderer:renderToCanvas(width, height, options)
               renderState.textureGenEnabled and 1 or 0)
           end
           if texture and texture.setWrap then
-            local wrapS,wrapT=Sampler.wrap(part.prim.sampler)
-            if material then wrapS,wrapT=material.wrapS or wrapS,material.wrapT or wrapT end
-            local wrapSets=self.handlerState and self.handlerState.textureSetBySite
-            local wrapSet=self:callbackUsesMaterialFx(part.prim)
-              and site and wrapSets and wrapSets[site] or nil
-            if wrapSet and wrapSet.wrap then wrapS,wrapT=wrapSet.wrap,wrapSet.wrap end
-            pcall(texture.setWrap,texture,wrapS,wrapT)
+            pcall(texture.setWrap,texture,physicalTextureWrap(wrapS),
+              physicalTextureWrap(wrapT))
           end
           if texture and part.mesh.setTexture then pcall(part.mesh.setTexture, part.mesh, texture) end
           sendFlameBillboard(self.shader, part, view, mm)
@@ -1514,11 +2753,13 @@ function Renderer:release()
     entry.mesh = nil
   end
   self.dynamicMeshes = {}
+  RapidashCut.release(self.model)
   if self.canvas and self.canvas.release then pcall(self.canvas.release, self.canvas) end
   if self.depth and self.depth.release then pcall(self.depth.release, self.depth) end
   if self.shader and self.shader.release then pcall(self.shader.release, self.shader) end
   if self.shadowShader and self.shadowShader.release then pcall(self.shadowShader.release,self.shadowShader) end
-  self.canvas, self.depth, self.shader, self.shadowShader = nil, nil, nil, nil
+  self.canvas, self.depth, self.temporaryDepth, self.shader, self.shadowShader =
+    nil, nil, nil, nil, nil
 end
 
 Renderer.sourceFrame = sourceFrame
@@ -1534,6 +2775,8 @@ Renderer.modelMatrix = modelMatrix
 Renderer.normalMatrix = normalMatrix
 Renderer.identity = identity
 Renderer.sendFlameBillboard = sendFlameBillboard
+Renderer.cameraFacingAxes = cameraFacingAxes
+Renderer.dynamicObjectRuntime = dynamicObjectRuntime
 
 function Renderer.ortho(l,r,b,t,n,f)
   return {2/(r-l),0,0,-(r+l)/(r-l), 0,2/(t-b),0,-(t+b)/(t-b),

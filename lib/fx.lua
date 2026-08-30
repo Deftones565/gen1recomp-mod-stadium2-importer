@@ -1,4 +1,10 @@
 local Fx = {}
+local modRef
+
+function Fx.bind(mod)
+  modRef=mod
+  return Fx
+end
 
 local floor = math.floor
 local byte = string.byte
@@ -134,10 +140,13 @@ end
 
 function Fx.loadSymbolMap(path)
   if type(path) ~= "string" or path == "" then return nil, "symbol map path is required" end
-  local file, err = io.open(path, "rb")
-  if not file then return nil, err end
-  local text = file:read("*a")
-  file:close()
+  if not (modRef and type(modRef.read)=="function") then
+    return nil,"mod-owned symbol map reader is unavailable"
+  end
+  local ok,text=pcall(modRef.read,modRef,path)
+  if not ok or type(text)~="string" then
+    return nil,ok and "could not read symbol map" or tostring(text)
+  end
   local parsed, parseErr = Fx.parseSymbolMap(text)
   if not parsed then return nil, parseErr end
   parsed.path = path

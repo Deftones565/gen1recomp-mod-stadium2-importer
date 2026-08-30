@@ -1,5 +1,6 @@
 local Rom = require("mods.STADIUM2_IMPORTER.lib.rom")
 local Extract = require("mods.STADIUM2_IMPORTER.lib.extract")
+local ExportPool = require("mods.STADIUM2_IMPORTER.lib.export_pool")
 local Cache = require("mods.STADIUM2_IMPORTER.lib.cache")
 local Discovery = require("mods.STADIUM2_IMPORTER.lib.discovery")
 local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
@@ -14,13 +15,10 @@ local job
 local romMeta
 local modelCache = {}
 local modelOrder = {}
+local ownedModels = setmetatable({}, {__mode="k"})
 local MODEL_KEEP = 4
 local configuredCount = 151
-local NATIVE_PICKED = "picked_rom.gb"
-local nativePickPending = false
-local nativePickBefore = nil
-local nativePickLostFocus = false
-local nativePickPrevious = nil
+local playthroughReady = false
 local status = {
   state = "idle",
   done = 0,
@@ -29,67 +27,6 @@ local status = {
   error = nil,
   rom = nil,
 }
-
-local function platformName()
-  local system = love and love.system
-  if not (system and type(system.getOS) == "function") then return nil end
-  local ok, platform = pcall(system.getOS)
-  return ok and platform or nil
-end
-
-local function nativePickerAvailable()
-  local system = love and love.system
-  return platformName() == "Android"
-    and system ~= nil and type(system.pickFile) == "function"
-end
-
-local function pickedFingerprint(path)
-  local fs = love and love.filesystem
-  if not (fs and type(fs.getInfo) == "function") then return nil end
-  local ok, info = pcall(fs.getInfo, path, "file")
-  if not (ok and info) then return nil end
-  return table.concat({ tostring(info.size or "?"), tostring(info.modtime or "?") }, ":")
-end
-
-local function clearNativePicker(restore)
-  nativePickPending = false
-  nativePickBefore = nil
-  nativePickLostFocus = false
-  if restore and nativePickPrevious then
-    status.state = nativePickPrevious.state
-    status.phase = nativePickPrevious.phase
-    status.error = nativePickPrevious.error
-    status.rom = nativePickPrevious.rom
-  end
-  nativePickPrevious = nil
-end
-
-local function openNativePicker()
-  if not nativePickerAvailable() then return false, "Android native picker unavailable" end
-  nativePickPrevious = {
-    state = status.state, phase = status.phase, error = status.error, rom = status.rom,
-  }
-  nativePickBefore = pickedFingerprint(NATIVE_PICKED)
-  nativePickLostFocus = false
-  -- Match Gen1Recomp 0.1.36's own Android ROM importer exactly: the ROM
-  -- picker is the no-argument form and the native bridge writes picked_rom.gb.
-  local ok, opened = pcall(love.system.pickFile)
-  if not (ok and opened) then
-    clearNativePicker(true)
-    return false, ok and "Android file picker did not open" or tostring(opened)
-  end
-  nativePickPending = true
-  status.state = "picking"
-  status.phase = "picker"
-  status.error = nil
-  status.rom = nil
-  return true
-end
-
-local function removePickedFile()
-  local fs = love and love.filesystem
-  if fs and type(fs.remove) == "function" then pcall(fs.remove, NATIVE_PICKED) end
-end
 
 local function fail(stage, reason)
   status.state = "failed"
@@ -115,6 +52,31 @@ end
 
 function Importer.bind(mod)
   modRef = mod
+  Cache.bind(mod)
+  Discovery.bind(mod)
+  return Importer
+end
+
+function Importer.setPlaythroughReady(value)
+  local ready = value == true
+  if not ready then
+    playthroughReady = false
+    if status.state == "ready" then
+      status.state = "idle"
+      status.done = 0
+      status.progress = 0
+      status.phase = nil
+      status.species = nil
+      status.error = nil
+    end
+    return Importer
+  end
+
+  playthroughReady = true
+  if Cache.available(configuredCount) and status.state ~= "building"
+      and status.state ~= "picking" then
+    setReady()
+  end
   return Importer
 end
 
@@ -131,8 +93,10 @@ function Importer.configure(options)
     shinyPalettes = options.shinyPalettes,
     palettePairs = options.palettePairs,
   })
-  if Cache.available(configuredCount) and status.state ~= "building"
-      and status.state ~= "picking" then setReady() end
+  if playthroughReady and Cache.available(configuredCount)
+      and status.state ~= "building" and status.state ~= "picking" then
+    setReady()
+  end
   return Importer
 end
 
@@ -140,8 +104,17 @@ function Importer.status()
   return status
 end
 
+function Importer.cacheStatus()
+  if not playthroughReady then
+    return { state = "error", code = "not_in_playthrough",
+      message = "Start or continue a game before checking Stadium 2 cache" }
+  end
+  return Cache.inspect(configuredCount)
+end
+
 function Importer.available(count)
-  return Cache.available(count or configuredCount)
+  if not playthroughReady then return false end
+  return Cache.inspect(count or configuredCount).state == "valid"
 end
 
 function Importer.modelsEnabled()
@@ -168,6 +141,32 @@ function Importer.shaderStyle()
   return "stadium"
 end
 
+function Importer.rapidashCutEffectEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_rapidash_cut_fx")
+    if ok and value~=nil then return value==true end
+  end
+  return true
+end
+
+function Importer.betaArenaEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok, value = pcall(modRef.options.get, modRef.options,
+      "stadium2_beta_arena_test")
+    if ok then return value == true end
+  end
+  return false
+end
+
+function Importer.betaArenaTimeOfDayEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,
+      "stadium2_beta_arena_tod")
+    if ok then return value==true end
+  end
+  return false
+end
+
 local function rendererOptions(options)
   local out = {}
   for key, value in pairs(type(options) == "table" and options or {}) do
@@ -177,6 +176,9 @@ local function rendererOptions(options)
   -- Existing battle actors observe an option change immediately; this does
   -- not rebuild packs, meshes, shaders, or the active battle scene.
   if out.shaderStyleProvider == nil then out.shaderStyleProvider = Importer.shaderStyle end
+  if out.rapidashCutEffectProvider == nil then
+    out.rapidashCutEffectProvider=Importer.rapidashCutEffectEnabled
+  end
   return out
 end
 
@@ -234,6 +236,47 @@ function Importer.newRenderer(species, variant, options)
   return Renderer.new(model, rendererOptions(options))
 end
 
+-- Return an independently owned model. Unlike loadModel(), this instance is
+-- never placed in the importer's small shared LRU and may be freely mutated by
+-- the caller. The caller must eventually pass it to releaseModel().
+function Importer.createModel(species, variant)
+  species = math.floor(tonumber(species) or 0)
+  if species < 1 or species > configuredCount then return nil, "species out of range" end
+  variant = variant == "shiny" and "shiny" or "normal"
+  local bytes = Cache.read(species, variant)
+  if not bytes then return nil, "model pack unavailable" end
+  local model, err = Pack.parse(bytes)
+  if not model then return nil, err end
+  model.variant = variant
+  ownedModels[model] = true
+  return model
+end
+
+function Importer.releaseModel(model)
+  if type(model) ~= "table" or not ownedModels[model] then
+    return false, "model is not owned by the caller"
+  end
+  ownedModels[model] = nil
+  Pack.release(model)
+  return true
+end
+
+-- Build a renderer from either an owned model or a compatible caller-created
+-- model table. Releasing the renderer does not release the model.
+function Importer.newRendererFromModel(model, options)
+  return Renderer.new(model, rendererOptions(options))
+end
+
+function Importer.createSpecialModel(name)
+  local bytes=Cache.readSpecial(name)
+  if not bytes then return nil,"special battle pack unavailable" end
+  local model,err=Pack.parse(bytes)
+  if not model then return nil,err end
+  model.variant="normal"
+  ownedModels[model]=true
+  return model
+end
+
 function Importer.loadSpecial(name)
   local key="special:"..tostring(name)
   local hit=modelCache[key]
@@ -260,7 +303,9 @@ function Importer.releaseModels()
 end
 
 function Importer.parsePack(bytes)
-  return Pack.parse(bytes)
+  local model,err=Pack.parse(bytes)
+  if model then ownedModels[model]=true end
+  return model,err
 end
 
 function Importer.readHandlers(species, variant)
@@ -291,14 +336,48 @@ function Importer.resolveHandlerPointer(extension, pointer, length)
   return Handlers.resolvePointer(extension, pointer, length)
 end
 
-function Importer.beginFrom(bytes, label)
+function Importer.beginFrom(bytes, label, options)
+  if not playthroughReady then
+    return false, "Start or continue a game before importing Stadium 2"
+  end
   if job then return false, "Stadium 2 import is already running" end
+  options = type(options) == "table" and options or {}
+
+  -- FINAL DESTRUCTIVE GUARD: no automatic/internal path is allowed to clear a
+  -- valid persistent cache.  Only the Options-row manual reimport passes
+  -- forceReimport=true.  This protects against any stray caller above us --
+  -- exported beginPath/autoImport, retry UI, or a future hook -- reaching the
+  -- destructive cache-clear boundary after the cache was already proven valid.
+  if not options.forceReimport then
+    local cache = Cache.inspect(configuredCount)
+    if cache.state == "valid" then
+      setReady()
+      if modRef and modRef.log then
+        local ctx = cache.context or {}
+        pcall(function()
+          modRef.log:info(
+            "stadium2 import suppressed: valid cache game=%s playthrough=%s count=%s",
+            tostring(ctx.gameVersion or "?"), tostring(ctx.playthroughId or "?"),
+            tostring(cache.marker and cache.marker.count or "?"))
+        end)
+      end
+      return true, "ready"
+    end
+    if cache.state == "error" then
+      return fail("checking persistent cache",
+        ("%s: %s"):format(tostring(cache.code or "storage_error"),
+          tostring(cache.message or "persistent cache unavailable")))
+    end
+  end
+
   if nativePickPending then clearNativePicker(false) end
   local normalized, metaOrErr = Rom.validate(bytes)
   if not normalized then return fail("validating ROM", metaOrErr) end
   Importer.releaseModels()
   local ok, clearErr = Cache.clear(configuredCount)
   if not ok then return fail("preparing cache", clearErr) end
+  local began, beginErr = Cache.beginBuild(configuredCount)
+  if not began then return fail("preparing cache", beginErr) end
   romMeta = metaOrErr
   status.state = "building"
   status.done = 0
@@ -307,11 +386,26 @@ function Importer.beginFrom(bytes, label)
   status.phase = "scan"
   status.error = nil
   status.rom = label or "Pokemon Stadium 2 (US)"
-  job = Extract.newJob(normalized,
-    function(species, normalBytes, shinyBytes)
-      return Cache.writePair(species, normalBytes, shinyBytes)
-    end,
-    function(name,bytes) return Cache.writeSpecial(name,bytes) end)
+  local function writePack(species, normalBytes, shinyBytes)
+    return Cache.writePair(species, normalBytes, shinyBytes)
+  end
+  local function writeSpecial(name, bytes)
+    return Cache.writeSpecial(name, bytes)
+  end
+  -- Thread creation is capability/platform dependent. The serial job remains
+  -- a transparent fallback and produces the exact same cache/API surface.
+  if not options.serialExport then
+    local workerSource
+    if modRef and type(modRef.read) == "function" then
+      local okRead, source = pcall(modRef.read, modRef, "workers/export_worker.lua")
+      if okRead and type(source) == "string" then workerSource = source end
+    end
+    job = ExportPool.new(normalized, configuredCount, writePack, writeSpecial,
+      { root = modRef and modRef.path, workerSource = workerSource })
+  end
+  if not job then
+    job = Extract.newJob(normalized, writePack, writeSpecial)
+  end
   job.label = status.rom
   job.md5 = romMeta.md5
   return true
@@ -320,75 +414,65 @@ end
 local function beginCandidate(candidate, options)
   options = type(options) == "table" and options or {}
   local bytes, err = Discovery.read(candidate)
-  if not bytes then
-    if options.removeAfter then removePickedFile() end
-    return fail("reading ROM", err)
-  end
-  local started, beginErr = Importer.beginFrom(bytes, options.label or candidate.path)
-  if options.removeAfter then removePickedFile() end
+  if not bytes then return fail("reading ROM", err) end
+  local started, beginErr = Importer.beginFrom(
+    bytes, options.label or candidate.path, options)
   return started, beginErr
 end
 
 function Importer.beginPath(path)
-  return beginCandidate({ kind = "host", path = path })
-end
-
-local function pollNativePicker()
-  if not nativePickPending then return false end
-  local current = pickedFingerprint(NATIVE_PICKED)
-  if current and current ~= nativePickBefore then
-    clearNativePicker(false)
-    local started = beginCandidate({ kind = "love", path = NATIVE_PICKED }, {
-      removeAfter = true, label = "Android file picker",
-    })
-    return started and true or false
-  end
-  local window = love and love.window
-  if window and type(window.hasFocus) == "function" then
-    local ok, focused = pcall(window.hasFocus)
-    if ok then
-      if focused == false then
-        nativePickLostFocus = true
-      elseif focused == true and nativePickLostFocus then
-        clearNativePicker(true)
-      end
-    end
-  end
-  return false
+  return beginCandidate({ kind = "mod", path = path })
 end
 
 function Importer.autoImport()
-  if Importer.available() then
-    setReady()
-    return true
+  if not playthroughReady then
+    return false, "Start or continue a game before importing Stadium 2"
   end
+
+  local cache = Cache.inspect(configuredCount)
+  if cache.state == "valid" then
+    setReady()
+    return true, "ready"
+  end
+
+  -- A broken/unavailable persistence lookup is NOT evidence that the cache is
+  -- absent. Rebuilding in that situation causes the endless auto-import loop:
+  -- every failed read looks missing, so every gameplay entry extracts again.
+  if cache.state == "error" then
+    return fail("checking persistent cache",
+      ("%s: %s"):format(tostring(cache.code or "storage_error"),
+        tostring(cache.message or "persistent cache unavailable")))
+  end
+
+  -- missing / stale / incomplete are the only automatic rebuild states.
   local candidate = Discovery.find()
-  if not candidate then return false, "no Pokemon Stadium 2 US ROM found" end
+  if not candidate then
+    return fail("reading required ROM",
+      "the engine-managed Pokemon Stadium 2 required ROM is unavailable")
+  end
   return beginCandidate(candidate)
 end
 
-function Importer.request()
-  if job then return false, "Stadium 2 import is already running" end
-  if nativePickPending then return false, "Android file picker already open" end
-
-  local platform = platformName()
-  if platform == "Android" then
-    if nativePickerAvailable() then
-      local opened, pickerErr = openNativePicker()
-      if opened then return true end
-      return fail("opening Android file picker", pickerErr)
-    end
-    return fail("opening Android file picker",
-      "Gen1Recomp Android picker bridge (love.system.pickFile) is unavailable")
+function Importer.request(options)
+  if not playthroughReady then
+    return false, "Start or continue a game before importing Stadium 2"
   end
+  if job then return false, "Stadium 2 import is already running" end
+  options = type(options) == "table" and options or {}
 
-  local path = Discovery.choose()
-  if not path then return false, "cancelled" end
-  return Importer.beginPath(path)
+  -- Generic request is SAFE by default: it cannot overwrite a valid cache.
+  -- A deliberate Options-row reimport supplies forceReimport=true below.
+  local candidate=Discovery.find()
+  if candidate then return beginCandidate(candidate, options) end
+  return fail("selecting ROM","The engine-managed Pokemon Stadium 2 ROM is unavailable. "
+    .."Open the mod's Imported Files panel and provide the required ROM.")
+end
+
+function Importer.reimport()
+  return Importer.request({ forceReimport = true, source = "options" })
 end
 
 function Importer.step()
-  if not job then pollNativePicker() end
   if not job then return false end
   local active = job
   local ok, more = pcall(active.step, active)
@@ -440,7 +524,9 @@ function Importer.row()
     -- action rows an explicit `activate` callback on A.
     activate = function()
       if status.state == "building" or status.state == "picking" then return true end
-      Importer.request()
+      -- This is the one intentional destructive path: the player explicitly
+      -- selected STADIUM 2 ROM from Options while a valid cache may exist.
+      Importer.reimport()
       return true
     end,
   }
@@ -457,8 +543,6 @@ end
 
 Importer.US_MD5 = Rom.US_MD5
 Importer.FORMAT = Cache.FORMAT
-Importer.NATIVE_PICKED = NATIVE_PICKED
-Importer.nativePickerAvailable = nativePickerAvailable
 Importer.COUNT = function() return configuredCount end
 Importer.shinyPalettesFromTransformSource = Palette.fromTransformSource
 Importer.cache = Cache

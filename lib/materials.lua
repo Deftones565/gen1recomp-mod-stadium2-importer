@@ -2,6 +2,33 @@ local Materials = {}
 
 local floor = math.floor
 
+-- func_8003CC14 indexes this ROM table by the graph root's 0x0F profile and
+-- the effective submission layer. Arena layouts only author profiles 0, 2,
+-- and 4, but retaining the complete six rows makes the decoder exact.
+local ROOT_RENDER_MODES = {
+  [0] = { 0x03024000,0x03024000,0x03024000,0x03024000,0x03027008,0x00104240,0x00104240,0x00104240,0x00104240,0x00104340,0x00104F40 },
+  [1] = { 0x03124370,0x00112230,0x00112E10,0x00112230,0x00113238,0x00104A70,0x00104A50,0x00104E50,0x00104A50,0x00104B50,0x00104F50 },
+  [2] = { 0x03024000,0x00112048,0x00112048,0x00112048,0x00113048,0x001041C8,0x001041C8,0x001041C8,0x001041C8,0x00104340,0x00104F40 },
+  [3] = { 0x03124370,0x00112078,0x00112D58,0x00112478,0x00113078,0x001049F8,0x001049D8,0x00104DD8,0x001045D8,0x00104B50,0x00104F50 },
+  [4] = { 0x03024000,0x00112008,0x00112008,0x00112008,0x00113048,0x001041C8,0x001041C8,0x001041C8,0x001041C8,0x00104340,0x00104F40 },
+  [5] = { 0x03124370,0x00112038,0x00112D18,0x00112438,0x00113038,0x001049F8,0x001049D8,0x00104DD8,0x001045D8,0x00104B50,0x00104F50 },
+}
+
+local function effectiveSubmissionLayer(class)
+  class = tonumber(class)
+  if class == 1 then return 5 end
+  if class == 2 then return 7 end
+  if class == 3 then return 8 end
+  if class == 4 then return 6 end
+  return class
+end
+
+function Materials.rootRenderMode(profile, submissionClass)
+  local row = ROOT_RENDER_MODES[tonumber(profile)]
+  local layer = effectiveSubmissionLayer(submissionClass)
+  return row and layer and row[layer + 1] or nil, layer
+end
+
 local SUPPORTED = {
   [0x00] = true, [0xD7] = true, [0xD8] = true, [0xD9] = true,
   [0xDA] = true, [0xDB] = true, [0xDC] = true, [0xDD] = true,
@@ -64,8 +91,9 @@ end
 
 local function sampler(mode, mask, shift)
   return {
-    wrap = bits(mode, 0, 1) ~= 0 and "mirroredrepeat"
-      or (bits(mode, 1, 1) ~= 0 and "clamp" or "repeat"),
+    wrap = mode % 4 == 3 and "mirrorclamp"
+      or bits(mode, 1, 1) ~= 0 and "clamp"
+      or (bits(mode, 0, 1) ~= 0 and "mirroredrepeat" or "repeat"),
     mirror = bits(mode, 0, 1) ~= 0,
     clamp = bits(mode, 1, 1) ~= 0,
     mask = mask,
@@ -90,7 +118,7 @@ function Materials.parse(extension, startOffset, options)
     tiles = {},
     unsupported = {},
     otherModeHigh = 0,
-    otherModeLow = 0,
+    otherModeLow = tonumber(options.initialOtherModeLow) or 0,
     combine = { 0, 0 },
   }
   local visited = options.visited or {}
@@ -110,7 +138,8 @@ function Materials.parse(extension, startOffset, options)
     elseif op == 0xDE then
       local child = pointerOffset(extension, w1)
       if child then
-        local nested = Materials.parse(extension, child, { visited = visited, maxCommands = maxCommands - count })
+        local nested = Materials.parse(extension, child, { visited = visited,
+          maxCommands = maxCommands - count, initialOtherModeLow = state.otherModeLow })
         if nested then
           for _, command in ipairs(nested.commands) do state.commands[#state.commands + 1] = command end
           state.primitiveColor = nested.primitiveColor
@@ -193,8 +222,36 @@ function Materials.attach(model)
   for i, prim in ipairs(model.prims or {}) do
     prim.materialOffset = offsets[i]
     prim.callbackOffset = render.primitiveCallbacks and render.primitiveCallbacks[i] or nil
+    prim.arenaRenderProfile = render.primitiveArenaProfiles
+      and render.primitiveArenaProfiles[i] or nil
+    prim.arenaSubmissionClass = render.primitiveArenaSubmissions
+      and render.primitiveArenaSubmissions[i] or nil
+    prim.arenaResetAfterDraw = render.primitiveArenaReset
+      and render.primitiveArenaReset[i] or false
+    prim.arenaRootRenderMode, prim.arenaSubmissionLayer = Materials.rootRenderMode(
+      prim.arenaRenderProfile, prim.arenaSubmissionClass)
     if prim.materialOffset then
-      prim.material = Materials.parse(extension, prim.materialOffset)
+      prim.material = Materials.parse(extension, prim.materialOffset,
+        { initialOtherModeLow = prim.arenaRootRenderMode })
+      model.materials[i] = prim.material
+    end
+    local color = render.primitiveColors and render.primitiveColors[i]
+    -- Neutral greys are Stadium's model-light value and are already handled
+    -- by our lighting shader. Chromatic values are genuine per-draw tints for
+    -- intensity carriers and must reach the primitive-colour combiner.
+    if color and (color[1] ~= color[2] or color[2] ~= color[3]) then
+      prim.material = prim.material or Materials.parse(extension, prim.materialOffset)
+      if not prim.material then
+        prim.material = {
+          primitiveColor = { 1, 1, 1, 1 },
+          environmentColor = { 1, 1, 1, 1 },
+          textureScale = { 1, 1 }, textureEnabled = true,
+        }
+      end
+      prim.material.primitiveColor = {
+        color[1] / 255, color[2] / 255, color[3] / 255, color[4] / 255,
+      }
+      prim.nodeColor = color
       model.materials[i] = prim.material
     end
   end

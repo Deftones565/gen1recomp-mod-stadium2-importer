@@ -1,141 +1,137 @@
 # Pokemon Stadium 2 Importer
 
-`STADIUM2_IMPORTER` is a standalone Pokemon Stadium 2 model extractor and renderer for Gen 1 and Gen 2 games in gen1recomp, with owned 3D battle presentation on both generations.
+`STADIUM2_IMPORTER` brings Pokemon Stadium 2 models and a complete 3D battle presentation to Gen 1 and Gen 2 games in Gen1Recomp. It includes normal and shiny models, skeletal and texture animation, model effects, shadows, battle stages, a perspective camera, and a Stadium-style HUD.
 
-It does not depend on another model importer or renderer. The mod owns ROM discovery, ROM validation, Stadium 2 archive parsing, PERS-SZP/Yay0 decompression, FRAGMENT model parsing, model-handler decoding, DSM4 cache generation and loading, skeletal animation, texture animation, texture upload, skinning, render state, and model drawing.
+The mod supports the US Pokemon Stadium 2 ROM with MD5:
 
-The supported ROM is the US Pokemon Stadium 2 ROM with MD5 `1561c75d11cedf356a8ddb1a4a5f9d5d`.
+```text
+1561c75d11cedf356a8ddb1a4a5f9d5d
+```
+
+## ROM setup
+
+The release does not include a Pokemon Stadium 2 ROM. Use your own legally dumped US copy.
+
+Install and enable the unmodified release through the Mod Manager. The launcher
+will show the required **Pokemon Stadium 2 (USA) ROM** import. Select your ROM
+there; `.z64`, `.v64`, and `.n64` byte orders are accepted. The launcher
+normalizes the selected file, validates its size and MD5, and privately copies
+the canonical result to this mod's scoped `baseroms/stadium2.z64` location.
+
+Do **not** add a ROM to the release ZIP or distribute a modified ZIP containing
+one. Mod archives are not allowed to contain files beneath `baseroms/`; ROMs
+must go through the launcher's required-import flow.
+
+## First import
+
+Start the game after completing the required ROM import. If its model cache is missing or outdated, the importer starts automatically and shows progress for scanning, models, animations, and normal and shiny packs. Gameplay remains paused until the import finishes.
+
+The number of models is selected automatically. A standard Gen 1 game imports 151 species; Gold or a compatible 251-species setup imports all 251. All 26 Unown forms are included in normal and shiny variants.
+
+If import does not start, confirm that:
+
+- The Mod Manager shows the required Stadium 2 ROM import as complete.
+- Its MD5 is `1561c75d11cedf356a8ddb1a4a5f9d5d`.
+- The mod is installed and enabled for the current game.
+
+### Exporting the original Stadium battle fields
+
+The ROM contains 30 battle-field models in its archive at `0x01638000`. To
+dump all of them as OBJ/MTL models with TGA textures, run this from the
+Gen1Recomp repository root after importing the ROM:
+
+```bash
+luajit mods/STADIUM2_IMPORTER/tools/dump_stadium2_arenas.lua \
+  mods/STADIUM2_IMPORTER/baseroms/stadium2.z64 \
+  mods/STADIUM2_IMPORTER/stadium2_arena_dump
+```
+
+Each `arena_00` through `arena_29` directory also retains its exact packed
+PERS-SZP record and decompressed FRAGMENT for further research. `manifest.json`
+and `manifest.tsv` record ROM offsets, geometry counts, texture counts, and
+bounds. The dump directory is ignored by Git because it contains assets
+derived from the user's ROM and must not be distributed with the mod.
 
 ## Options
 
-`STADIUM 2 MODELS` defaults to `ON`. Turning it `OFF` keeps the imported model cache intact but disables creation and use of Stadium 2 renderers. Turning it back `ON` restores Stadium 2 rendering without rebuilding the cache.
+- `STADIUM 2 MODELS` enables imported Stadium models. Disabling it preserves the generated model cache.
+- `STADIUM 2 BATTLE` enables the complete Stadium battle presentation. The underlying game still controls battle rules, damage, turn order, switching, capture results, menus, and RNG.
+- `RAPIDASH CUT PARTICLES` optionally restores the complete but disconnected
+  Rapidash particle callback left in the retail ROM. It is enabled by default and
+  affects Stadium model renderers and battles; the model viewer also provides
+  a `CUT PARTICLES: ON/OFF` button on Rapidash (`F` is the keyboard shortcut).
+- `MODEL SHADER` selects the original `STADIUM` lighting or the `WATERCOLOR MANGA` style. Changes apply to existing battle models immediately.
+- `BATTLE AA` selects `OFF`, `2X`, or `4X` supersampling for the 3D arena while keeping the native interface crisp. The selected level is limited automatically by the device's texture support.
+- `BETA CONTEXT ARENAS` is disabled by default and applies only to Gen 2.
+  Gyms, the Elite Four, Team Rocket, Rival battles, and other trainer encounters
+  select their matching Stadium 2 field. Outdoor trainer battles use Free
+  Battle Park and indoor trainer battles use Classroom. Every wild battle,
+  including fishing, surfing, roaming, and scripted wild Pokémon, deliberately
+  retains the established classic scene. Unknown or unavailable fields also
+  fall back safely to the classic scene.
+- `BETA PARK TIME OF DAY` is a separate disabled-by-default experiment. With
+  contextual arenas enabled, it gives Free Battle Park bright daytime,
+  presentation-only warm evening lighting, and darker night lighting without
+  changing the Gen 2 world clock or encounter tables.
 
-`STADIUM 2 BATTLE` defaults to `ON`. Gen 1 and Gen 2 now use the importer-owned Stadium presentation. The host battle engines remain authoritative for turn order, damage, move effects, capture odds, switching, faint results, text, menus, party state and RNG. Generation adapters read that state and replace presentation only: a full-window environment, solved perspective camera, footprint-sized 3D platforms, model shadows, frosted edge-aligned HUD, projected native battle effects, normal/shiny DSM4 actors, callback runtime, materials, animated textures, additive FX, presented-frame timing, and send-out/attack/faint states. Turning it `OFF` leaves the engine's normal battle presentation in control.
+## Battle camera controls
 
-Gen 1 is implemented by `lib/gen1_battle.lua` as a draw-only adapter over the host `src.battle.BattleState`. Gen 2 is implemented by `lib/gen2_battle.lua` over `src.ui.gen2.BattleState`. Shared model and stage behavior lives in `lib/battle_actor.lua` and `lib/battle_scene.lua`; neither adapter owns battle simulation.
+- Move the mouse to orbit and pitch the camera.
+- Use the mouse wheel or `Q` and `E` to zoom.
+- Use the controller right stick to control the camera.
+- Press `0` to reset the view.
+- On touchscreens, drag with one free finger and pinch with two. Touches that begin on virtual controls remain assigned to those controls.
 
-`BATTLE AA` applies to the owned Stadium arena in either generation. It defaults to `OFF`; `2X` and `4X` supersample the 3D scene before the native pixel-art UI and battle objects are composited, and automatically clamp to the GPU texture limit.
+### Context arena visual tests
 
-In a Stadium battle, ordinary mouse movement controls orbit and pitch, the mouse wheel or `Q`/`E` controls zoom, the controller right stick controls the camera, and `0` resets the shot. One free touch drags and two free touches pinch on both Gen 1 and Gen 2; touches that begin on virtual controls remain owned by the touch pad.
+Run the real Gen 2 encounter visual suite from the mod directory:
 
+```bash
+./tests/run_context_arena_visuals.sh
+```
 
-At game ready the importer inspects the merged Pokemon data and expands its own cache target automatically. A normal Gen I game requests 151 models; Gold or a loaded 251-species overhaul requests all 251 without requiring a separate Stadium renderer adapter.
+It starts separate wild, fishing, outdoor trainer, indoor trainer, and Violet
+Gym encounters through the live engine. Each case asserts the active arena
+state, index, and resolver reason before writing a clean Stadium scene image
+and a `-full-window` integration
+image to `/tmp/stadium2-context-arenas`. Set
+`STADIUM2_ARENA_VISUAL_DIR` to choose another output directory, or
+`POKEPORT_GAME=gold` / `silver` to run against a different Gen 2 game.
 
-When extraction is required, an opaque in-game import screen shows the real
-scan, index, model, animation, normal-pack, and shiny-pack progress. Gameplay
-remains paused behind it. Completion closes the screen automatically; a failed
-import displays the failing stage and offers retry or close controls.
+## Rendering and compatibility
 
-On Android, **OPTIONS -> STADIUM 2 ROM** uses Gen1Recomp's native system
-document picker through the native no-argument `love.system.pickFile()` ROM path. The selected document is
-handed back as `picked_rom.gb`, validated as the supported Stadium 2 US ROM,
-loaded into the normal importer, and the temporary handoff file is removed.
-Desktop Linux, Windows, and macOS keep their existing ROM discovery and file
-dialog paths.
+The same renderer is used by the normal and Watercolor Manga styles on desktop and mobile. It supports animated textures, per-model effects, normal and shiny palettes, alpha materials, additive effects, model and ground shadows, and adaptive graphics fallbacks for mobile GPUs.
 
-The generated cache is stored under:
+Battle animations advance from presentation time, so fast-forward does not alter their intended speed. Changing shader style or enabling models does not require rebuilding the imported packs.
+
+Stadium keeps its original widescreen glass-panel UI, but ownership is attached
+to Gen1Recomp's official `battle.status_hud_visible` and
+`battle.bottom_ui_visible` hooks. Each region is claimed independently: if
+another UI provider returns `false`, Stadium omits its corresponding captured
+HUD, glass panel, paper-key treatment, or lower panel while leaving the 3D
+scene, models, camera, effects, and battle logic untouched. Pixels contributed
+through `battle.overlay` remain in the engine-authored centred layer when a
+foreign UI owns those regions.
+
+The installed Gen 3 Inspired UI predates these visibility hooks. Stadium uses
+the same narrow, option-aware compatibility detection as Crystal 251 and Battle
+Art so its glass UI yields whenever that replacement battle UI is enabled. A
+disabled Gen 3 battle UI restores Stadium's presentation immediately.
+
+## Integration API
+
+Other mods can access the importer through `mod.find("STADIUM2_IMPORTER").exports`. The public exports include:
 
 ```text
-stadium2_importer/normal/%03d.dsm
-stadium2_importer/shiny/%03d.dsm
-stadium2_importer/battle/unown_b.dsm ... unown_z.dsm
-stadium2_importer/battle/unown_b_shiny.dsm ... unown_z_shiny.dsm
-stadium2_importer/pack.info
-```
-
-Unown A is species 201 in the ordinary normal/shiny directories. Stadium 2
-model and pose records 254 through 278 supply Unown B through Z, so the cache
-contains all 26 forms in both normal and shiny variants.
-
-The cache marker format is `S2IMP32`. Shiny packs use Stadium 2's per-species
-HSL metadata, while Clefairy, Clefable, Jigglypuff, Wigglytuff, Gyarados,
-Noctowl, Cleffa, and Igglybuff use the ROM's dedicated native-format rare-texture
-archive, preserving each source texture's N64 bit depth. Translucent model-local FX are kept out of the HSL pass. Model packs use the `DSM4` magic and
-carry the importer-owned `S2HX` v4 render extension. Version 4 associates
-materials and callbacks with the exact primitive-emitting command site,
-splits primitives at callback boundaries, embeds callback textures, and
-includes the ROM-textured fire geometry constructed by fragment 26. Older
-caches are rebuilt automatically.
-
-DSM4 preserves full per-primitive geometry mode, vertex normal versus RGBA
-interpretation, source alpha, callback texture eligibility, and N64 sampler
-and texture-scale state. It also distinguishes authored textures from the
-neutral sampler input used by source display lists that intentionally disable
-texturing. Callback programs remain modular in `S2HX`; core mesh
-meaning no longer depends on that extension.
-
-The standalone renderer and both generation battle adapters read those packs
-directly. They use rigid bone bindings, source 30 Hz animation frames,
-per-animation and callback texture streams, parsed material state, primitive
-culling, additive second-pass rendering, embedded RGBA textures, and the
-verified Stadium 2 model-handler state implemented by the importer.
-
-`MODEL SHADER` in the mod options selects `STADIUM` (the parity-oriented
-default lighting) or `WATERCOLOR MANGA`. The latter combines inked silhouette
-shading, stepped value washes, paper warmth, muted pigment, and subtle
-screen-stable watercolor irregularity. It uses the same material shader and
-draw calls, so textures, callback FX, reflection, alpha, shadows, and
-performance characteristics remain shared with the default path. Changing it
-updates existing imported battle actors immediately.
-
-For standalone visual inspection, run:
-
-```sh
-love mods/STADIUM2_IMPORTER/tests/stadium2_model_viewer_visual
-```
-
-`Tab` selects the enemy or player model, left/right cycle one species, and
-up/down jump ten species. `Q`/`E` cycle animations, number keys isolate a
-primitive, and `G`, `[`/`]`, and `X` force, age, or suppress dynamic callback
-FX for the selected model.
-
-Fragment 26 handler metadata lives in `lib/handler_registry.lua`. Shared
-dynamic-object behavior is composed from audited ASM lifecycle routes under
-`lib/effects/`, while `lib/effect_renderer.lua` owns the generic billboard
-render description. Phase-5 model rendering callbacks live under
-`lib/render_callbacks/`; this keeps shared callback-owned texture and material
-logic out of species-specific code. `model_handlers.lua` and `renderer.lua`
-retain the public compatibility entry points used by packs, battles, and older
-audits.
-
-The semantic model-completeness audit is separate from the callback coverage
-audit. It compares source model meaning with what DSM and the renderer can
-represent, including topology, callback ownership and targeting, N64 geometry
-mode, vertex RGBA versus normals, texture sampler state, and pose/auxiliary
-alignment. It audits all 251 species by default or a focused shared-code list:
-
-```sh
-STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_model_parity_audit.lua --report
-STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_model_parity_audit.lua --species=181,200,238,245 --report
-STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_dsm4_roundtrip_audit.lua
-STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_dual_texture_material_audit.lua
-STADIUM2_ROM=/path/to/stadium2.z64 lua tests/stadium2_fire_face_parity_audit.lua
-love tests/stadium2_shader_audit
-```
-
-The dual-texture material audit disassembles the `0x81000048` ROM family
-contract and compares its allocation, texture pointers, tile scroll math,
-repeat sampler, two-cycle combiner, callback ownership, and complete source
-payloads against every family consumer. A valid route with substituted or
-truncated pixels is a parity failure.
-
-Omit `--report` in CI to return a failing status while semantic losses remain.
-Misdreavus additionally locks its ASM-derived reference topology and six
-phase-5 routes so broad pointer scans or reversed callback ownership cannot
-silently return.
-
-Battle models advance from the real presentation clock rather than the
-speed-scaled game-logic clock. Fast-forward therefore does not change the
-authored animation, texture, or callback speed.
-
-Exports include:
-
-```text
+version
+US_MD5
+FORMAT
 configure(options)
 status()
 available(count)
 modelsEnabled()
 battleEnabled()
+shaderStyle()
 battleStatus(battle)
 configureGame(game)
 presentation
@@ -149,7 +145,11 @@ modelPath(species, variant)
 readPack(species, variant)
 parsePack(bytes)
 loadModel(species, variant)
+createModel(species, variant)
+createSpecialModel(name)
+releaseModel(model)
 newRenderer(species, variant, options)
+newRendererFromModel(model, options)
 releaseModels()
 readHandlers(species, variant)
 handlerInfo(address)
@@ -158,50 +158,217 @@ runHandlers(records, phase, runtime, state)
 runModelHandlers(species, variant, phase, runtime, state)
 resolveHandlerPointer(extension, pointer, length)
 shinyPalettesFromTransformSource(source)
+scene
+models
+getActiveBattleScene()
+registerBattleSceneExtension(mod, phase, callback, priority)
 ```
 
-A renderer instance supports:
+`presentation` is a generation-neutral rendering layer with `newActor`, `newScene`, `setBattler`, `removeBattler`, `sendOut`, `useMove`, `hit`, `faint`, and `update`, plus the `Actor`, `Scene`, and `Camera` types. Callers remain responsible for battle logic.
 
-```text
-setAnimation(indexOrName, loop)
-setMove(moveNumber, loop)
-setContext(name, loop)
-setHandlerRuntime(runtime)
-seekFrame(frame)
-step(dt)
-worldMetrics()
-drawScene(pass, modelMatrix, options)
-drawShadowMap(modelMatrix, lightViewProjection)
-renderToCanvas(width, height, options)
-draw(x, y, width, height, options)
-release()
+### Choosing an integration
+
+The current API separates model ownership from scene ownership. A consuming mod
+can use only the part it needs:
+
+| Goal | API to use | Who owns the surrounding scene? |
+| --- | --- | --- |
+| Put Stadium Pokemon into a voxel arena, model viewer, or custom renderer | `exports.models` API v2 | The consuming mod |
+| Build a completely separate battle presentation from Stadium actors and cameras | `exports.presentation` | The consuming mod |
+| Add to or replace parts of the importer's active battle scene | `exports.scene` | Stadium, with registered extension phases |
+| Inspect or mutate raw DSM data with independent ownership | `models.create`, `models.parsePack`, or `models.createSpecial` | The consuming mod |
+
+Declare the importer in the consumer's manifest so its exports are initialized
+first. Use `optional_dependencies` when the consumer has a fallback, or
+`dependencies` when it cannot run without Stadium assets:
+
+```json
+{
+  "optional_dependencies": ["STADIUM2_IMPORTER"]
+}
 ```
 
-The standalone model renderer and battle presentation are available in both generations. The project contains no bundled third-party runtime tree: Gen 1 and Gen 2 presentation are implemented by this mod and share the same owned actor/scene renderer.
+Feature-detect the API at runtime rather than assuming that every installed
+version has the newest capabilities:
 
-## Battle presentation API
+```lua
+local handle = mod.find("STADIUM2_IMPORTER")
+local stadium = handle and handle.exports
+local models = stadium and stadium.models
 
-`mod.exports.presentation` is the generation-neutral rendering layer used by the adapters. It exposes `newActor`, `newScene`, `setBattler`, `removeBattler`, `sendOut`, `useMove`, `hit`, `faint`, and `update`, plus the `Actor`, `Scene`, and `Camera` types. A separate battle mod can therefore use imported Stadium models without depending on either built-in generation adapter. The caller remains responsible for battle meaning; the presentation API never resolves gameplay.
-
-## Interactive model viewer
-
-Run from the Gen1Recomp repository root after installing/importing the Stadium 2 models:
-
-```bash
-POKEPORT_DRIVER=mods/STADIUM2_IMPORTER/tests/stadium2_model_viewer_driver.lua \
-POKEPORT_TOUCH=0 \
-love .
+if models and models.apiVersion >= 2 then
+  local capabilities = models.capabilities()
+  if capabilities.sceneNeutralDraw then
+    -- Safe to create independently owned instances for this mod's scene.
+  end
+end
 ```
 
-The viewer contains 502 entries in paired order: species normal, species shiny, then the next species. Left and Right move one entry at a time and wrap around. S, Up, or Down toggles normal/shiny. Q/E, PageUp/PageDown, or [/] browse every extracted animation for the current model. Space pauses animation. The mouse wheel zooms, left-drag moves the model in screen space, right-drag orbits it manually, and R restores automatic framing. Home and End jump to the first and last entries. Escape closes the viewer. The selected model slowly rotates when it is not being manually orbited. The viewer temporarily raises Gen1Recomp's tool-state surface limit so the model is rendered at the actual framebuffer resolution instead of the normal low-resolution Game Boy UI surface. Model rendering uses corrected Stadium vertical orientation, visible-triangle bounds, linear texture filtering, anisotropic filtering, multisampling, and adaptive supersampling. If a complete 251-species cache is not present, the viewer requests the normal importer flow and displays its progress.
-## Battle viewer test
+The model API does not require `STADIUM 2 BATTLE` to be enabled. A custom scene
+normally leaves `STADIUM 2 MODELS` on and `STADIUM 2 BATTLE` off so only one mod
+owns the complete battle presentation. The live `exports.scene` extension API,
+on the other hand, applies while Stadium owns and draws its battle scene.
 
-Run from the Gen1Recomp repository root:
+### Model API
 
-```bash
-POKEPORT_DRIVER=mods/STADIUM2_IMPORTER/tests/stadium2_battle_viewer_driver.lua \
-POKEPORT_TOUCH=0 \
-love .
+`exports.models` is the stable model namespace. A model created with `create` is an independent DSM model instance. The consuming mod may inspect or modify its bones, primitives, materials, textures, animations, and handler data. It owns that instance and must release it when finished:
+
+```lua
+local stadium = assert(mod.find("STADIUM2_IMPORTER"), "Stadium 2 Importer required").exports
+
+local model, err = stadium.models.create(25, "shiny")
+assert(model, err)
+
+-- The model is this mod's private instance and may be changed in place.
+for _, primitive in ipairs(model.prims) do
+  primitive.decal = true
+end
+
+local renderer, renderErr = stadium.models.newRendererFromModel(model, {
+  textureFilter = "nearest",
+  anchorTravel = true,
+})
+assert(renderer, renderErr)
+
+-- Later, after the last renderer using the model is gone:
+renderer:release()
+stadium.models.release(model)
 ```
 
-The battle viewer draws two imported Stadium 2 models at fixed near-player and far-opponent battle positions with no free camera controls. Both sides play their extracted animations. Tab, Up, or Down changes the selected side; Left/Right changes that side's species; S toggles normal/shiny; Q/E, PageUp/PageDown, or [/] cycles that side's extracted animations; Space pauses both models; 1/2 select player/foe directly; Home/End jump to species 1/251; Escape closes the test.
+`models.load` is the older fast path. It returns a borrowed, importer-cached model and should be treated as read-only. Do not release or retain that value across `releaseModels()`. `models.create` is the correct API whenever a mod needs unrestricted ownership or mutation. Releasing a renderer does not release its model.
+
+`models.readPack` returns the original DSM bytes, and `models.parsePack` parses caller-supplied DSM bytes. A model returned by `parsePack` is also caller-owned and can be released with `models.release`.
+
+`models.createSpecial(name)` provides the same independent ownership for special battle packs such as `substitute`, `unown_b`, and `unown_b_shiny`. A borrowed model from `models.load` is deliberately rejected by `models.release`, preventing one mod from invalidating the importer's shared textures.
+
+#### Scene-neutral model instances
+
+`models.apiVersion == 2` adds the recommended integration path for voxel stages, custom battle scenes, model viewers, and other 3D mods. `newInstance` owns an independent mutable model and its renderer as one object. It does not depend on Stadium's battle scene, camera, stage, or HUD:
+
+```lua
+local stadium = assert(mod.find("STADIUM2_IMPORTER"), "Stadium 2 Importer required").exports
+local models = stadium.models
+assert(models.apiVersion >= 2, "Stadium model instance API v2 required")
+
+local pikachu, err = models.newInstance(25, "normal", {
+  textureFilter = "nearest",
+  anchorTravel = true,
+})
+assert(pikachu, err)
+
+-- These helpers understand DSM animation contexts, move IDs, and authored
+-- 30 Hz animation timing. A numeric animation index also works with :play().
+assert(pikachu:play("idle", true))
+
+function update(dt)
+  pikachu:update(dt, {weather="clear"})
+end
+
+function drawVoxelScene(camera, sunShadow)
+  local modelMatrix = models.matrix.transform({
+    position = {12, 0, -8},
+    rotation = {0, math.rad(35), 0},
+    scale = 0.01,
+  })
+
+  -- The voxel mod binds its own color/depth target first. Stadium draws both
+  -- opaque and additive model materials into that existing 3D scene.
+  assert(pikachu:draw({
+    modelMatrix = modelMatrix,
+    camera = {
+      view = camera.view,
+      viewProjection = camera.viewProjection,
+    },
+    light = {
+      direction = {-0.4, 0.8, 0.25},
+      ambient = {0.38, 0.40, 0.48},
+      diffuse = {0.95, 0.90, 0.82},
+    },
+    shadow = sunShadow and {
+      map = sunShadow.map,
+      viewProjection = sunShadow.viewProjection,
+      texel = sunShadow.texel,
+    } or nil,
+  }))
+end
+
+function unload()
+  pikachu:release() -- releases both renderer and independently owned model
+end
+```
+
+Use `instance:playContext(name, loop)`, `playAnimation(nameOrIndex, loop, auxIndex)`, or `playMove(moveId, loop)` when the animation source should be explicit. `seekFrame(frame)` supports inspection tools; `animationState()` and `isFinished()` expose playback state; and `metrics()`, `bounds()`, or `geometryAnchor()` support placement. To cast the model into a custom shadow map, bind that target and call `instance:drawShadow({modelMatrix=..., lightViewProjection=...})` before the color pass.
+
+Stadium 2 does not store human-readable names in its pose records, so the importer does not infer meaning from a clip's position. It reads the battle overlay's per-species dispatch record instead. ROM entry `251` selects idle, `252` entrance, `253` faint, `254` hit/damage, and `268` the looping sleep pose. Other non-move entries remain named `rom_context_ID` until their battle call sites prove a meaning. An otherwise unclassified animation is named `attack` only when at least one ROM move entry routes to it.
+
+`models.contextSelector(model, name)` and `models.moveSelector(model, moveId)` expose the normalized zero-based selector in the exported animation list. `contextIndex` and `moveIndex` return its one-based playable index. The ROM-only TSV audit retains Stadium's original selector values for low-level comparison.
+
+Per-move body-animation routing is read directly from Stadium 2's ROM-authored per-species dispatch records. `playMove(moveId)` supports all 251 Gen II move IDs, and each parsed animation exposes the one-based move IDs routed to it as `animation.moveIds`. No animation names or move relationships are inferred from another mod.
+
+Dispatch record `0` belongs to species `1`, while the model and pose archives retain their record-zero placeholder. Stadium's per-species dispatch records use two authored selector layouts. Some index pose files directly from `0`; others reserve runtime selector `0` for the model's default pose and address external files as `1..N`. The importer derives the layout from each species' complete ROM dispatch domain and pose-file count, then exposes a normalized zero-based selector. It does not assume one global offset or infer faint/hit from clip order.
+
+To export a readable ROM-only report grouped by Pokémon, body clip, auxiliary clip, move ID, and the move name stored in Stadium 2, run this from the Gen1 recomp repository root:
+
+```sh
+STADIUM2_ROM=mods/STADIUM2_IMPORTER/baseroms/stadium2.z64 \
+STADIUM2_ANIMATION_DISPATCH_OUT=stadium2_animation_dispatch.tsv \
+luajit mods/STADIUM2_IMPORTER/tests/stadium2_animation_dispatch_audit.lua
+```
+
+The visual model viewer also shows the current clip's compacted `ROM move IDs` in its debug panel.
+
+Matrices are row-major and multiply column vectors; a clip transform is `projection * view * model`. `models.matrix` provides `identity`, `multiply`, `perspective`, `lookAt`, `orthographic`, translation/rotation/scale constructors, `compose`, `transform`, and `normalFromModel`. `transform` builds `translation * rotationZ * rotationY * rotationX * scale` and accepts angles in radians.
+
+`newInstanceFromModel(model, options)` renders a model already created or parsed by the caller. It leaves that model caller-owned unless `options.takeOwnership == true`; transferring ownership means `instance:release()` also calls `models.release(model)`. Perform structural model edits before calling `newInstanceFromModel`, because renderer meshes are built when the instance is created. `instance:model()` and `instance:renderer()` are explicit escape hatches for creators who need raw DSM data or renderer features beyond the stable facade.
+
+Call `models.capabilities()` (or inspect `exports.modelCapabilities`) instead of guessing which optional features an installed version supports. `draw` accepts `pass="opaque"` or `pass="additive"` when a custom render graph needs separate passes; the default `pass="all"` draws them in that order. The API restores normal graphics state, but deliberately keeps the caller's render target bound.
+
+### Battle scene extension API
+
+`exports.scene` exposes the live owned scene without taking battle mechanics away from the game. `scene.current()` returns the active Gen 1 or Gen 2 Stadium scene, `scene.actor(side)` returns its `player` or `enemy` actor, and `scene.register` installs a phase callback owned by the consuming mod.
+
+Declare `STADIUM2_IMPORTER` in the consuming mod's `optional_dependencies` (or `dependencies` when it cannot operate without these assets). This ensures its exports are initialized before the consumer looks them up.
+
+```lua
+local stadium = assert(mod.find("STADIUM2_IMPORTER"), "Stadium 2 Importer required").exports
+
+local unregister = stadium.scene.register(mod, "environment", function(next, ctx)
+  local g = ctx.graphics
+
+  -- Draw a complete custom arena into the already-bound color/depth target.
+  drawMyEnvironment(g, ctx.camera, ctx.world, ctx.target)
+
+  -- Environment callbacks must return screen-space marks for the two battlers.
+  -- Reusing these keeps Stadium's HUD aligned with its standard actor slots.
+  return ctx.marks
+end, 100)
+```
+
+The callback uses the engine hook convention `function(next, context)`. Calling `next(context)` composes with lower-priority providers and eventually runs Stadium's default for phases that have one. Omitting `next` takes complete control of that phase. The returned `unregister` function removes the callback. Hook failures are attributed to the consuming mod and safely fall through to the next provider.
+
+Available phases are:
+
+- `camera`: return a camera frame containing `view`, `projection`, `viewProjection`/`vp`, `eye`, `focus`, and `letterbox`.
+- `background`: paint or replace the sky/background.
+- `environment`: paint or replace the stage and return `{ player=mark, enemy=mark }` screen-space anchors.
+- `geometry`: add arbitrary world-space geometry after the stage.
+- `shadow`: during `context.shadowPhase == "cast"`, add geometry to the shared shadow map.
+- `battlers`: during `prepare`, return a mode for each side; during `draw`, render provider-owned battlers and report which sides were drawn.
+- `overlay`: draw the last in-scene 3D/2D layer before the Stadium HUD is built.
+
+Every context contains `graphics`, `target`, `camera`, `world`, `environment`, `marks`, and `scene`. `context.scene.host` is the concrete live scene, `context.scene.actors` contains its model actors, and `context.scene.game`, `screen`, and `battle` expose the presentation owners. The importer restores the render target, shader, depth, culling, blend mode, and color after every phase, and wraps each callback in a graphics-state push/pop when supported.
+
+To replace only one battler while keeping the other Stadium model:
+
+```lua
+stadium.scene.register(mod, "battlers", function(next, ctx)
+  if ctx.battlerPhase == "prepare" then
+    return { sides={ player="host", enemy="provider" } }
+  end
+
+  drawMyEnemy(ctx)
+  return { drawn={ player=false, enemy=true } }
+end, 100)
+```
+
+Battler modes are `host` (Stadium draws its model), `provider` (the extension draws it), and `native` (the game may draw its normal sprite). If a provider requests a side but does not report it drawn, Stadium safely falls back to its model. `battleSceneCapabilities` remains available for feature detection, and contains the exact raw hook names for mods that prefer `mod.hooks:wrap` directly.

@@ -10,19 +10,40 @@ local Actor = require("mods.STADIUM2_IMPORTER.lib.battle_actor")
 local Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
 local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
+local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
+local ArenaSelector = require("mods.STADIUM2_IMPORTER.lib.arena_selector")
+local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
+local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local Unown = require("src.core.gen2.Unown")
+local GameVersion = require("src.core.GameVersion")
 
 local Gen2 = { COUNT = 251 }
 local modRef, installed, session
 local configured = 251
+local lastDiagnostic
+local diagnosticLines={}
 
 local function clamp(value, lo, hi)
   return math.max(lo, math.min(hi, tonumber(value) or lo))
 end
 
+local function diagnostic(message)
+  message=tostring(message)
+  if message==lastDiagnostic then return end
+  lastDiagnostic=message
+  diagnosticLines[#diagnosticLines+1]=message
+  while #diagnosticLines>24 do table.remove(diagnosticLines,1) end
+  local cache=modRef and modRef.cache
+  if cache and type(cache.write)=="function" then
+    pcall(cache.write,cache,"gen2_battle_status.txt",
+      table.concat(diagnosticLines,"\n").."\n")
+  end
+end
+
 local function warn(message)
   local log = modRef and modRef.log
   if log and log.warn then pcall(log.warn, log, "%s", tostring(message)) end
+  diagnostic("warning: "..tostring(message))
 end
 
 local function dexOf(data, mon)
@@ -60,12 +81,24 @@ local function gen2ActorOptions()
   return {warn=warn,dexOf=dexOf,shiny=shiny,formFor=unownPack,label="Gen 2 battle"}
 end
 
-function Scene.new(battle)
+function Scene.new(battle,context)
   local actorOpts=gen2ActorOptions()
   local self=setmetatable({},Scene)
+  local arena,arenaError
+  if Importer.betaArenaEnabled() then
+    local arenaIndex,reason=ArenaSelector.resolve(context)
+    self.arenaSelectionReason=reason
+    if arenaIndex~=nil then arena,arenaError=ArenaRuntime.load(arenaIndex,Importer) end
+    if arena and arenaIndex==28 and Importer.betaArenaTimeOfDayEnabled() then
+      arena.environment=ArenaLighting.environment(arenaIndex,context and context.timeOfDay)
+    elseif arenaIndex~=nil and not arena then
+      warn("BETA ARENA TEST could not load a field; using the classic scene: "
+        ..tostring(arenaError))
+    end
+  end
   Presentation.init(self,{
     actors={player=Actor.new("player",actorOpts),enemy=Actor.new("enemy",actorOpts)},
-    warn=warn,label="Gen 2 battle",
+    warn=warn,label="Gen 2 battle",arena=arena,arenaMode=arena~=nil,
   })
   self.battle=battle
   self.screen=nil
@@ -78,6 +111,7 @@ function Scene.new(battle)
 end
 
 function Scene:release()
+  UIOwnership.release(self.screen)
   self.substituteActors.player:release()
   self.substituteActors.enemy:release()
   Presentation.release(self)
@@ -108,10 +142,19 @@ end
 -- Trainer art is the sole native pic allowed through because it is not a
 -- Pokemon sprite.
 function Scene:ownsSlot(side, screen)
+  if not self.readyFrame or self.defect then return false end
   screen = screen or self.screen
+  -- Trainer pictures are world actors too, but they are not Pokemon models.
+  -- Resolve these flags before provider ownership so Battle Art can capture
+  -- and place the selected trainer image instead of exposing the loaded mon.
+  if screen then
+    if side == "player" and screen.showPlayerTrainer then return false end
+    if side == "enemy" and screen.showEnemyTrainer then return false end
+  end
+  local providerMode=self.battlerMode and self:battlerMode(side) or "host"
+  if providerMode=="native" then return false end
+  if providerMode=="provider" then return true end
   if not screen then return false end
-  if side == "player" and screen.showPlayerTrainer then return false end
-  if side == "enemy" and screen.showEnemyTrainer then return false end
   return true
 end
 
@@ -131,6 +174,18 @@ end
 function Scene:visualState(side, screen)
   screen=screen or self.screen
   if not self:ownsSlot(side,screen) then return "trainer" end
+  if not screen then return "empty" end
+  -- During a trainer opening, ResetEnemyBattleVars drops the trainer flag a
+  -- few frames before the enemy send event begins.  The active mon already
+  -- exists in battle data during that gap, but it has not been sent out yet.
+  -- Keep only trainer battles empty until startSendOut arms afterSendOut;
+  -- wild encounters are visible from their first presented frame.
+  if side=="enemy" and screen and screen.battle
+      and screen.battle.trainer and not screen.battle.wild
+      and not screen.showEnemyHud then
+    local sending=screen.afterSendOut and screen.afterSendOut.side=="enemy"
+    if not sending then return "empty" end
+  end
   local actor=self.actors[side]
   if not (actor and actor.mon) then return "empty" end
   local volatile=self:volatileFor(side)
@@ -324,6 +379,7 @@ function Scene:update(dt)
       if (shown==nil or shown<=0) and slide and slide.side==side then actor:faint() end
     end
   end
+  self:stepArena(dt)
   Camera.stickOrbit(self.stickX,dt)
   Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
@@ -414,8 +470,23 @@ local function installScreenHooks()
   local originalWide = BattleState.drawWidescreen
 
   function BattleState:drawWidescreen(width, height)
+    -- Battle Art may use the ready Stadium canvas as its world pass while
+    -- retaining complete ownership of the Gen 2 HUD/text/menu compositor. In
+    -- that narrow pass, skip Stadium's detached HUD compositor and expose the
+    -- engine draw captured before this wrapper was installed.
+    if self.stadium2ImporterBattleArtUiPass then
+      return originalWide(self,width,height)
+    end
     local scene = active(self)
-    if not scene then return originalWide(self,width,height) end
+    if not scene then
+      if session and not session.diagnosticDrawMiss then
+        session.diagnosticDrawMiss=true
+        diagnostic(("draw-miss sessionBattle=%s screenBattle=%s same=%s")
+          :format(tostring(session.battle),tostring(self and self.battle),
+            tostring(session.battle==self.battle)))
+      end
+      return originalWide(self,width,height)
+    end
     scene.screen = self
     scene:sync()
     prepareTrainerImages(self)
@@ -426,19 +497,41 @@ local function installScreenHooks()
     if not scene.readyFrame or scene.width~=width or scene.height~=height then
       scene:render(width,height)
     end
+    -- When Stadium installed after Battle Art, this wrapper is the outermost
+    -- draw function. Hand the completed world canvas inward before Stadium's
+    -- detached HUD compositor runs; Battle Art will discover the active scene,
+    -- draw that canvas, and own the entire native UI pass. The reciprocal
+    -- bypass above covers the opposite load order without recursion.
+    if BattleState.battleArtGen2WidescreenAdapter then
+      if not scene.diagnosticBattleArtUiOwner then
+        scene.diagnosticBattleArtUiOwner=true
+        diagnostic("ui-owner battle-art outer=stadium")
+      end
+      return originalWide(self,width,height)
+    end
     local picture=scene.presentCanvas or scene.canvas
     local g = love.graphics
-    if picture and scene.readyFrame then
+    if picture and scene.readyFrame and not scene.defect then
+      if not scene.diagnosticDrawOwned then
+        scene.diagnosticDrawOwned=true
+        diagnostic(("draw-owned picture=true ready=%s defect=nil size=%sx%s")
+          :format(tostring(scene.readyFrame),tostring(width),tostring(height)))
+      end
       g.setColor(1,1,1,1)
       g.draw(picture, 0, 0, 0,
         width / picture:getWidth(), height / picture:getHeight())
     else
-      -- Even a first-frame renderer defect remains an owned battle frame.
-      -- Never expose the complete native 2D scene underneath it.
-      g.clear(0,0,0,1)
-      scene.width,scene.height=width,height
-      scene.hudBox=Camera.frame(width,height).letterbox
+      if not scene.diagnosticDrawFallback then
+        scene.diagnosticDrawFallback=true
+        diagnostic(("draw-fallback picture=%s ready=%s defect=%s")
+          :format(tostring(picture~=nil),tostring(scene.readyFrame),
+            tostring(scene.defect)))
+      end
+      UIOwnership.release(self)
+      return originalWide(self,width,height)
     end
+    scene.statusHudOwned=UIOwnership.claimStatus(self)
+    scene.bottomUiVisible=UIOwnership.bottomVisible(self)
     -- The native OBJ animation layer (Pokeballs, hit sparks, beams, etc.) must
     -- not be baked into the three HUD bands: those bands are snapped to
     -- different widescreen X positions, so an object crossing y=48/96 would
@@ -457,7 +550,15 @@ local function installScreenHooks()
     -- snapped status HUD bands below and wears the same frosted glass as them.
     local nicknameModal=self.phase=="ask-nickname"
       and (self.messageTimer or 0)<=0
-    local layerOk,layer=pcall(Hud.layer,function() self:drawScene() end)
+    -- Crystal's MoveSelectionScreen has a second, raised TYPE/PP window at
+    -- native rows 64..103. The ordinary wide compositor only retains the
+    -- three 48px HUD bands, which cuts the upper 32px off that window. Mark
+    -- the capture and composition from the engine's active cart identity;
+    -- this must not depend on CRYSTAL_251 (or any other installed mod).
+    scene.crystalMovePane=GameVersion.engine()=="crystal"
+      and self.phase=="moves"
+    local layerOk,layer=pcall(Hud.layer,function() self:drawScene() end,
+      {crystalMovePane=scene.crystalMovePane})
     -- The reference wide compositor snaps status HUDs from a HUD-only texture
     -- and leaves battle text/windows in the centred Game Boy frame.  Do the same for
     -- AskNickname so opening the modal never changes the wide HUD geometry.
@@ -469,15 +570,19 @@ local function installScreenHooks()
     -- path: capture them independently and temporarily answer false to
     -- hudCleared while doing so.  Real visibility (send-out, faint, tutorial,
     -- trainer intro) still comes from showEnemyHud/showPlayerHud below.
-    local hudLayerOk,hudLayer
-    do
+    local hudLayerOk,hudLayer=true,nil
+    if scene.statusHudOwned then
+      hudLayerOk,hudLayer=pcall(UIOwnership.withNativeStatus,self,function()
       local had=rawget(self,"hudCleared")
       self.hudCleared=function() return false end
-      hudLayerOk,hudLayer=pcall(Hud.hudLayer,function() self:drawHud() end)
+      local ok,result=pcall(Hud.hudLayer,function() self:drawHud() end)
       self.hudCleared=had
+      if not ok then error(result,0) end
+      return result
+      end)
     end
     local modalLayerOk,modalLayer=true,nil
-    if nicknameModal then
+    if nicknameModal and scene.bottomUiVisible then
       -- Gold draws the nickname Yes/No box on top of its native player HUD.
       -- Capture it a second time with drawHud suppressed so transparent modal
       -- paper cannot reveal that native HUD inside the modal texture itself.
@@ -759,15 +864,49 @@ function Gen2.install()
   return true
 end
 
-function Gen2.ensure(battle)
-  if not (installed and battle and Importer.modelsEnabled()
-      and Importer.battleEnabled() and Importer.available(configured)) then
+function Gen2.ensure(battle,context)
+  -- Gen 2 announces the same encounter twice: Battle.new emits the logical
+  -- battle model, then BattleState.new emits the presentation screen.  The
+  -- latter stores the former in `screen.battle`.  Treat that second event as
+  -- the point where the already-built Stadium scene gains its screen instead
+  -- of replacing the good scene with one built from the screen wrapper (which
+  -- has no direct player/enemy fields).
+  local screen
+  if type(battle)=="table" and type(battle.battle)=="table" then
+    screen=battle
+    battle=battle.battle
+  end
+  local models=Importer.modelsEnabled()
+  local battles=Importer.battleEnabled()
+  local available=Importer.available(configured)
+  diagnostic(("ensure installed=%s battle=%s models=%s battles=%s "
+      .."available=%s configured=%s")
+    :format(tostring(installed),tostring(battle~=nil),tostring(models),
+      tostring(battles),tostring(available),tostring(configured)))
+  if not (installed and battle and models and battles and available) then
     return false
   end
-  if session and session.battle == battle then return true end
+  if session and session.battle == battle then
+    if screen then
+      session.screen=screen
+      session:sync()
+      diagnostic(("scene-bound player=%s enemy=%s screen=true")
+        :format(tostring(session.actors.player.dex),
+          tostring(session.actors.enemy.dex)))
+    end
+    return true
+  end
   Gen2.finish()
-  session = Scene.new(battle)
+  session = Scene.new(battle,context)
+  if screen then session.screen=screen end
   session:sync()
+  diagnostic(("scene-created player=%s enemy=%s playerRenderer=%s "
+      .."enemyRenderer=%s arena=%s")
+    :format(tostring(session.actors.player.dex),
+      tostring(session.actors.enemy.dex),
+      tostring(session.actors.player.renderer~=nil),
+      tostring(session.actors.enemy.renderer~=nil),
+      tostring(session.arenaMode==true)))
   return true
 end
 
@@ -775,7 +914,16 @@ function Gen2.update(dt)
   if not session then return false end
   -- Options and cache readiness are sampled when the battle begins.  Once a
   -- scene owns the fight, only BattleState:finishBattle may release it.
-  return session:update(math.min(math.max(tonumber(dt) or 0, 0), .1))
+  local result=session:update(math.min(math.max(tonumber(dt) or 0, 0), .1))
+  if session.defect then
+    diagnostic("render-defect: "..tostring(session.defect))
+  elseif session.readyFrame then
+    diagnostic(("scene-ready player=%s enemy=%s arena=%s")
+      :format(tostring(session.actors.player.renderer~=nil),
+        tostring(session.actors.enemy.renderer~=nil),
+        tostring(session.arenaMode==true)))
+  end
+  return result
 end
 
 local function shouldDeferFinish(current,battle)
@@ -784,6 +932,9 @@ local function shouldDeferFinish(current,battle)
 end
 
 function Gen2.finish(battle, force)
+  if type(battle)=="table" and type(battle.battle)=="table" then
+    battle=battle.battle
+  end
   if not force and shouldDeferFinish(session,battle) then
     session.endRequested=true
     return false
@@ -796,6 +947,11 @@ function Gen2.status()
   return { enabled=Importer.modelsEnabled() and Importer.battleEnabled(),
     ready=Importer.available(configured), count=configured,
     generation=2, active=session ~= nil,
+    betaArena=session and session.arenaMode or false,
+    arenaIndex=session and session.arenaIndex or nil,
+    arenaReason=session and session.arenaSelectionReason or nil,
+    ui=session and {statusHudOwned=session.statusHudOwned==true,
+      bottomUiVisible=session.bottomUiVisible~=false} or nil,
     shot=session and (session.presentCanvas or session.canvas) or nil,
     defect=session and session.defect or nil,
     visual=session and {
@@ -803,8 +959,13 @@ function Gen2.status()
     } or nil }
 end
 
+function Gen2.currentScene()
+  return session
+end
+
 function Gen2.resetForTests()
   Gen2.finish()
+  ArenaRuntime.resetForTests()
   installed, modRef, configured = false, nil, 251
 end
 

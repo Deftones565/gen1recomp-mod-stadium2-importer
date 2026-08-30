@@ -9,6 +9,9 @@ local Manifest = {
   },
   species = {
     [77] = { name = "Ponyta", routes = { initialize=0x81004190, spawn=0x810047E0, render=0x81004D44, update=0x8100522C }, ownership="exclusive-card", emitters="carrier-skin" },
+    -- Retail Rapidash leaves this complete route and its assets disconnected.
+    -- It is reachable only through the opt-in cut-effect reconstruction.
+    [78] = { name = "Rapidash", routes = { initialize=0x81004248, spawn=0x810047E0, render=0x81004D44, update=0x81005298 }, ownership="inherited-model", emitters="record-bone", cutContent=true },
     [92] = { name = "Gastly", routes = { initialize=0x8100448C, spawn=0x810047D0, render=0x81004B48, update=0x81005198 }, ownership="inherited-model", emitters="record-bone" },
     [109] = { name = "Koffing", routes = { initialize=0x8100404C, spawn=0x81004620, render=0x81004A38, update=0x8100512C }, ownership="exclusive-card", emitters="carrier-skin" },
     [110] = { name = "Weezing", routes = { initialize=0x8100404C, spawn=0x81004620, render=0x81004A38, update=0x8100512C }, ownership="exclusive-card", emitters="carrier-skin" },

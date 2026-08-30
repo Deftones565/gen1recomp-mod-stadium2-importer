@@ -5,12 +5,22 @@ local Flame = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.flame")
 local Phase5Geometry = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.phase5_geometry")
 local HandlerRegistry = require("mods.STADIUM2_IMPORTER.lib.handler_registry")
 local VertexSemantics = require("mods.STADIUM2_IMPORTER.lib.vertex_semantics")
+local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 
 local byte = string.byte
 local char = string.char
 local sub = string.sub
 local concat = table.concat
 local floor = math.floor
+
+-- Verified against the supplied Pineco OBJ/DAE rip. The archive contains the
+-- same six ROM vertices and 64x32 eye image; these are its texture coordinates
+-- converted from bottom-left OBJ V to the renderer's top-left convention.
+-- Track 1 is the left eye and track 0 the right eye in the source layout.
+local PINECO_EYE_UV = {
+  [1] = { 1.011948, 0.971150, 0.677231, -0.134700, -0.121161, 0.953261 },
+  [0] = { 0.684959, -0.126568, 0.996974, 0.950009, -0.139998, 0.939438 },
+}
 
 local BASE = 0x8FF00000
 
@@ -168,6 +178,27 @@ local Model = {}
 Model.__index = Model
 
 local function newModel(frag, options)
+  options = type(options) == "table" and options or {}
+  local directLayout = tonumber(options.directLayoutOffset)
+  if directLayout then
+    if directLayout < 0 or directLayout >= #frag.d then
+      return nil, frag.name .. ": direct geo layout is outside the fragment"
+    end
+    return setmetatable({
+      f = frag,
+      -- A field archive index is not a Pokédex number. Keeping species at
+      -- zero prevents Pokémon-specific renderer workarounds (for example
+      -- Pikachu or Pineco culling rules) from being applied to arenas 25 or
+      -- 29 merely because their archive indices happen to match.
+      species = 0,
+      stageIndex = tonumber(options.stageIndex) or 0,
+      geoLayouts = { directLayout },
+      anims = {}, auxAnims = {}, textures = {}, tluts = {}, bones = {},
+      boneById = {}, prims = {}, primsByKey = {},
+      rootScale = { 1.0, 1.0, 1.0 }, fx = {}, warnings = {},
+      options = options,
+    }, Model)
+  end
   local r = frag:root()
   if not r then return nil, frag.name .. ": could not locate root struct" end
   local geo = frag:ptr(r + 0x08)
@@ -188,7 +219,7 @@ local function newModel(frag, options)
     rootScale = { 1.0, 1.0, 1.0 },
     fx = {},                
     warnings = {},
-    options = type(options) == "table" and options or {},
+    options = options,
   }, Model)
   return m
 end
@@ -240,8 +271,16 @@ function Model:build()
   self.curTlut = -1
   self.curMat = nil
   self.curTexAnim = -1
+  self.curNodeColor = nil
   self.stack = { -1 }
   self.vbuf = {}
+  -- The RSP is stateful across gSPDisplayList calls.  Stadium submits the
+  -- model's named-bone lists one after another without resetting either the
+  -- transformed vertex cache or G_GEOMETRYMODE.  In particular, a child list
+  -- may consume vertices loaded by the preceding torso list and inherits the
+  -- cull state left by that submission.
+  self.geometryMode = 0x20400 -- G_LIGHTING | G_CULL_BACK
+  self.textureScaleS, self.textureScaleT = nil, nil
   if not self.geoLayouts[1] then
     self.warnings[#self.warnings + 1] = "no geo layout"
     return
@@ -249,7 +288,7 @@ function Model:build()
   self:walk(self.geoLayouts[1], 0)
 end
 
-function Model:walk(o, depth)
+function Model:walk(o, depth, stageRenderProfile)
   local f = self.f
   if depth > 32 or o == nil then return end
   while true do
@@ -263,7 +302,7 @@ function Model:walk(o, depth)
     if cmd == 0x01 or cmd == 0x04 then                
       return
     elseif cmd == 0x00 or cmd == 0x03 then            
-      self:walk(f:ptr(o + 4), depth + 1)
+      self:walk(f:ptr(o + 4), depth + 1, stageRenderProfile)
     elseif cmd == 0x02 then                           
       o = f:ptr(o + 4)
       if o == nil then return end
@@ -280,6 +319,11 @@ function Model:walk(o, depth)
       end
       self.vtxBase = f:ptr(o + 0x10)
       self.nVerts = f:s16(o + 6)
+    elseif cmd == 0x0F and self.options.stageLayout then
+      -- Graph-node type 6 passes its low three bits to func_8003DB38. The
+      -- resulting root profile is combined with every child submission layer
+      -- by func_8003CC14 to select Stadium's exact RDP render-mode baseline.
+      stageRenderProfile = f:s16(o + 2) % 8
     elseif cmd == 0x08 then                           
       local handler = f:u32(o + 4)
       local bone = self:curBone()
@@ -301,6 +345,8 @@ function Model:walk(o, depth)
         end
       end
       self.callbackForBone = self.callbackForBone or {}
+      -- The generated RDP state remains available to following body draws
+      -- until an explicit 0x23 authored material blocks inheritance below.
       self.callbackForBone[bone] = { offset = o, descriptor = handler }
       self.fx[#self.fx + 1] = {
         bone = bone,
@@ -327,53 +373,150 @@ function Model:walk(o, depth)
       }
       self.boneById[f:u8(o + 1)] = idx
       self.stack[#self.stack] = idx
+    elseif cmd == 0x1F and self.options.stageLayout then
+      -- Stadium fields use the generic graph transform node rather than the
+      -- animated Pokemon joint node.  Its rotation fields are authored in
+      -- degrees and its scale fields are percentages (geo_layout.c's
+      -- func_80018600); retain it as a static joint so exporters can compose
+      -- the complete stage hierarchy without changing Pokemon extraction.
+      local idx = #self.bones
+      local function angle(degrees)
+        -- The game performs signed integer division here, which truncates
+        -- toward zero rather than rounding to the nearest binary angle.
+        local scaled = degrees * 65536 / 360
+        local value = scaled < 0 and math.ceil(scaled) or floor(scaled)
+        value = value % 65536
+        if value >= 32768 then value = value - 65536 end
+        return value
+      end
+      self.bones[idx + 1] = {
+        parent = self:curBone(), boneId = 0x100 + idx, flags = 0, chan = -1,
+        t = { f:s16(o + 0xA), f:s16(o + 0xC), f:s16(o + 0xE) },
+        r = { angle(f:s16(o + 4)), angle(f:s16(o + 6)), angle(f:s16(o + 8)) },
+        s = { f:s16(o + 0x10) / 100.0, f:s16(o + 0x12) / 100.0,
+              f:s16(o + 0x14) / 100.0 },
+        staticStageTransform = true,
+      }
+      self.stack[#self.stack] = idx
     elseif cmd == 0x23 then                           
       self.curTex = f:s16(o + 8)
       self.curTlut = f:s16(o + 0xA)
       self.curMat = f:ptr(o + 4)
       self.curTexAnim = f:s16(o + 2)
+      -- The final word is the draw's ROM-authored RGBA colour. Most model
+      -- nodes use a neutral B2/B2/B2 light value, but intensity carriers use
+      -- chromatic values here (Jynx's otherwise-white face is 56/38/60/FF).
+      self.curNodeColor = {
+        f:u8(o + 0xC), f:u8(o + 0xD), f:u8(o + 0xE), f:u8(o + 0xF),
+      }
+      -- A local texture/material command supersedes callback RDP state for
+      -- this node and its descendants. The slime models' uniform 4x4 input is
+      -- the exception: it is a body placeholder consumed by the inherited
+      -- 0x48 builder, not a local detail material. Keep the blocked callback's
+      -- identity so a later placeholder command on the same bone restores it.
+      local inherited = self:nodeCallbackState(self:curBone())
+      local texture = self.textures and self.textures[self.curTex + 1]
+      local slimeCarrier = texture and texture.w == 4 and texture.h == 4
+      if inherited and inherited.descriptor == 0x81000048 then
+        self.callbackForBone = self.callbackForBone or {}
+        self.callbackForBone[self:curBone()] = {
+          offset = inherited.offset,
+          descriptor = inherited.descriptor,
+          blocked = not slimeCarrier,
+        }
+      end
     elseif cmd == 0x22 then                           
-      self:runNodeDL(f:ptr(o + 4), self:curBone())
+      local layer = self.options.stageLayout and f:u8(o + 1) or nil
+      self:runNodeDL(f:ptr(o + 4), self:curBone(), stageRenderProfile, layer)
     elseif cmd == 0x1E then                           
       local named = self.boneById[f:s16(o + 2)]
       self:runNodeDL(f:ptr(o + 4), named or self:curBone())
     elseif cmd == 0x20 or cmd == 0x21 then            
       self:runNodeDL(f:ptr(o + (cmd == 0x20 and 0x10 or 0xC)), self:curBone())
+    elseif cmd == 0x25 and self.options.stageLayout then
+      -- This sets graph-node flag 0x04. Display-list renderers pass it to
+      -- func_8003DA20, which calls func_8003CD84 after the list and resets
+      -- the complete material/RDP submission state before the next node.
+      for _, prim in ipairs(self.lastStageDrawPrims or {}) do
+        prim.arenaResetAfterDraw = true
+      end
     end
     if cmd ~= nil then o = o + size end
   end
 end
 
-function Model:nodeCallback(bone)
+function Model:nodeCallbackState(bone)
   local callbacks = self.callbackForBone
   while callbacks and bone and bone >= 0 do
-    if callbacks[bone] then return callbacks[bone] end
+    if callbacks[bone] ~= nil then return callbacks[bone] end
     local row = self.bones[bone + 1]
     bone = row and row.parent or -1
   end
   return nil
 end
 
-function Model:runNodeDL(offset, bone)
-  local oldOffset, oldDescriptor = self.curCallbackOffset, self.curCallbackDescriptor
-  local callback = self:nodeCallback(bone)
-  if callback then
+function Model:nodeCallback(bone)
+  local callback = self:nodeCallbackState(bone)
+  return callback and not callback.blocked and callback or nil
+end
+
+function Model:runNodeDL(offset, bone, stageRenderProfile, stageSubmissionClass)
+  local oldOffset, oldDescriptor, oldBlocked = self.curCallbackOffset,
+    self.curCallbackDescriptor, self.curBlockedCallback
+  local callback = self:nodeCallbackState(bone)
+  if callback and callback.blocked then
+    self.curBlockedCallback = callback
+  elseif callback then
     self.curCallbackOffset = callback.offset
     self.curCallbackDescriptor = callback.descriptor
+    self.curBlockedCallback = nil
   end
+  local oldProfile, oldClass = self.curStageRenderProfile,
+    self.curStageSubmissionClass
+  self.curStageRenderProfile = stageRenderProfile
+  self.curStageSubmissionClass = stageSubmissionClass
   self:runDL(offset, bone, 0)
-  self.curCallbackOffset, self.curCallbackDescriptor = oldOffset, oldDescriptor
+  if stageSubmissionClass ~= nil and self.currentDrawPrims then
+    self.lastStageDrawPrims = self.currentDrawPrims
+  end
+  self.curStageRenderProfile, self.curStageSubmissionClass = oldProfile, oldClass
+  self.curCallbackOffset, self.curCallbackDescriptor, self.curBlockedCallback =
+    oldOffset, oldDescriptor, oldBlocked
 end
 
 function Model:primFor(tex, tlut, mat, texAnim, cull)
+  local callbackOffset, callbackDescriptor = self.curCallbackOffset,
+    self.curCallbackDescriptor
+  local blocked = self.curBlockedCallback
+  local texture = self.textures and self.textures[tex + 1]
+  -- A blocked detail node can switch back to the uniform body placeholder
+  -- inside its display list without another geo-layout 0x23 command. Restore
+  -- the saved 0x48 callback for that primitive only; nonuniform tongue/eye
+  -- inputs remain local details.
+  local slimeInput = texture and ((texture.w == 4 and texture.h == 4)
+    or (texture.w == 32 and texture.h == 64))
+  if callbackOffset == nil and blocked and blocked.descriptor == 0x81000048
+      and slimeInput then
+    callbackOffset, callbackDescriptor = blocked.offset, blocked.descriptor
+  end
   local key = tex .. "," .. tlut .. "," .. tostring(mat) .. ","
-              .. texAnim .. "," .. cull .. "," .. tostring(self.curCallbackOffset)
-              .. "," .. tostring(self.drawSerial)
+              .. texAnim .. "," .. cull .. "," .. tostring(callbackOffset)
+              .. "," .. tostring(self.textureScaleS)
+              .. "," .. tostring(self.textureScaleT)
+              .. "," .. tostring(self.drawSerial) .. ","
+              .. table.concat(self.curNodeColor or {}, ":") .. ","
+              .. tostring(self.curStageRenderProfile) .. ","
+              .. tostring(self.curStageSubmissionClass)
   local p = self.primsByKey[key]
   if p == nil then
     p = { tex = tex, tlut = tlut, mat = mat, texAnim = texAnim, cull = cull,
-          callbackOffset = self.curCallbackOffset,
-          callbackDescriptor = self.curCallbackDescriptor,
+          textureScale = self.textureScaleS
+            and { self.textureScaleS, self.textureScaleT } or nil,
+          callbackOffset = callbackOffset,
+          callbackDescriptor = callbackDescriptor,
+          nodeColor = self.curNodeColor,
+          arenaRenderProfile = self.curStageRenderProfile,
+          arenaSubmissionClass = self.curStageSubmissionClass,
           verts = {}, nverts = 0, tris = {}, ntris = 0, remap = {} }
     self.primsByKey[key] = p
     self.prims[#self.prims + 1] = p
@@ -437,10 +580,6 @@ function Model:runDL(o, bone, depth)
   end
   local f = self.f
   local vbuf = self.vbuf
-  -- The model dispatcher enters these child lists with lighting and back-face
-  -- culling enabled.  Their usual D9FFFFFF/00000400 command preserves that
-  -- inherited lighting bit; starting from culling alone loses caller state.
-  local geometryMode = 0x20400
   local steps = 0
   while o >= 0 and o + 8 <= #f.d and steps < 4096 do
     steps = steps + 1
@@ -472,11 +611,19 @@ function Model:runDL(o, bone, depth)
       end
     elseif op == 0xD9 then                            
       -- F3DEX2 stores a 24-bit keep mask in w0 and the bits to set in w1.
-      -- Preserve the full state, including inherited G_LIGHTING; culling is
-      -- only one part of the geometry-mode contract.
-      geometryMode = bor(band(geometryMode, w0 % 0x1000000, 24),
+      -- Preserve the full state, including inherited G_LIGHTING, on the
+      -- model rather than in this Lua call.  G_DL returns do not restore RSP
+      -- geometry state, and separate graph-node submissions do not clear it.
+      self.geometryMode = bor(band(self.geometryMode, w0 % 0x1000000, 24),
         w1 % 0x1000000, 24)
+    elseif op == 0xD7 then
+      -- gSPTexture is persistent RSP state, just like G_GEOMETRYMODE. Stadium
+      -- field callbacks consume the scale left by an earlier display list;
+      -- dropping it expands several centre Poké Ball materials eightfold.
+      self.textureScaleS = floor(w1 / 0x10000) / 65536
+      self.textureScaleT = (w1 % 0x10000) / 65536
     elseif op == 0x05 or op == 0x06 then              
+      local geometryMode = self.geometryMode
       local prim = self:primFor(self.curTex, self.curTlut, self.curMat,
                                 self.curTexAnim, geometryMode)
       local flip = (floor(geometryMode / 0x200) % 2 == 1)
@@ -510,6 +657,40 @@ function Model:tilePalette(mat)
     mat = mat + 8
   end
   return pal
+end
+
+local function decodeTileSampler(word)
+  word = tonumber(word) or 0
+  return {
+    cms = floor(word / 0x100) % 4,
+    cmt = floor(word / 0x40000) % 4,
+    masks = floor(word / 0x10) % 16,
+    maskt = floor(word / 0x4000) % 16,
+    shifts = word % 16,
+    shiftt = floor(word / 0x400) % 16,
+  }
+end
+
+StadiumFragment.decodeTileSampler = decodeTileSampler
+
+function Model:tileSampler(mat)
+  if mat == nil then return nil end
+  local f = self.f
+  local sampler
+  for _ = 1, 16 do
+    local w0, w1 = f:u32(mat), f:u32(mat + 4)
+    local op = floor(w0 / 0x1000000)
+    -- G_SETTILE first configures load tile 7, then render tile 0. Vertex
+    -- coordinates use the render tile. Pineco's ROM eye material is the
+    -- direct fixture: tile 0 clamps both 64x32 axes (0x00094260).
+    if op == 0xF5 and floor(w1 / 0x1000000) % 8 == 0 then
+      sampler = decodeTileSampler(w1)
+    elseif op == 0xDF then
+      break
+    end
+    mat = mat + 8
+  end
+  return sampler
 end
 
 function Model:bakePhase5Geometry()
@@ -568,11 +749,21 @@ function Model:bakePhase5Geometry()
 end
 
 function Model:mergePrimitivesByCallback()
+  -- Politoed's torso is authored as an ordered stream of small RSP
+  -- submissions which reuse transformed vertices from the preceding list.
+  -- Globally coalescing equal materials moves those bridge triangles ahead
+  -- of or behind the rigid shell submission they belong to. Keep the ROM's
+  -- final submission order; this changes neither the DSM/API contract nor
+  -- the decoded geometry, only the order in which its parts reach the GPU.
+  if self.species == 186 then return end
   local merged, byKey = {}, {}
   for _, source in ipairs(self.prims) do
+    local nodeColor = source.nodeColor and table.concat(source.nodeColor, ":") or ""
     local key = table.concat({ source.tex, source.tlut, tostring(source.mat),
       source.texAnim, source.cull, tostring(source.callbackOffset),
-      tostring(source.callbackDescriptor) }, ",")
+      tostring(source.callbackDescriptor), nodeColor,
+      tostring(source.arenaRenderProfile), tostring(source.arenaSubmissionClass),
+      tostring(source.arenaResetAfterDraw) }, ",")
     local target = byKey[key]
     if not target then
       target = source
@@ -911,6 +1102,40 @@ end
 
 StadiumFragment.dedupeFx = dedupeFx
 
+-- Politoed's torso is split across two separately loaded 64x32 RGBA16 maps.
+-- Their bottom/top rows form one continuous belly line, but keeping the maps
+-- as independent host images makes the N64 three-point filter clamp on each
+-- side of the join. Resolve the shared boundary to the same filtered colour
+-- on both images so the split cannot become a horizontal model seam.
+local function stitchPolitoedTorsoBoundary(species, textures, prims)
+  if species ~= 186 then return end
+  local upperPrim, lowerPrim
+  for _, prim in ipairs(prims or {}) do
+    if prim.tex == 1 then upperPrim = prim
+    elseif prim.tex == 2 then lowerPrim = prim end
+  end
+  local upper = upperPrim and textures[upperPrim.tex + 1]
+  local lower = lowerPrim and textures[lowerPrim.tex + 1]
+  if not (upper and lower and upper.w == 64 and upper.h == 32
+      and lower.w == 64 and lower.h == 32
+      and type(upper.rgba) == "string" and type(lower.rgba) == "string"
+      and #upper.rgba == 64 * 32 * 4 and #lower.rgba == 64 * 32 * 4) then
+    return
+  end
+  local upperAt = (upper.h - 1) * upper.w * 4 + 1
+  local boundary = {}
+  for byteIndex = 0, upper.w * 4 - 1 do
+    local a = upper.rgba:byte(upperAt + byteIndex)
+    local b = lower.rgba:byte(1 + byteIndex)
+    boundary[#boundary + 1] = char(floor((a + b + 1) / 2))
+  end
+  boundary = concat(boundary)
+  upper.rgba = upper.rgba:sub(1, upperAt - 1) .. boundary
+  lower.rgba = boundary .. lower.rgba:sub(upper.w * 4 + 1)
+  upper.stitchedBoundary = "politoed-torso"
+  lower.stitchedBoundary = "politoed-torso"
+end
+
 local function inspectFxLayout(frag, layoutOffset, layoutIndex, out, warnings)
   local state = { stack = { -1 }, boneIds = {}, bones = 0, steps = 0 }
 
@@ -1098,7 +1323,12 @@ function StadiumFragment.extract(data, name, options)
     local handler = node.handler
     if arg then
       if handler == 0x81000038 then
-        for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 32, 3, 2) end
+        -- func_810059D0 loads 0x400 IA16 texels into TMEM, then deliberately
+        -- renders that same 0x800-byte payload through an IA8 tile with line=4
+        -- and a 32x64 extent. Treating the source image as 32x32 IA16 puts its
+        -- two byte planes side-by-side and leaves the lower half of the card
+        -- clamped away from the tail.
+        for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 64, 3, 1) end
       elseif handler == 0x81000048 then
         registerCallback(node, frag:u32(arg), 32, 32, 0, 2)
         registerCallback(node, frag:u32(arg + 4), 32, 32, 0, 2)
@@ -1108,7 +1338,7 @@ function StadiumFragment.extract(data, name, options)
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 4 + i * 4), 64, 32, 0, 2) end
       elseif handler == 0x81000070 then
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 32, 4, 0) end
-      elseif handler == 0x81000140 then
+      elseif handler == 0x81000140 or handler == 0x81000148 then
         for _, texture in ipairs(Phase5Geometry.textureSpecs(frag.d, BASE, arg)) do
           registerCallback(node, texture.pointer, texture.w, texture.h,
             texture.format, texture.size, texture.sampler, texture.descriptorOffset)
@@ -1119,9 +1349,18 @@ function StadiumFragment.extract(data, name, options)
 
 
   local callbackTextureBySite, callbackStateBySite = {}, {}
-  for _, row in ipairs(handlerTextures) do callbackTextureBySite[row.commandOffset] = row end
+  for _, row in ipairs(handlerTextures) do
+    -- Phase-5 callbacks register TEXEL0 followed by TEXEL1.  Mesh UVs are
+    -- authored against TEXEL0's render tile; retaining the last registration
+    -- here instead applied TEXEL1's shift to both layers. Arena 01 exposes the
+    -- failure clearly: its log mask uses shift 2 while the gravel detail uses
+    -- shift 15, turning one central log into an 8-by-8 repeated grid.
+    if callbackTextureBySite[row.commandOffset] == nil then
+      callbackTextureBySite[row.commandOffset] = row
+    end
+  end
   for _, node in ipairs(m.fx) do
-    if node.handler == 0x81000140 and node.arg then
+    if (node.handler == 0x81000140 or node.handler == 0x81000148) and node.arg then
       callbackStateBySite[node.commandOffset] = Phase5Geometry.stateSpec(frag.d, BASE, node.arg)
     end
   end
@@ -1165,6 +1404,10 @@ function StadiumFragment.extract(data, name, options)
         color[i * 4] = v[9]
         skin[i] = v[10]
       end
+      if m.species == 204 and p.mat == 0x40C8 and p.nverts == 3
+          and PINECO_EYE_UV[p.texAnim] then
+        uv = PINECO_EYE_UV[p.texAnim]
+      end
       local ni = 0
       for i = 1, p.ntris do
         local tri = p.tris[i]
@@ -1179,7 +1422,7 @@ function StadiumFragment.extract(data, name, options)
       local lighting = vertexSemantics == "normal"
       local callbackOffset, callbackDescriptor = p.callbackOffset,
         p.callbackDescriptor
-      if callbackDescriptor == 0x81000140 then
+      if callbackDescriptor == 0x81000140 or callbackDescriptor == 0x81000148 then
         inheritedPhase5Offset = callbackOffset
         inheritedPhase5Descriptor = callbackDescriptor
       elseif ti >= 0 then
@@ -1192,20 +1435,39 @@ function StadiumFragment.extract(data, name, options)
       end
       local callbackTexture = callbackTextureBySite[callbackOffset]
       local callbackState = callbackStateBySite[callbackOffset]
-      local callbackTextureRequired = callbackOffset ~= nil and ti < 0
-      local function textureHasAlpha(slot)
+      local callbackTextureRequired = callbackTexture ~= nil and ti < 0
+      local authoredSampler = m:tileSampler(p.mat)
+      local function textureAlphaMode(slot)
         local texture = slot and slot >= 0 and texOut[slot + 1] or nil
         local rgba = texture and texture.rgba
-        if type(rgba) ~= "string" then return false end
+        if type(rgba) ~= "string" then return "opaque" end
+        local transparent = false
         for alpha = 4, #rgba, 4 do
-          if rgba:byte(alpha) < 255 then return true end
+          local value = rgba:byte(alpha)
+          if value > 0 and value < 255 then return "blend" end
+          if value == 0 then transparent = true end
         end
-        return false
+        return transparent and "cutout" or "opaque"
       end
-      local decal = textureHasAlpha(ti)
-      if not decal then
+      local alphaMode = textureAlphaMode(ti)
+      if alphaMode ~= "blend" then
         for _, slot in pairs(texMap or {}) do
-          if textureHasAlpha(slot) then decal = true; break end
+          local mode = textureAlphaMode(slot)
+          if mode == "blend" then alphaMode = "blend"; break end
+          if mode == "cutout" then alphaMode = "cutout" end
+        end
+      end
+      if m.options.stageLayout == true then
+        local hasZeroVertexAlpha, hasPartialVertexAlpha = false, false
+        for alpha = 4, #color, 4 do
+          local value = tonumber(color[alpha]) or 255
+          if value <= 0 then hasZeroVertexAlpha = true
+          elseif value < 255 then hasPartialVertexAlpha = true end
+        end
+        if hasPartialVertexAlpha then
+          alphaMode = "blend"
+        elseif hasZeroVertexAlpha and alphaMode == "opaque" then
+          alphaMode = "cutout"
         end
       end
       -- Phase-5 state belongs to the callback-supplied texture surface. A
@@ -1218,16 +1480,22 @@ function StadiumFragment.extract(data, name, options)
         geometryMode = bor(p.cull or 0, callbackGeometryMode, 24), lighting = lighting,
         vertexSemantics = vertexSemantics,
         color = color, texAnim = p.texAnim, texMap = texMap,
-        sampler = callbackTextureRequired and callbackTexture and callbackTexture.sampler or nil,
+        sampler = callbackTextureRequired and callbackTexture and callbackTexture.sampler
+          or authoredSampler,
         textureScale = callbackTextureRequired and callbackState
-          and callbackState.textureScale or nil,
+          and callbackState.textureScale or p.textureScale,
         blend = (p.callbackDescriptor == 0x81000038 or p.callbackDescriptor == 0x81000068)
           and "add" or "alpha",
         materialOffset = p.mat, callbackOffset = callbackOffset,
+        nodeColor = p.nodeColor,
+        arenaRenderProfile = p.arenaRenderProfile,
+        arenaSubmissionClass = p.arenaSubmissionClass,
+        arenaResetAfterDraw = p.arenaResetAfterDraw == true,
         callbackDescriptor = callbackDescriptor,
         callbackTextureRequired = callbackTextureRequired,
         sourceTextureMissing = ti < 0,
-        decal = decal and not callbackTextureRequired,
+        alphaMode = alphaMode,
+        decal = alphaMode ~= "opaque" and not callbackTextureRequired,
         pos = pos, uv = uv, nrm = nrm, skin = skin, nverts = p.nverts,
         idx = idx, nidx = ni,
       }
@@ -1251,6 +1519,11 @@ function StadiumFragment.extract(data, name, options)
         local geo = Flame.geometry(node.bone)
         prims[#prims + 1] = {
           tex = slots[1], cull = 0, texAnim = -1, texMap = nil,
+          sampler = {
+            cms=Flame.SAMPLER.cms, cmt=Flame.SAMPLER.cmt,
+            masks=Flame.SAMPLER.masks, maskt=Flame.SAMPLER.maskt,
+            shifts=Flame.SAMPLER.shifts, shiftt=Flame.SAMPLER.shiftt,
+          },
           callbackOffset = node.commandOffset,
           callbackDescriptor = node.handler,
           generated = true, effect = "fire", blend = "add", fxFrames = slots,
@@ -1312,8 +1585,12 @@ function StadiumFragment.extract(data, name, options)
                   channels = chans }
   end
 
+  stitchPolitoedTorsoBoundary(m.species, texOut, prims)
+
   return {
     species = m.species,
+    stageIndex = m.stageIndex,
+    staticPose = m.options.stageLayout == true,
     file = name,
     rootScale = m.rootScale,
     bones = m.bones,
@@ -1325,6 +1602,48 @@ function StadiumFragment.extract(data, name, options)
     handlerTextures = handlerTextures,
     warnings = m.warnings,
   }
+end
+
+-- Stadium field modules share the FRAGMENT container and geo-layout language
+-- with Pokemon models, but their entrypoint returns the layout itself.  Mode 0
+-- is the pointer-return branch: LUI at 0x3C and ADDIU in the JR delay slot at
+-- 0x44.  Keep this separate from Frag:root(), whose model-descriptor heuristic
+-- is deliberately strict for Pokemon imports.
+function StadiumFragment.stageRoot(data, name)
+  local frag, err = StadiumFragment.open(data, name)
+  if not frag then return nil, err end
+  if #data < 0x50 then
+    return nil, (name or "stage") .. ": unrecognised stage entrypoint"
+  end
+  local loadUpper = frag:u32(0x3C)
+  local addLower = frag:u32(0x44)
+  -- All 30 modules use `lui v1, upper` followed by `addiu v0, v1, lower`
+  -- in the return delay slot. Validate the instructions, not merely an
+  -- address-looking immediate, so arbitrary FRAGMENT modules are rejected.
+  if floor(loadUpper / 0x10000) ~= 0x3C03
+      or floor(addLower / 0x10000) ~= 0x2462 then
+    return nil, (name or "stage") .. ": unrecognised stage entrypoint"
+  end
+  local upper = frag:u16(0x3E) * 65536
+  local pointer = upper + frag:s16(0x46)
+  local offset = pointer - BASE
+  if offset < 0 or offset >= #data then
+    return nil, (name or "stage") .. ": stage root is outside the fragment"
+  end
+  return offset
+end
+
+function StadiumFragment.extractStage(data, name, stageIndex)
+  local root, err = StadiumFragment.stageRoot(data, name)
+  if not root then return nil, err end
+  local model, extractError = StadiumFragment.extract(data, name, {
+    directLayoutOffset = root,
+    stageLayout = true,
+    stageIndex = stageIndex,
+    bakePhase5Geometry = false,
+  })
+  if not model then return nil, extractError end
+  return ArenaLighting.attach(model)
 end
 
 

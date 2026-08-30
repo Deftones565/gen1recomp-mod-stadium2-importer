@@ -169,11 +169,10 @@ local function drawMoon(g,x,y,r,c,a)
   g.circle("fill",x-r*.18,y-r*.28,r*.20,40)
 end
 
-function Sky.draw(g, width, height, env, frame)
+function Sky.paint(g, width, height, env, frame)
   local bands = env.bands
   g.setShader()
   if g.setDepthMode then g.setDepthMode("always",false) end
-  g.clear(bands[1][1],bands[1][2],bands[1][3],1,true,true)
   local vertices={}
   local last=math.max(1,#bands-1)
   for i,c in ipairs(bands) do
@@ -215,6 +214,15 @@ function Sky.draw(g, width, height, env, frame)
     else drawSun(g,x,y,r,env.orb,a) end
   end
   g.setColor(1,1,1,1)
+end
+
+function Sky.draw(g, width, height, env, frame)
+  local bands=env and env.bands or nil
+  local c=bands and bands[1] or {0,0,0}
+  g.setShader()
+  if g.setDepthMode then g.setDepthMode("always",false) end
+  g.clear(c[1] or 0,c[2] or 0,c[3] or 0,1,true,true)
+  return Sky.paint(g,width,height,env,frame)
 end
 
 return Sky

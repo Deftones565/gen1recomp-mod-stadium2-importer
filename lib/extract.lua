@@ -5,6 +5,8 @@ local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Layout = require("mods.STADIUM2_IMPORTER.lib.layout")
 local AnimationRouting = require("mods.STADIUM2_IMPORTER.lib.animation_routing")
+local AnimationDispatch = require("mods.STADIUM2_IMPORTER.lib.animation_dispatch")
+local AnimationSemantics = require("mods.STADIUM2_IMPORTER.lib.animation_semantics")
 
 local Extract = {}
 Extract.BASE_COUNT = 151
@@ -15,7 +17,6 @@ local ASSET_START = Rom.ASSET_START
 local MODEL_TABLE_START = Rom.MODEL_TABLE_START
 local POSE_TABLE_START = Rom.POSE_TABLE_START
 local POSE_TABLE_END = Rom.POSE_TABLE_END
-local NONE16 = 0xFFFF
 local paletteByDex = {}
 local standaloneShinyPalettes
 local speciesIdByDex = {}
@@ -283,72 +284,7 @@ local function normaliseDrawableModel(model, species, Fx)
   }
 end
 
-local function matrixPoseSignature(matrices)
-  if type(matrices) ~= "table" or #matrices == 0 then return nil end
-  local loX, loY, loZ = math.huge, math.huge, math.huge
-  local hiX, hiY, hiZ = -math.huge, -math.huge, -math.huge
-  local maxAxis = 0
-  for _, matrix in ipairs(matrices) do
-    if type(matrix) ~= "table" or type(matrix[1]) ~= "table"
-        or type(matrix[2]) ~= "table" or type(matrix[3]) ~= "table" then
-      return nil
-    end
-    for row = 1, 3 do
-      for column = 1, 4 do
-        local value = tonumber(matrix[row][column])
-        if not value or value ~= value or value == math.huge or value == -math.huge then
-          return nil
-        end
-      end
-    end
-    local x, y, z = matrix[1][4], matrix[2][4], matrix[3][4]
-    if x < loX then loX = x end
-    if y < loY then loY = y end
-    if z < loZ then loZ = z end
-    if x > hiX then hiX = x end
-    if y > hiY then hiY = y end
-    if z > hiZ then hiZ = z end
-    for column = 1, 3 do
-      local a, b, c = matrix[1][column], matrix[2][column], matrix[3][column]
-      local axis = math.sqrt(a * a + b * b + c * c)
-      if axis > maxAxis then maxAxis = axis end
-    end
-  end
-  local dx, dy, dz = hiX - loX, hiY - loY, hiZ - loZ
-  return math.sqrt(dx * dx + dy * dy + dz * dz), maxAxis
-end
-
-local function animationLooksExplosive(data, animation, Build)
-  if type(animation) ~= "table" or type(data) ~= "table" then return false end
-  if type(data.bones) ~= "table" or #data.bones == 0 then return false end
-  if not (Build and type(Build.bindMatrices) == "function"
-      and type(Build.animSample) == "function") then
-    return false
-  end
-  local frames = math.max(1, math.floor(tonumber(animation.frames) or 1))
-  if frames > 600 then return true, "implausible frame count" end
-
-  local okBind, bindMatrices = pcall(Build.bindMatrices, data.bones)
-  if not okBind then return false end
-  local bindSpread, bindAxis = matrixPoseSignature(bindMatrices)
-  if not bindSpread or not bindAxis then return false end
-  bindSpread = math.max(bindSpread, 1e-6)
-  bindAxis = math.max(bindAxis, 1e-6)
-
-  for frame = 0, frames - 1 do
-    local okSample, sample = pcall(Build.animSample, data.bones, animation, frame)
-    if not okSample then return true, "pose sample failed" end
-    local okPose, matrices = pcall(Build.bindMatrices, data.bones, sample)
-    if not okPose then return true, "pose matrix failed" end
-    local spread, axis = matrixPoseSignature(matrices)
-    if not spread or not axis then return true, "non-finite pose" end
-    if spread / bindSpread > 8.0 then return true, "bone spread" end
-    if axis / bindAxis > 8.0 then return true, "bone scale" end
-  end
-  return false
-end
-
-local function genericAnimationTable(data, Build)
+local function genericAnimationTable(data, Build, rom, species)
   local animations = data.anims or {}
   if #animations == 0 then
     animations[1] = {
@@ -360,48 +296,13 @@ local function genericAnimationTable(data, Build)
       tracks = {},
       syntheticBindPose = true,
     }
-    data.anims = animations
   end
+  data.anims = animations
 
-  local sourceCount = #animations
-  local idle = 0
-  local attack = sourceCount > 1 and 1 or idle
-  local faint = sourceCount > 2 and 2 or idle
-  local entrance = sourceCount > 3 and 3 or idle
-
-  local faintRejected, faintReason = false, nil
-  if faint ~= idle then
-    faintRejected, faintReason = animationLooksExplosive(data,
-      animations[faint + 1], Build)
-    if faintRejected then faint = idle end
-  end
-  data.stadium2FaintRejected = faintRejected or nil
-  data.stadium2FaintRejectReason = faintRejected and faintReason or nil
-
-  local auxiliary = data.auxAnims or {}
-  AnimationRouting.apply(animations, auxiliary)
-  for index, animation in ipairs(animations) do
-    if index == 1 then
-      animation.name = "idle"
-    elseif index == 2 then
-      animation.name = "attack_default"
-    elseif index == 3 then
-      animation.name = faintRejected and "faint_rejected" or "faint"
-    elseif index == 4 then
-      animation.name = "entrance"
-    else
-      animation.name = "anim" .. tostring(index - 1)
-    end
-  end
-
-  local rows = {}
-  local attackAux = animations[attack + 1] and animations[attack + 1].aux or -1
-  for move = 1, 165 do rows[move] = { attack, attackAux } end
-  local contexts = {}
-  for index = 1, #Build.CONTEXTS do contexts[index] = NONE16 end
-  contexts[1], contexts[2], contexts[3], contexts[4] = idle, attack, faint, entrance
-  contexts[12], contexts[13], contexts[19], contexts[20] = idle, faint, entrance, idle
-  return rows, contexts
+  local dispatchRows, dispatchErr = AnimationDispatch.forSpecies(rom, species)
+  if not dispatchRows then return nil, nil, dispatchErr end
+  return AnimationSemantics.apply(animations, data.auxAnims, Build,
+    AnimationRouting, dispatchRows)
 end
 
 local function decompressedFragment(data, record, StadiumRom)
@@ -772,19 +673,52 @@ local function unownLetter(record)
   return string.char(string.byte("B")+record-UNOWN_FIRST_FORM_RECORD)
 end
 
-local function newBuildJob(data, dependencies, writePack, writeSpecial)
+-- Build two ordinary variant packs while allowing newer builders to reuse
+-- their identical geometry/animation byte ranges. The fallback deliberately
+-- preserves compatibility with test doubles and older embedded builders.
+local function packVariants(Build, model, species, rows, contexts, makeShiny)
+  if type(Build.packPair) == "function" then
+    return Build.packPair(model, species, rows, contexts, makeShiny)
+  end
+  local normal = Build.pack(model, species, rows, contexts)
+  if makeShiny then
+    local ok, err = makeShiny()
+    if ok == false or ok == nil then return nil, err or "shiny texture build failed" end
+  end
+  return normal, Build.pack(model, species, rows, contexts)
+end
+
+local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
+  options = type(options) == "table" and options or {}
+  local speciesList, speciesSet = {}, {}
+  if type(options.species) == "table" then
+    for _, value in ipairs(options.species) do
+      local species = math.floor(tonumber(value) or 0)
+      if species >= 1 and species <= Extract.COUNT and not speciesSet[species] then
+        speciesSet[species] = true
+        speciesList[#speciesList + 1] = species
+      end
+    end
+  else
+    for species = 1, Extract.COUNT do
+      speciesSet[species] = true
+      speciesList[#speciesList + 1] = species
+    end
+  end
+  local includeSpecials = options.specials ~= false
+  local expectedCount = #speciesList
   local StadiumRom = dependencies.StadiumRom
   local Build = dependencies.Build
   local Fx = dependencies.Fx
   local job = {
     phase = "scan", cursor = ASSET_START,
-    total = Extract.COUNT+1+UNOWN_EXTRA_FORMS, done = 0, species = nil,
+    total = expectedCount+(includeSpecials and (1+UNOWN_EXTRA_FORMS) or 0), done = 0, species = nil,
     built = {}, builtCount = 0, failed = {}, bytes = 0,
     errorSamples = {}, modelSources = {}, animationSources = {},
     modelSpecies = 0, animatedSpecies = 0, animationClips = 0,
     motionFiles = 0, emptyPoseBundles = 0,
     nestedPoseArchives = 0, modelTableCount = 0, poseTableCount = 0,
-    specialAnimationSources={},specialBuilt=false,
+    specialAnimationSources={},specialBuilt=not includeSpecials,
     unownModelSources={},unownAnimationSources={},unownBuilt=0,
   }
 
@@ -794,10 +728,10 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
   end
 
   local function finish()
-    if job.builtCount == Extract.COUNT and job.specialBuilt
-        and job.unownBuilt == UNOWN_EXTRA_FORMS then
+    if job.builtCount == expectedCount and job.specialBuilt
+        and (not includeSpecials or job.unownBuilt == UNOWN_EXTRA_FORMS) then
       job.success = true
-      job.animationIncomplete = (job.animatedBuilt or 0) < Extract.COUNT
+      job.animationIncomplete = (job.animatedBuilt or 0) < expectedCount
     else
       local detail = job.lastError and ("; last error: " .. job.lastError) or ""
       if job.lastScanError then detail = detail .. "; scan: " .. job.lastScanError end
@@ -806,12 +740,12 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
         .. "indexed geometry=%d animation-species=%d motion-files=%d "
         .. "nested-pose-archives=%d empty-pose-bundles=%d substitute=%s "
         .. "unown-forms=%d/%d%s")
-        :format(job.builtCount, Extract.COUNT, job.animatedBuilt or 0,
-          Extract.COUNT, job.modelTableCount or 0, job.poseTableCount or 0,
+        :format(job.builtCount, expectedCount, job.animatedBuilt or 0,
+          expectedCount, job.modelTableCount or 0, job.poseTableCount or 0,
           job.modelSpecies or 0, job.animatedSpecies or 0,
           job.motionFiles or 0, job.nestedPoseArchives or 0,
           job.emptyPoseBundles or 0,tostring(job.specialBuilt),
-          job.unownBuilt or 0,UNOWN_EXTRA_FORMS,detail)
+          job.unownBuilt or 0,includeSpecials and UNOWN_EXTRA_FORMS or 0,detail)
     end
     job.phase = "done"
     return false
@@ -857,7 +791,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
       self.fileIndex = fileIndex
       self.index = self.index + 1
       if self.archiveRole == "model" and fileIndex >= 1
-          and fileIndex <= Extract.COUNT then
+          and fileIndex <= Extract.COUNT and speciesSet[fileIndex] then
         local species = fileIndex
         local summary, sourceOrErr = inspectModelFragment(data, record, StadiumRom,
           dependencies.V, ("stadium2_model_index_%d.bin"):format(fileIndex))
@@ -877,7 +811,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
               :format(species, tostring(summary.species)) or tostring(sourceOrErr),
           }
         end
-      elseif self.archiveRole=="model" and fileIndex==SUBSTITUTE_RECORD then
+      elseif includeSpecials and self.archiveRole=="model" and fileIndex==SUBSTITUTE_RECORD then
         local summary,sourceOrErr=inspectModelFragment(data,record,StadiumRom,
           dependencies.V,"stadium2_substitute.bin")
         if summary and tonumber(summary.species)==SUBSTITUTE_RECORD
@@ -888,7 +822,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
         else
           self.lastError="substitute model record: "..tostring(sourceOrErr)
         end
-      elseif self.archiveRole=="model" and fileIndex>=UNOWN_FIRST_FORM_RECORD
+      elseif includeSpecials and self.archiveRole=="model" and fileIndex>=UNOWN_FIRST_FORM_RECORD
           and fileIndex<=UNOWN_LAST_FORM_RECORD then
         local summary,sourceOrErr=inspectModelFragment(data,record,StadiumRom,
           dependencies.V,("stadium2_unown_%s.bin"):format(unownLetter(fileIndex)))
@@ -902,7 +836,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
             :format(tostring(unownLetter(fileIndex)),tostring(sourceOrErr))
         end
       elseif self.archiveRole == "pose" and fileIndex >= 1
-          and fileIndex <= Extract.COUNT then
+          and fileIndex <= Extract.COUNT and speciesSet[fileIndex] then
         local species = fileIndex
         local label = ("pose-table=0x%X species=%d file=%d")
           :format(self.archiveOffset, species, fileIndex)
@@ -930,7 +864,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
             }
           end
         end
-      elseif self.archiveRole=="pose" and fileIndex==SUBSTITUTE_RECORD then
+      elseif includeSpecials and self.archiveRole=="pose" and fileIndex==SUBSTITUTE_RECORD then
         local label=("pose-table=0x%X substitute file=%d")
           :format(self.archiveOffset,fileIndex)
         local sources,poseErrors=poseSourcesForRecord(data,record,dependencies,label)
@@ -938,7 +872,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
         if #self.specialAnimationSources==0 then
           self.lastAnimationError=table.concat(poseErrors or {}," | ")
         end
-      elseif self.archiveRole=="pose" and fileIndex>=UNOWN_FIRST_FORM_RECORD
+      elseif includeSpecials and self.archiveRole=="pose" and fileIndex>=UNOWN_FIRST_FORM_RECORD
           and fileIndex<=UNOWN_LAST_FORM_RECORD then
         local label=("pose-table=0x%X Unown %s file=%d")
           :format(self.archiveOffset,unownLetter(fileIndex),fileIndex)
@@ -1009,8 +943,9 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
       return true
     end
 
-    local species = self.speciesIndex
-    if species > Extract.COUNT then
+    local species = speciesList[self.speciesIndex]
+    if not species then
+      if not includeSpecials then return finish() end
       if not self.specialQueue then
         self.specialQueue={{kind="substitute",record=SUBSTITUTE_RECORD,
           name="substitute",source=self.specialModelSource,
@@ -1051,9 +986,25 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
           special.animations,model.bones,dependencies)
         model.anims=animations
         if #auxiliary>0 then model.auxAnims=auxiliary end
-        local rows,contexts,animationErr=genericAnimationTable(model,dependencies.Build)
+        local rows,contexts,animationErr=genericAnimationTable(model,dependencies.Build,
+          data,special.record)
         if not rows then return nil,animationErr end
-        local bytes=dependencies.Build.pack(model,special.record,rows,contexts)
+        local bytes,shinyBytes
+        if special.kind=="unown" then
+          local rare=rareVariation(data,UNOWN_SPECIES)
+          bytes,shinyBytes=packVariants(dependencies.Build,model,special.record,
+            rows,contexts,function()
+              if rare and not rare.specialTexture then
+                for _,texture in ipairs(model.textures) do
+                  texture.rgba=Palette.applyRare(texture.rgba,rare)
+                end
+              end
+              return true
+            end)
+          if not bytes then return nil,shinyBytes end
+        else
+          bytes=dependencies.Build.pack(model,special.record,rows,contexts)
+        end
         coroutine.yield(special.name.."-pack")
         if type(writeSpecial)~="function" then
           return nil,"special pack writer unavailable"
@@ -1062,13 +1013,6 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
         if not wrote then return nil,writeErr end
         local byteCount=#bytes
         if special.kind=="unown" then
-          local rare=rareVariation(data,UNOWN_SPECIES)
-          if rare and not rare.specialTexture then
-            for _,texture in ipairs(model.textures) do
-              texture.rgba=Palette.applyRare(texture.rgba,rare)
-            end
-          end
-          local shinyBytes=dependencies.Build.pack(model,special.record,rows,contexts)
           coroutine.yield(special.name.."-shiny-pack")
           local shinyWrote,shinyErr=writeSpecial(special.name.."_shiny",shinyBytes)
           if not shinyWrote then return nil,shinyErr end
@@ -1078,7 +1022,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
       end)
       return true
     end
-    self.speciesIndex = species + 1
+    self.speciesIndex = self.speciesIndex + 1
     self.species = species
 
     local modelSource = self.modelSources[species]
@@ -1119,25 +1063,29 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial)
           and table.concat(animationErrors, " | ")
           or "no decodable Stadium 2 skeletal animation record"
       end
-      local rows, contexts, animationErr = genericAnimationTable(model, Build)
+      local rows, contexts, animationErr = genericAnimationTable(model, Build,
+        data, species)
       if not rows then return nil, animationErr end
       coroutine.yield("animations")
 
-      local normalBytes = Build.pack(model, species, rows, contexts)
-      coroutine.yield("normal")
       local rare = rareVariation(data, species)
-      if rare then
-        if rare.specialTexture then
-          local applied, rareErr = applyDedicatedRareTextures(
-            data, species, model, StadiumRom)
-          if not applied then return nil, rareErr end
-        else
-          for _, texture in ipairs(model.textures) do
-            texture.rgba = Palette.applyRare(texture.rgba, rare)
+      local normalBytes, shinyBytes = packVariants(Build, model, species, rows,
+        contexts, function()
+          if rare then
+            if rare.specialTexture then
+              local applied, rareErr = applyDedicatedRareTextures(
+                data, species, model, StadiumRom)
+              if not applied then return nil, rareErr end
+            else
+              for _, texture in ipairs(model.textures) do
+                texture.rgba = Palette.applyRare(texture.rgba, rare)
+              end
+            end
           end
-        end
-      end
-      local shinyBytes = Build.pack(model, species, rows, contexts)
+          return true
+        end)
+      if not normalBytes then return nil, shinyBytes end
+      coroutine.yield("normal")
       coroutine.yield("shiny")
       local wrote, writeErr = writePack(species, normalBytes, shinyBytes)
       if not wrote then return nil, writeErr end
@@ -1202,9 +1150,9 @@ function Extract.configure(options)
   return Extract
 end
 
-function Extract.newJob(data, writePack, writeSpecial)
+function Extract.newJob(data, writePack, writeSpecial, options)
   return newBuildJob(data, { StadiumRom = Rom, Build = Build, Fx = nil },
-    writePack,writeSpecial or function() return true end)
+    writePack,writeSpecial or function() return true end,options)
 end
 
 -- Read the authored pose bundle without running the cache-writing build job.

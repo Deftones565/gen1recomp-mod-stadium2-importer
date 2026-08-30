@@ -65,4 +65,64 @@ function DualTexture.ownsPrimitive(prim, descriptor)
     and prim.decal ~= true
 end
 
+local function uniformTexture(texture)
+  local rgba = texture and texture.rgba
+  if type(rgba) ~= "string" or #rgba < 4 then return false end
+  local first = rgba:sub(1, 4)
+  for pixel = 5, #rgba, 4 do
+    if rgba:sub(pixel, pixel + 3) ~= first then return false end
+  end
+  return true
+end
+
+local function sameTexture(a, b)
+  return a ~= nil and b ~= nil
+    and tonumber(a.w) == tonumber(b.w) and tonumber(a.h) == tonumber(b.h)
+    and type(a.rgba) == "string" and a.rgba == b.rgba
+end
+
+local function generatedCarrierAtlas(prim, authored, callback)
+  if not (authored ~= nil and callback ~= nil
+      and tonumber(authored.w) == 32 and tonumber(authored.h) == 64
+      and tonumber(callback.w) == DualTexture.WIDTH
+      and tonumber(callback.h) == DualTexture.HEIGHT) then
+    return false
+  end
+  -- Muk reuses its tongue atlas as the source state for two rear-head shells.
+  -- Those shells extend high through model space; the actual Muk tongue and
+  -- every Grimer tongue segment remain low around the mouth/base. This is the
+  -- stable geometry distinction produced by the ROM display lists.
+  local maxY = -math.huge
+  for at = 2, #(prim and prim.pos or {}), 3 do
+    maxY = math.max(maxY, tonumber(prim.pos[at]) or -math.huge)
+  end
+  return maxY > 80
+end
+
+local function generatedCarrierGeometry(prim, authored, callback)
+  -- The current 64x32 eye-texture state also reaches Grimer's large arm
+  -- meshes and Muk's two small head shells before command 0x08 replaces it.
+  -- Muk's medium-sized 53-vertex eye/pupil mesh is the authored exception.
+  local vertices = tonumber(prim and prim.nverts) or 0
+  return authored ~= nil and callback ~= nil
+    and tonumber(authored.w) == 64 and tonumber(authored.h) == 32
+    and tonumber(callback.w) == DualTexture.WIDTH
+    and tonumber(callback.h) == DualTexture.HEIGHT
+    and (vertices < 32 or vertices > 64)
+end
+
+-- A 0x48 callback owns the model's uniform carrier, or an authored image
+-- which is byte-identical to its first generated tile. Other authored images
+-- are local detail atlases, not either texture argument passed to the ROM
+-- builder. Their primary UVs remain authored; the renderer may still apply
+-- the callback's secondary tile through the ROM combiner.
+function DualTexture.ownsAuthoredTexture(prim, authoredTexture, callbackTexture,
+    descriptor)
+  return DualTexture.ownsPrimitive(prim, descriptor)
+    and (uniformTexture(authoredTexture)
+      or sameTexture(authoredTexture, callbackTexture)
+      or generatedCarrierAtlas(prim, authoredTexture, callbackTexture)
+      or generatedCarrierGeometry(prim, authoredTexture, callbackTexture))
+end
+
 return DualTexture

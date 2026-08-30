@@ -1,4 +1,5 @@
 local Hud = { FROST=.55, TINT=.26, HEIGHT=72 }
+local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
 
 -- Exact native Gold HUD spans.  Snap the RECT to the window edge and move the
 -- full source band by the matching amount; moving a 160px band to x=0 leaves
@@ -14,6 +15,15 @@ Hud.HUD_RECT = {
 -- Keep this as its own centred layer instead of letting it ride inside the
 -- player HUD band: the wide compositor snaps that band to the far screen edge.
 Hud.NICKNAME_MODAL_RECT = { 112, 56, 48, 40 }
+-- MoveInfoBox is 11x5 tiles at (0,8). Keep the complete box as one auxiliary
+-- region in wide layouts; splitting its bottom row into the command band cuts
+-- the border when that band is moved to the physical bottom of the window.
+Hud.CRYSTAL_MOVE_INFO_RECT = { 0, 64, 88, 40 }
+-- PrintTempMonStats calls Chrome.textbox(9,0,9,10), whose width and height are
+-- INTERIOR dimensions. The two-tile border makes the complete source window
+-- 11x12 tiles. Capturing only 9x10 clips the value column at x=144 and drops
+-- SPEED's value row at y=80 altogether.
+Hud.STATS_BOX_RECT = { 72, 0, 88, 96 }
 local unpack = table.unpack or unpack
 
 local frost, blurA, blurB, shader, gaugeShader, uiLayer, hudOnlyLayer, modalOnlyLayer
@@ -144,10 +154,24 @@ local function keyedPaperRect(x,y,w,h)
     or yesNo
 end
 
+local function crystalMovePaperRect(x,y,w,h)
+  -- MoveSelectionScreen type 0 draws two additional boxes over the ordinary
+  -- bottom message window: MoveInfoBox at (0,8,11,5), and the move-name list
+  -- at (4,12,16,6). Key only their opaque paper; Chrome's outlines, glyphs,
+  -- cursor and PP values are separate draws and remain untouched.
+  return (x==0 and y==64 and w==88 and h==40)
+    or (x==32 and y==96 and w==128 and h==48)
+end
+
 -- Exposed for the headless layout regression. All native Yes/No paper is
 -- removed: the compositor supplies the same frosted backing as the HUD.
 function Hud.keysPaperRect(x,y,w,h)
   return keyedPaperRect(x,y,w,h)
+end
+
+
+function Hud.keysCrystalMovePaperRect(x,y,w,h)
+  return crystalMovePaperRect(x,y,w,h)
 end
 
 function Hud.layer(draw,opts)
@@ -163,8 +187,11 @@ function Hud.layer(draw,opts)
     -- bars, sprites and animation objects still draw normally.
     g.rectangle=function(mode,x,y,w,h,...)
       local r,gg,b,a=g.getColor()
-      local paper=keyedPaperRect(x,y,w,h)
-      if mode=="fill" and paper and r>.94 and gg>.94 and b>.94
+      local crystalMovePaper=opts and opts.crystalMovePane
+        and crystalMovePaperRect(x,y,w,h)
+      local paper=keyedPaperRect(x,y,w,h) or crystalMovePaper
+      if not (opts and opts.preservePaper)
+          and mode=="fill" and paper and r>.94 and gg>.94 and b>.94
           and (a or 1)>.94 then return end
       return rectangle(mode,x,y,w,h,...)
     end
@@ -210,7 +237,7 @@ end
 -- A destination restore cannot remove pixels already baked into the source.
 -- Keep a third source texture whose caller suppresses drawHud(): it contains
 -- the modal border/text/cursor and no status HUD underneath it.
-function Hud.modalLayer(draw)
+function Hud.modalLayer(draw,opts)
   if not modalOnlyLayer then modalOnlyLayer=canvas(160,144,"nearest") end
   if not modalOnlyLayer then return nil end
   local g=love.graphics
@@ -228,7 +255,8 @@ function Hud.modalLayer(draw)
     g.rectangle=function(mode,x,y,w,h,...)
       local r,gg,b,a=g.getColor()
       local paper=keyedPaperRect(x,y,w,h)
-      if mode=="fill" and paper and r>.94 and gg>.94 and b>.94
+      if not (opts and opts.preservePaper)
+          and mode=="fill" and paper and r>.94 and gg>.94 and b>.94
           and (a or 1)>.94 then return end
       return rectangle(mode,x,y,w,h,...)
     end
@@ -244,6 +272,9 @@ function Hud.modalLayer(draw)
 end
 
 local function panel(scene,rect)
+  -- The glass plate is part of Stadium's authored UI, not a user toggle. It
+  -- is always drawn when Stadium owns this region; callers omit panel()
+  -- entirely when an official visibility hook gives the region to another UI.
   if not (scene and scene.width and scene.height) then return false end
   local g=love.graphics
   local x,y,w,h=rect[1],rect[2],rect[3],rect[4]
@@ -261,8 +292,9 @@ local function panel(scene,rect)
   return true
 end
 
-function Hud.layout(scene,screen)
+function Hud.layout(scene,screen,options)
   if not (scene and screen and scene.hudBox) then return nil end
+  options=options or {}
   local box=scene.hudBox
   local s=box.scale
   -- Yes/No windows occupy the same native rows as the player HUD.  AskNickname
@@ -270,25 +302,45 @@ function Hud.layout(scene,screen)
   -- stay snapped exactly where the wide battle put them.
   local asking=screen.phase=="ask-nickname" or screen.phase=="ask-forget"
     or screen.phase=="stop-learning" or screen.phase=="ask-shift"
+    or screen.phase=="ask-next-mon"
   local modal=asking and (screen.messageTimer or 0)<=0
   local nicknameModal=screen.phase=="ask-nickname" and modal
   -- AskNickname follows the reference wide compositor: status HUDs
   -- remain snapped, while the modal is a separate centred native layer.
   -- Other legacy Yes/No states retain the old joined-band fallback for now.
-  local snap=(not modal or nicknameModal)
-    and not screen.showEnemyTrainer and not screen.showPlayerTrainer
+  -- Trainer pictures now live in the 3-D scene and no longer share either
+  -- HUD band. Their intro/return flags must not pull the player's detached
+  -- status card back into the centred Game Boy frame.
+  local snap=true
   local er,pr=Hud.HUD_RECT.enemy,Hud.HUD_RECT.player
+  local viewport=BattleViewport.resolve(scene.width,scene.height,
+    (screen and screen.game) or scene.game)
   -- Same snap geometry as the established wide battle compositor: the
   -- rectangle itself touches the edge, while the full 160px source band is
   -- offset by that rectangle's native x inset.
-  local enemyX=snap and (-er[1]*s) or box.lx
-  local playerX=snap and (scene.width-(pr[1]+pr[3])*s) or box.lx
+  local panels=BattleViewport.statusPanels(viewport,box,s,er,pr)
+  local ps=snap and (panels.scale or s) or s
+  local enemyPanelX=snap and panels.enemyX or (box.lx+er[1]*s)
+  local playerPanelX=snap and panels.playerX or (box.lx+pr[1]*s)
+  local enemyPanelY=snap and panels.enemyY or (box.ly+er[2]*s)
+  local playerPanelY=snap and panels.playerY or (box.ly+pr[2]*s)
+  local inset=math.max(0,tonumber(options.edgeInset) or 0)*(panels.scale or s)
+  if snap and inset>0 then
+    enemyPanelX=enemyPanelX+inset
+    enemyPanelY=enemyPanelY+inset
+    playerPanelX=playerPanelX-inset
+  end
+  local enemyX=snap and (enemyPanelX-er[1]*ps) or box.lx
+  local playerX=snap and (playerPanelX-pr[1]*ps) or box.lx
   return {
-    box=box, scale=s, asking=asking, modal=modal,
+    box=box, scale=s, panelScale=ps, asking=asking, modal=modal,
     nicknameModal=nicknameModal, snap=snap,
     enemyX=enemyX, playerX=playerX,
-    enemyPanelX=snap and 0 or (box.lx+er[1]*s),
-    playerPanelX=snap and (scene.width-pr[3]*s) or (box.lx+pr[1]*s),
+    enemyY=enemyPanelY-er[2]*ps,
+    playerY=playerPanelY-(pr[2]-48)*ps,
+    enemyPanelX=enemyPanelX,playerPanelX=playerPanelX,
+    enemyPanelY=enemyPanelY,playerPanelY=playerPanelY,
+    viewport=viewport,
   }
 end
 
@@ -315,42 +367,85 @@ local function restoreSceneRect(scene,rect)
   return true
 end
 
-function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
+function Hud.composite(scene,screen,layer,hudLayer,modalLayer,options)
   if not (scene and layer and scene.hudBox) then return false end
+  options=options or {}
+  local decorate=options.decorate~=false
   local g=love.graphics
-  local layout=Hud.layout(scene,screen)
+  local layout=Hud.layout(scene,screen,options)
   local box,s=layout.box,layout.scale
+  local edgeInset=math.max(0,tonumber(options.edgeInset) or 0)
+  local lowerY=box.ly+96*s
+  if options.bottomToScreen and scene.width>=scene.height then
+    lowerY=math.max(0,scene.height-(48+edgeInset)*s)
+  end
+  local ps=layout.panelScale or s
+  local statusOwned=scene.statusHudOwned~=false
+  local bottomVisible=scene.bottomUiVisible~=false
+  local crystalMovePane=scene.crystalMovePane==true
+    and screen.phase=="moves" and bottomVisible
   -- The detached Stadium HUD follows REAL battle visibility only.  Do not
   -- inherit BattleAnimClearHud here: that flag exists to blank the attacker's
   -- native BG HUD while a 2D move animation owns those tiles.  Detached
   -- snapped status cards are outside that animation layer and stay visible.
-  local enemyLive=screen.showEnemyHud and not screen.showEnemyTrainer
-  local playerLive=screen.showPlayerHud and not screen.showPlayerTrainer
+  local enemyLive=statusOwned and screen.showEnemyHud and not screen.showEnemyTrainer
+  local playerLive=statusOwned and screen.showPlayerHud and not screen.showPlayerTrainer
     and not screen.tutorial
-  local ex,px=layout.enemyX,layout.playerX
   local er,pr=Hud.HUD_RECT.enemy,Hud.HUD_RECT.player
-  if enemyLive then
-    panel(scene,{layout.enemyPanelX,box.ly+er[2]*s,er[3]*s,er[4]*s})
+  if decorate and enemyLive then
+    panel(scene,{layout.enemyPanelX,layout.enemyPanelY,er[3]*ps,er[4]*ps})
   end
-  if playerLive then
-    panel(scene,{layout.playerPanelX,box.ly+pr[2]*s,pr[3]*s,pr[4]*s})
+  if decorate and playerLive then
+    panel(scene,{layout.playerPanelX,layout.playerPanelY,pr[3]*ps,pr[4]*ps})
   end
-  panel(scene,{box.lx,box.ly+96*s,160*s,48*s})
+  if decorate and bottomVisible then panel(scene,{box.lx,lowerY,160*s,48*s}) end
+  if decorate and crystalMovePane then
+    local r=Hud.CRYSTAL_MOVE_INFO_RECT
+    -- Preserve the cartridge's eight-row overlap: MoveInfo starts at y=64
+    -- and the lower move window at y=96. Their shared rows are the joined
+    -- seam, not two independently spaced panel edges.
+    local joinedY=lowerY-(96-r[2])*s
+    panel(scene,{box.lx+r[1]*s,joinedY,r[3]*s,r[4]*s})
+  end
   g.setColor(1,1,1,1)
   local oldShader=g.getShader and g.getShader() or nil
-  local key=getGaugeShader()
+  -- A different UI provider owns its own colors/alpha. Stadium's native-paper
+  -- key is valid only for the native status capture we claimed.
+  local key=decorate and statusOwned and getGaugeShader() or nil
   if key then g.setShader(key) end
-  local enemy=g.newQuad(0,0,160,48,160,144)
-  local player=g.newQuad(0,48,160,48,160,144)
+  -- Composite only the actual status-card rectangles.  Blitting the entire
+  -- 160px source bands also carries unrelated cartridge UI that happens to
+  -- share those rows (notably ask-shift's left-hand Yes/No window), producing
+  -- a second copy after that modal is moved into the auxiliary slot below.
+  local enemy=g.newQuad(er[1],er[2],er[3],er[4],160,144)
+  local player=g.newQuad(pr[1],pr[2],pr[3],pr[4],160,144)
   local lower=g.newQuad(0,96,160,48,160,144)
   -- A snapped Stadium HUD is ALWAYS sourced from the independent HUD capture,
   -- not from the native battle scene.  Besides keeping AskNickname out of the
   -- player band, this is what prevents Gold's per-move BattleAnimClearHud from
   -- making a status card blink off for the duration of an attack.
-  local upper=(layout.snap and hudLayer) or layer
-  g.draw(upper,enemy,ex,box.ly,0,s,s)
-  g.draw(upper,player,px,box.ly+48*s,0,s,s)
-  g.draw(layer,lower,box.lx,box.ly+96*s,0,s,s)
+  local upper=statusOwned and ((layout.snap and hudLayer) or layer) or layer
+  if statusOwned then
+    g.draw(upper,enemy,layout.enemyPanelX,layout.enemyPanelY,0,ps,ps)
+    g.draw(upper,player,layout.playerPanelX,layout.playerPanelY,0,ps,ps)
+  else
+    -- Preserve the centred native-band fallback when another provider owns
+    -- detached status placement.
+    local enemyBand=g.newQuad(0,0,160,48,160,144)
+    local playerBand=g.newQuad(0,48,160,48,160,144)
+    g.draw(upper,enemyBand,box.lx,layout.enemyY,0,ps,ps)
+    g.draw(upper,playerBand,box.lx,layout.playerY,0,ps,ps)
+  end
+  if crystalMovePane then
+    -- Draw the authored y=64..143 composition as one texture. MoveInfo and
+    -- the lower selector overlap in rows 96..103; keeping them in one blit
+    -- preserves their shared border and prevents a gap/doubled seam.
+    local joined=g.newQuad(0,64,160,80,160,144)
+    local joinedY=lowerY-(96-64)*s
+    g.draw(modalLayer or layer,joined,box.lx,joinedY,0,s,s)
+  else
+    g.draw(layer,lower,box.lx,lowerY,0,s,s)
+  end
   if key then g.setShader(oldShader) end
 
   -- Native Yes/No windows use the same frosted-glass treatment as the HUD.
@@ -360,18 +455,44 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer)
   -- This is intentionally after the gauge-key shader is removed: the nickname
   -- rectangle occupies the player HP/EXP source rows and must not inherit that
   -- tile-specific key.
-  if layout.asking and layout.modal then
-    local left=screen.phase=="ask-shift" and 8 or 112
+  if bottomVisible and layout.asking and layout.modal then
+    local left=(screen.phase=="ask-shift" or screen.phase=="ask-next-mon")
+      and 8 or 112
     local r={left,56,48,40}
     local target={box.lx+r[1]*s,box.ly+r[2]*s,r[3]*s,r[4]*s}
-    restoreSceneRect(scene,target)
-    panel(scene,target)
+    if options.bottomToScreen and scene.width>=scene.height then
+      -- All battle YES/NO windows use the same safe auxiliary slot as the
+      -- TYPE pane: aligned with the lower textbox's left edge and attached
+      -- directly above it. The native left/right choice only identifies the
+      -- source quad; it must not push the prompt under either widescreen HUD.
+      target[1]=box.lx
+      target[2]=math.max(edgeInset*s,lowerY-r[4]*s)
+    end
+    if decorate then
+      restoreSceneRect(scene,target)
+      panel(scene,target)
+    end
     local modalQuad=g.newQuad(r[1],r[2],r[3],r[4],160,144)
     g.setColor(1,1,1,1)
     -- AskNickname uses the clean modal-only capture; other legacy Yes/No
     -- states still fall back to the full native layer until they are split too.
-    g.draw((layout.nicknameModal and modalLayer) or layer,modalQuad,
+    g.draw(modalLayer or layer,modalQuad,
       target[1],target[2],0,s,s)
+  end
+  if screen.phase=="stats-box" and screen.statsBoxMon then
+    local r=Hud.STATS_BOX_RECT
+    local targetX,targetY=box.lx+r[1]*s,box.ly+r[2]*s
+    if options.bottomToScreen and scene.width>=scene.height then
+      -- PrintTempMonStats is taller than either native HUD band. Keep the
+      -- complete 9x10-tile window joined to the message box instead of
+      -- snapping it to the upper-right corner, where landscape crops it.
+      -- This is the same auxiliary stack used by TYPE and Yes/No prompts.
+      targetX=box.lx
+      targetY=math.max(edgeInset*s,lowerY-r[4]*s)
+    end
+    local statsQuad=g.newQuad(r[1],r[2],r[3],r[4],160,144)
+    g.setColor(1,1,1,1)
+    g.draw(modalLayer or layer,statsQuad,targetX,targetY,0,s,s)
   end
   return true
 end
