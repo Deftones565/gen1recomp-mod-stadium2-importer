@@ -42,13 +42,15 @@ vec4 effect(vec4 color,Image tex,vec2 tc,vec2 sc){
 -- The cartridge HUD tiles carry opaque colour-zero paper. That is correct on
 -- the Game Boy's flat white battle background, but becomes three conspicuous
 -- white strips when those tiles are composited over our frosted battle cards.
--- Keep the key local to the fixed HP/EXP tile rows so white effects elsewhere
--- in the captured 160x144 layer remain opaque.
+-- Keep the key local to the authored HUD windows so white effects elsewhere
+-- in the captured 160x144 layer remain opaque. Names, levels, numeric HP and
+-- menu glyph tiles carry the same opaque paper as the gauges; keying only the
+-- gauge rows leaves conspicuous white boxes behind that text.
 local GAUGE_PAPER = {
-  { 8, 8, 16, 16 },    -- caught marker tile: keep the ball, drop its white paper
-  { 16, 16, 88, 24 },  -- enemy HP label, channel, and end cap
-  { 80, 72, 152, 80 }, -- player HP label, channel, and end cap
-  { 80, 88, 144, 96 }, -- player EXP channel
+  { 8, 0, 88, 32 },    -- enemy name, level, caught marker and HP frame
+  { 72, 56, 152, 96 }, -- player name, level, HP value/frame and EXP channel
+  { 0, 64, 88, 104 },  -- Crystal TYPE/PP pane
+  { 0, 96, 160, 144 }, -- message, command and move-selection windows
 }
 
 local function gaugeCondition()

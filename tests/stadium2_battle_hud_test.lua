@@ -10,6 +10,8 @@ end
 
 ok(Hud.isGaugePaper(8, 8, 1, 1, 1, 1),
   "caught-marker paper is transparent on the enemy HUD glass")
+ok(Hud.isGaugePaper(8, 0, 1, 1, 1, 1),
+  "enemy name paper is transparent on the HUD glass")
 ok(Hud.isGaugePaper(15, 15, 1, 1, 1, 1),
   "caught-marker paper key covers the whole native tile")
 ok(Hud.isGaugePaper(16, 16, 1, 1, 1, 1),
@@ -20,10 +22,16 @@ ok(Hud.isGaugePaper(80, 72, 1, 1, 1, 1),
   "player HP paper is transparent")
 ok(Hud.isGaugePaper(143, 95, 1, 1, 1, 1),
   "player EXP paper is transparent")
+ok(Hud.isGaugePaper(72, 56, 1, 1, 1, 1),
+  "player name paper is transparent on the HUD glass")
+ok(Hud.isGaugePaper(16, 112, 1, 1, 1, 1),
+  "command-menu glyph paper is transparent on the lower glass panel")
+ok(Hud.isGaugePaper(40, 72, 1, 1, 1, 1),
+  "Crystal TYPE/PP glyph paper is transparent on its glass panel")
 ok(not Hud.isGaugePaper(7, 8, 1, 1, 1, 1),
   "caught-marker key does not bleed left of its native tile")
-ok(not Hud.isGaugePaper(15, 16, 1, 1, 1, 1),
-  "paper outside the HUD paper-key rows stays opaque")
+ok(not Hud.isGaugePaper(7, 16, 1, 1, 1, 1),
+  "paper outside the enemy status card stays opaque")
 ok(not Hud.isGaugePaper(88, 24, 1, 1, 1, 1),
   "enemy gauge key does not bleed past its end")
 ok(not Hud.isGaugePaper(40, 16, 0, 0, 0, 1),
