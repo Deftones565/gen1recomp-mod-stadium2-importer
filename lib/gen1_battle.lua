@@ -33,7 +33,20 @@ local function clamp(v,lo,hi)
   return math.max(lo,math.min(hi,tonumber(v) or lo))
 end
 
+local lastDiagnostic={}
+local function diagnostic(message)
+  message=tostring(message)
+  local category=message:sub(1,3)=="UI:" and "ui" or "error"
+  if lastDiagnostic[category]==message then return end
+  lastDiagnostic[category]=message
+  local storage=modRef and modRef.storage
+  if storage and storage.write then
+    pcall(storage.write,storage,gameRef,"battle-art-render-diagnostic-"..category,{message=message})
+  end
+end
+
 local function warn(message)
+  diagnostic("render error: "..tostring(message))
   local log=modRef and modRef.log
   if log and log.warn then pcall(log.warn,log,"%s",tostring(message)) end
 end
@@ -382,12 +395,21 @@ function Scene:composeWorld()
     if target then
       local handled=ui.drawHostedUI({battle=battle,canvas=target,box=self.hudBox,
         width=self.width,sx=sx,sy=sy,statusAvailable=statusAvailable,
+        report=function(message)
+          diagnostic("UI: "..tostring(message).."; scene defect="..tostring(self.defect))
+        end,
         drawHUDs=function()
           return UIOwnership.withNativeStatus(battle,function()
             local had=rawget(battle,"colorMode")
+            local shot=rawget(battle,"dramaticShapeShot")
+            local hosted=rawget(battle,"stadium2ImporterGen1Shot")
+            battle.dramaticShapeShot=nil
+            battle.stadium2ImporterGen1Shot=nil
             battle.colorMode=function() return false end
             local ok,result=pcall(originals.drawHUDs,battle,slide)
             battle.colorMode=had
+            battle.dramaticShapeShot=shot
+            battle.stadium2ImporterGen1Shot=hosted
             if not ok then error(result,0) end
             return result
           end)
