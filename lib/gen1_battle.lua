@@ -114,8 +114,13 @@ function Scene:sync()
   for _,side in ipairs({"player","enemy"}) do
     local actor=self.actors[side]
     local mon=self:shownMon(side)
-    if mon then actor:load(data,mon,dexOf(data,mon))
-    else actor:release() end
+    if mon and Importer.modelsEnabled() then
+      actor:load(data,mon,dexOf(data,mon))
+    else
+      actor:release()
+      actor.failedFor,actor.failedForm=nil,nil
+      self.substituteActors[side]:release()
+    end
   end
 end
 
@@ -156,6 +161,7 @@ function Scene:ownsSlot(side)
 end
 
 function Scene:ensureSubstitute(side)
+  if not Importer.modelsEnabled() then return nil end
   local actor=self.substituteActors[side]
   if actor.renderer then return actor end
   local renderer,err=Importer.newSpecialRenderer("substitute",{
@@ -810,8 +816,7 @@ function Gen1.install()
 end
 
 function Gen1.ensure(battle)
-  if not (installed and battle and Importer.modelsEnabled()
-      and Importer.battleEnabled() and Importer.available(configured)) then
+  if not (installed and battle and Importer.battleEnabled() and Importer.available(configured)) then
     return false
   end
   if session and session.battle==battle then return true end
@@ -840,7 +845,7 @@ function Gen1.finish(battle)
 end
 
 function Gen1.enabled()
-  return Importer.modelsEnabled() and Importer.battleEnabled()
+  return Importer.battleEnabled()
 end
 
 function Gen1.ready()
