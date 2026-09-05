@@ -371,6 +371,34 @@ function Scene:composeWorld()
   end
   local battle=self.battle
   local slide=(battle.introSlide or 0)*4
+  self.battleArtUI=false
+  -- Battle Art owns presentation when installed; keep this an exported,
+  -- optional handoff so standalone Stadium retains its own HUD and glass.
+  local handle=modRef and modRef.find and modRef.find("BATTLE_ART_VOXEL_FORK")
+  local ui=handle and handle.exports and handle.exports.battlePresentation
+  if ui and type(ui.drawHostedUI)=="function" then
+    local statusAvailable=UIOwnership.claimStatus(battle)
+    local target,sx,sy=self:copyForComposite()
+    if target then
+      local handled=ui.drawHostedUI({battle=battle,canvas=target,box=self.hudBox,
+        width=self.width,sx=sx,sy=sy,statusAvailable=statusAvailable,
+        drawHUDs=function()
+          return UIOwnership.withNativeStatus(battle,function()
+            local had=rawget(battle,"colorMode")
+            battle.colorMode=function() return false end
+            local ok,result=pcall(originals.drawHUDs,battle,slide)
+            battle.colorMode=had
+            if not ok then error(result,0) end
+            return result
+          end)
+        end})
+      if handled then
+        self.battleArtUI=true
+        self.statusHudOwned=true
+        return target
+      end
+    end
+  end
   local statusOwned=UIOwnership.claimStatus(battle)
   local bottomVisible=UIOwnership.bottomVisible(battle)
   self.statusHudOwned=statusOwned
@@ -548,7 +576,10 @@ local function installHooks()
   originals.drawTextArea=BattleState.drawTextArea
   function BattleState:drawTextArea(...)
     local args={...}
-    if not active(self) then return originals.drawTextArea(self,unpack(args)) end
+    local scene=active(self)
+    if not scene or scene.battleArtUI then
+      return originals.drawTextArea(self,unpack(args))
+    end
     return withBoxPaperRemoved(function()
       return originals.drawTextArea(self,unpack(args))
     end)
