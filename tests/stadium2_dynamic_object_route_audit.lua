@@ -3,6 +3,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 local Build = require("mods.STADIUM2_IMPORTER.lib.build")
 local Discovery = require("mods.STADIUM2_IMPORTER.lib.discovery")
 local DynamicObject = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object")
+local RapidashCut = require("mods.STADIUM2_IMPORTER.lib.effects.rapidash_cut")
 local Fragment26 = require("mods.STADIUM2_IMPORTER.lib.fragment26")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Manifest = require("mods.STADIUM2_IMPORTER.lib.effects.dynamic_object_manifest")
@@ -60,6 +61,12 @@ check(Manifest.profile(109).routes.initialize==Manifest.profile(110).routes.init
   "Koffing and Weezing must share the complete lifecycle")
 check(Manifest.profile(77).routes.render==Manifest.profile(146).routes.render,
   "Ponyta and Moltres must share rendering")
+check(Manifest.profile(78).cutContent==true
+    and Manifest.profile(78).routes.initialize==0x81004248
+    and Manifest.profile(78).routes.spawn==0x810047E0
+    and Manifest.profile(78).routes.render==0x81004D44
+    and Manifest.profile(78).routes.update==0x81005298,
+  "Rapidash cut reconstruction must use its dormant ROM dispatch row")
 check(Manifest.profile(134).routes.render==Manifest.profile(144).routes.render,
   "Vaporeon and Articuno must share rendering")
 
@@ -76,6 +83,9 @@ for species,expected in pairs(expectedInit) do
 end
 
 check(DynamicObject.spawnExpected(92,{dynamicObjectRandomValue=6}),"Gastly must spawn every invocation")
+check(DynamicObject.spawnExpected(78,{dynamicObjectRandomValue=0})
+    and not DynamicObject.spawnExpected(78,{dynamicObjectRandomValue=1}),
+  "Rapidash cut particles retain the dormant one-in-seven spawn route")
 for _,species in ipairs{77,134,144,146} do
   check(DynamicObject.spawnExpected(species,{dynamicObjectRandomValue=0}),"random route zero must spawn for "..species)
   check(not DynamicObject.spawnExpected(species,{dynamicObjectRandomValue=1}),"random route nonzero must not spawn for "..species)
@@ -94,9 +104,15 @@ for species,expected in pairs(expectedRender) do
   check(material.frame==expected[2],"texture frame mismatch for "..species)
   check(expected[3]==nil or material.alphaByte==expected[3],"render alpha mismatch for "..species)
 end
+local ponytaMaterial=assert(DynamicObject.renderState(77,5))
+check(math.abs(ponytaMaterial.environmentColor[1]-1)<1e-8
+    and math.abs(ponytaMaterial.environmentColor[2]-32/255)<1e-8
+    and ponytaMaterial.environmentColor[3]==0
+    and math.abs(ponytaMaterial.environmentColor[4]-200/255)<1e-8,
+  "Ponyta smoke must preserve the ROM #FF2000C8 callback environment colour")
 
 local expectedUpdate = {
-  [77]={1,2.75,1.1}, [92]={2,2,1}, [109]={1,2.5,1.1}, [110]={1,2.5,1.1},
+  [77]={1,2.75,1.005}, [92]={2,2,1}, [109]={1,2.5,1.1}, [110]={1,2.5,1.1},
   [134]={1,2,.65}, [144]={1,1.5,.65}, [146]={1,3.5,1.005},
 }
 for species,expected in pairs(expectedUpdate) do
@@ -108,6 +124,24 @@ for species,expected in pairs(expectedUpdate) do
 end
 
 local root=assert(cacheRoot(),"Stadium 2 cache not found")
+do
+  local bytes=assert(read(root.."/normal/078.dsm"))
+  local retail=assert(Pack.parse(bytes))
+  local live=0
+  for _,record in ipairs(retail.handlers and retail.handlers.records or {}) do
+    if record.family=="dynamic-object-renderer" then live=live+1 end
+  end
+  check(live==0,"retail Rapidash must keep its particle node disconnected")
+  local reconstructed=RapidashCut.augment(retail)
+  local record=reconstructed.handlers.records[#reconstructed.handlers.records]
+  check(reconstructed~=retail and reconstructed.cutRapidashEffect==true
+      and record.cutRapidash==true and #(record.program.textures or {})==8
+      and #(record.program.geometry.vertices or {})==4,
+    "Rapidash cut mode restores the dormant ROM quad and all eight I4 images")
+  local emitters=Renderer.dynamicObjectEmitters(reconstructed,
+    Build.bindMatrices(reconstructed.bones))
+  check(#emitters==3,"Rapidash cut preview resolves three live flame-chain anchors")
+end
 for _,species in ipairs(speciesIds) do
   local bytes=assert(read(root..("/normal/%03d.dsm"):format(species)))
   local model=assert(Pack.parse(bytes))

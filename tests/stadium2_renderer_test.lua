@@ -14,13 +14,55 @@ end
 
 ok(RenderContract.supportsCoplanarDecals(),
   "model depth contract preserves later coplanar eye and face layers")
+ok(math.abs(Renderer.PINECO_DECAL_DEPTH_BIAS - 4/65535) < 0.000000001,
+  "Pineco uses a minimal decal bias that cannot pull eyes through its shell")
+ok(Renderer.ARENA_COPLANAR_DEPTH_BIAS == 32/65535,
+  "arena floor markings retain a stable top-layer separation")
+ok(Renderer.SHADER_SOURCE:find("n64Cycle", 1, true)
+  and Renderer.SHADER_SOURCE:find("n64CombinerCycles", 1, true)
+  and Renderer.SHADER_SOURCE:find("n64CoveragePassthrough", 1, true)
+  and Renderer.SHADER_SOURCE:find("primaryIntensityAlpha", 1, true)
+  and Renderer.SHADER_SOURCE:find("texel0.a = texel0.r", 1, true)
+  and Renderer.SHADER_SOURCE:find("other.a = other.r", 1, true)
+  and Renderer.SHADER_SOURCE:find("texel0,texel1,primitiveColor,color,environmentColor", 1, true),
+  "arena shader evaluates ROM two-cycle combiners and I4 coverage")
+local opaqueZeroAlpha = { phase5 = true, combiner = { alphaOutputZero = true } }
+ok(Renderer.arenaCombinerCoveragePassthrough(
+    { staticPose = true, species = 0 }, { arenaAlphaMode = "opaque" },
+    opaqueZeroAlpha)
+  and Renderer.arenaCombinerCoveragePassthrough(
+    { staticPose = true, species = 0 }, { arenaAlphaMode = "cutout" },
+    opaqueZeroAlpha)
+  and not Renderer.arenaCombinerCoveragePassthrough(
+    { staticPose = true, species = 0 }, { arenaAlphaMode = "blend" },
+    opaqueZeroAlpha)
+  and not Renderer.arenaCombinerCoveragePassthrough(
+    { staticPose = false, species = 25 }, { arenaAlphaMode = "opaque" },
+    opaqueZeroAlpha),
+  "opaque arena combiners retain coverage without changing translucent or Pokemon alpha")
 local decalCompare, decalWrite = RenderContract.depthState({
+  sourceTextureMissing = false, decal = true, decalDepthWrite = true }, true)
+local ordinaryDecalCompare, ordinaryDecalWrite = RenderContract.depthState({
   sourceTextureMissing = false, decal = true }, true)
 local bodyCompare, bodyWrite = RenderContract.depthState({
   sourceTextureMissing = false, decal = false }, true)
+local cutoutCompare, cutoutWrite = RenderContract.depthState({
+  sourceTextureMissing = false, decal = true, arenaAlphaMode = "cutout" }, true)
+local blendCompare, blendWrite = RenderContract.depthState({
+  sourceTextureMissing = false, decal = true, arenaAlphaMode = "blend" }, true)
+local layerCompare, layerWrite = RenderContract.depthState({
+  sourceTextureMissing = false, coplanarLayer = 2 }, true)
+local arenaLayerCompare, arenaLayerWrite = RenderContract.depthState({
+  sourceTextureMissing = false, coplanarLayer = 2,
+  arenaAlphaMode = "opaque" }, true)
 ok(decalCompare == "lequal" and not decalWrite
+  and ordinaryDecalCompare == "lequal" and not ordinaryDecalWrite
+  and layerCompare == "lequal" and not layerWrite
+  and arenaLayerCompare == "lequal" and arenaLayerWrite
+  and cutoutCompare == "less" and cutoutWrite
+  and blendCompare == "less" and not blendWrite
   and bodyCompare == "less" and bodyWrite,
-  "alpha decals compare equal without writing over ordinary body depth")
+  "model decals and modern arena alpha surfaces use their intended depth queues")
 
 local function be16(value)
   return string.char(math.floor(value / 256) % 256, value % 256)
@@ -107,21 +149,268 @@ ok(not carrierState.castsShadow,
 local colorState = Renderer.primitiveRenderState({}, { lighting = false, cull = true })
 ok(not colorState.lightingEnabled and colorState.cullEnabled,
   "source vertex-colour geometry disables lighting without disabling culling")
+local arenaPrimitive = { lighting = true, cull = true }
+local arenaCullState = Renderer.primitiveRenderState(
+  { species = 0, staticPose = true }, arenaPrimitive)
+ok(arenaCullState.cullEnabled and arenaPrimitive.cull == true,
+  "arena panels retain ROM one-sided culling metadata")
+ok(Renderer.meshCullMode({}, true, true, true) == "back"
+    and Renderer.meshCullMode({ species = 0, staticPose = true },
+      true, true, true) == "none",
+  "arena graph keeps mixed-facing field assemblies visible")
+ok(Renderer.meshCullMode({ species = 0, staticPose = true },
+    true, true, false) == "none",
+  "arena cull override still supports explicit two-sided rendering")
+local alphaModel = { species = 0, staticPose = true, textures = {
+  { rgba = "\255\255\255\255" },
+  { rgba = "\255\255\255\0\255\255\255\255" },
+  { rgba = "\255\255\255\128" },
+} }
+local alphaParts = {
+  { prim = { tex = 1 }, sourcePartIndex = 1 },
+  { prim = { tex = 2, decal = true }, sourcePartIndex = 2 },
+  { prim = { tex = 3, decal = true, idx = {1,2,3} }, sourcePartIndex = 3,
+    rows = {{0,0,-2},{1,0,-2},{0,1,-2}} },
+}
+local alphaCounts = Renderer.prepareArenaRenderQueues(alphaModel, alphaParts)
+local alphaOrder = Renderer.arenaRenderOrder(alphaModel, alphaParts, "opaque")
+ok(alphaCounts.opaque == 1 and alphaCounts.cutout == 1
+    and alphaCounts.blend == 1
+    and alphaParts[1].prim.arenaQueue == "opaque"
+    and alphaParts[2].prim.arenaAlphaMode == "cutout"
+    and alphaParts[3].prim.arenaQueue == "translucent"
+    and alphaOrder[1] == alphaParts[1] and alphaOrder[2] == alphaParts[2]
+    and alphaOrder[3] == alphaParts[3],
+  "arena pipeline writes opaque/cutout depth before translucent ROM surfaces")
+local materialAlphaParts = {
+  { prim = { tex = 1 }, sourcePartIndex = 1 },
+  { prim = { tex = 1 }, sourcePartIndex = 2 },
+}
+local materialAlphaCounts = Renderer.prepareArenaRenderQueues(alphaModel,
+  materialAlphaParts, function(prim)
+    return { primitiveColor = prim == materialAlphaParts[1].prim
+      and {1,1,1,0.5} or {0.25,0.25,0.25,0.4} }
+  end)
+ok(materialAlphaCounts.blend == 1 and materialAlphaCounts.shadow == 1
+    and materialAlphaParts[1].prim.arenaQueue == "translucent"
+    and materialAlphaParts[2].prim.arenaCompositeMode == "shadow",
+  "ROM material alpha separates translucent markings and dark shadow overlays")
+local phase5Opaque = { prim = { tex = 1 }, sourcePartIndex = 1 }
+local phase5Counts = Renderer.prepareArenaRenderQueues(alphaModel,
+  { phase5Opaque }, function()
+    return { phase5 = true, primitiveColor = {1,1,1,0.25}, combiner = {
+      cycles = 2, coverage = false, alphaUsesPrimitive = false,
+    } }
+  end)
+ok(phase5Counts.opaque == 1,
+  "two-cycle phase-5 framebuffer coverage is not misclassified by unused primitive alpha")
+local zeroAlphaVertexBlend = {
+  prim = { tex = 1, alphaMode = "blend" }, sourcePartIndex = 1,
+}
+local zeroAlphaVertexCounts = Renderer.prepareArenaRenderQueues(alphaModel,
+  { zeroAlphaVertexBlend }, function()
+    return { phase5 = true, primitiveColor = {1,1,1,1}, combiner = {
+      cycles = 2, alphaOutputZero = true,
+    } }
+  end)
+ok(zeroAlphaVertexCounts.opaque == 1
+    and zeroAlphaVertexBlend.prim.arenaAlphaMode == "opaque",
+  "unused zero combiner alpha cannot discard an opaque RDP submission")
+local phase5Blend = { prim = { tex = 1 }, sourcePartIndex = 1 }
+local phase5BlendCounts = Renderer.prepareArenaRenderQueues(alphaModel,
+  { phase5Blend }, function()
+    return { phase5 = true, primitiveColor = {1,1,1,0.5}, combiner = {
+      cycles = 2, alphaUsesPrimitive = true,
+    } }
+  end)
+ok(phase5BlendCounts.blend == 1
+    and phase5Blend.prim.arenaQueue == "translucent",
+  "phase-5 water surfaces retain ROM primitive-alpha blending")
+local liveTexturePart = { prim = { tex = 1 }, sourcePartIndex = 1 }
+local liveTextureCounts = Renderer.prepareArenaRenderQueues(alphaModel,
+  { liveTexturePart }, nil, function() return 3 end)
+ok(liveTextureCounts.blend == 1,
+  "arena queues follow the live phase-5 texture-controller selection")
+local authoredBlendPart = {
+  prim = { tex = 1, alphaMode = "blend" }, sourcePartIndex = 1,
+}
+local authoredBlendCounts = Renderer.prepareArenaRenderQueues(alphaModel,
+  { authoredBlendPart }, nil, function() return 1 end)
+ok(authoredBlendCounts.blend == 1
+    and authoredBlendPart.prim.arenaAlphaMode == "blend",
+  "opaque callback images do not erase authored translucent vertex layers")
+local phase5Combiner = { phase5 = true, combiner = { cycles = 2 } }
+local staticIntensity, staticSecondary = Renderer.phase5IntensityAlpha(
+  phase5Combiner, nil, { textures = {{ format = 4 }} }, 1)
+local callbackIntensity, callbackSecondary = Renderer.phase5IntensityAlpha(
+  phase5Combiner, { formats = { 0, 4 } },
+  { textures = {{ format = 4 }} }, 1)
+local pokemonIntensity = Renderer.phase5IntensityAlpha(
+  { intensity = true }, nil, { textures = {{ format = 4 }} }, 1)
+ok(staticIntensity and not staticSecondary
+    and not callbackIntensity and callbackSecondary
+    and not pokemonIntensity,
+  "phase-5 I4 alpha covers static and callback arena inputs without changing Pokemon effects")
+local shadowCompare, shadowWrite = RenderContract.depthState({
+  arenaAlphaMode = "blend", arenaCompositeMode = "shadow", coplanarLayer = 1,
+}, true)
+ok(shadowCompare == "lequal" and shadowWrite == false,
+  "coplanar arena shadows compose above the floor without replacing its depth")
+local nearBlend = { sourcePartIndex = 4,
+  prim = { arenaQueue = "translucent", idx = {1,2,3} },
+  rows = {{0,0,-1},{1,0,-1},{0,1,-1}} }
+local farBlend = alphaParts[3]
+local sortedAlpha = Renderer.arenaRenderOrder(alphaModel,
+  { nearBlend, farBlend }, "opaque",
+  {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1},
+  {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1})
+ok(sortedAlpha[1] == farBlend and sortedAlpha[2] == nearBlend,
+  "genuinely translucent arena surfaces sort back-to-front for the camera")
+local arenaOverlay = {
+  prim = { idx = {1,2,3}, nidx = 3, sourceTextureMissing = false },
+  rows = {{0,0,0},{1,0,0},{0,0,1}},
+}
+local arenaFloor = {
+  prim = { idx = {1,2,3,1,3,4}, nidx = 6, sourceTextureMissing = false },
+  rows = {{0,0,0},{1,0,0},{0,0,1},{-1,0,0}},
+}
+local arenaParts = { arenaOverlay, arenaFloor }
+ok(Renderer.resolveArenaCoplanarLayers(
+    { species = 0, staticPose = true }, arenaParts) == 1
+    and arenaParts[1] == arenaFloor and arenaParts[2] == arenaOverlay
+    and arenaOverlay.prim.coplanarLayer == 1,
+  "arena coplanar markings are submitted after their shared floor triangles")
+local callbackMarking = {
+  prim = { idx = {1,2,3}, nidx = 3, sourceTextureMissing = true,
+    callbackTextureRequired = true, arenaSubmissionLayer = 6 },
+  -- Deliberately does not overlap the floor. ROM order must not depend on a
+  -- geometric containment test.
+  rows = {{8,0,8},{9,0,8},{8,0,9}},
+}
+local callbackFloor = {
+  prim = { idx = {1,2,3,1,3,4}, nidx = 6,
+    sourceTextureMissing = false, arenaSubmissionLayer = 5 },
+  rows = {{-2,0,-2},{2,0,-2},{2,0,2},{-2,0,2}},
+}
+local callbackLayerParts = { callbackMarking, callbackFloor }
+ok(Renderer.resolveArenaCoplanarLayers(
+    { species = 0, staticPose = true }, callbackLayerParts) == 1
+    and callbackLayerParts[1] == callbackFloor
+    and callbackLayerParts[2] == callbackMarking
+    and callbackMarking.prim.coplanarLayer == 1,
+  "ROM layer order preserves callback-owned coplanar arena artwork")
+local romLayerLarge = {
+  prim = { idx = {1,2,3,1,3,4}, nidx = 6, sourceTextureMissing = false,
+    arenaSubmissionLayer = 6 },
+  rows = {{0,0,0},{1,0,0},{1,0,1},{0,0,1}},
+}
+local romLayerSmall = {
+  prim = { idx = {1,2,3}, nidx = 3, sourceTextureMissing = false,
+    arenaSubmissionLayer = 5 },
+  rows = {{0,0,0},{1,0,0},{1,0,1}},
+}
+local romLayerParts = { romLayerLarge, romLayerSmall }
+ok(Renderer.resolveArenaCoplanarLayers(
+    { species = 0, staticPose = true }, romLayerParts) == 1
+    and romLayerParts[1] == romLayerSmall and romLayerParts[2] == romLayerLarge,
+  "ROM graph submission layer overrides the legacy triangle-count heuristic")
+local triangulatedMarking = {
+  prim = { idx = {1,2,3}, nidx = 3, sourceTextureMissing = false },
+  rows = {{-.8,0,-.4},{.8,0,-.4},{0,0,.8}},
+}
+local differentlyTriangulatedFloor = {
+  prim = { idx = {1,2,3,1,3,4}, nidx = 6, sourceTextureMissing = false },
+  rows = {{-2,0,-2},{2,0,-2},{2,0,2},{-2,0,2}},
+}
+local triangulatedParts = { triangulatedMarking, differentlyTriangulatedFloor }
+ok(Renderer.resolveArenaCoplanarLayers(
+    { species = 0, staticPose = true }, triangulatedParts) == 1
+    and triangulatedParts[1] == differentlyTriangulatedFloor
+    and triangulatedParts[2] == triangulatedMarking,
+  "arena markings remain top layers across different floor triangulation")
+local nestedTop = {
+  prim = { idx = {1,2,3}, nidx = 3, sourceTextureMissing = false },
+  rows = {{-.5,0,-.25},{.5,0,-.25},{0,0,.5}},
+}
+local nestedMiddle = {
+  prim = { idx = {1,2,3,1,3,4}, nidx = 6, sourceTextureMissing = false },
+  rows = {{-1,0,-1},{1,0,-1},{1,0,1},{-1,0,1}},
+}
+local nestedFloor = {
+  prim = { idx = {1,2,3,1,3,4}, nidx = 6, sourceTextureMissing = false },
+  rows = {{-2,0,-2},{2,0,-2},{2,0,2},{-2,0,2}},
+}
+local nestedParts = { nestedTop, nestedMiddle, nestedFloor }
+ok(Renderer.resolveArenaCoplanarLayers(
+    { species = 0, staticPose = true }, nestedParts) == 2
+    and nestedParts[1] == nestedFloor and nestedParts[2] == nestedMiddle
+    and nestedParts[3] == nestedTop
+    and nestedMiddle.prim.coplanarLayer == 1
+    and nestedTop.prim.coplanarLayer == 2,
+  "nested arena artwork receives a distinct depth rank for every top layer")
+local decalCullState = Renderer.primitiveRenderState({},
+  { decal = true, cull = true }, { disableCulling = true })
+ok(not decalCullState.cullEnabled,
+  "rigid face/detail surfaces follow the scene's unified winding override")
+local pinecoEyeCullState = Renderer.primitiveRenderState({ species = 204 },
+  { decal = true, cull = true, texAnim = 0, nverts = 3, nidx = 3 },
+  { disableCulling = true })
+ok(pinecoEyeCullState.cullEnabled,
+  "Pineco's isolated eye cards remain one-sided through the scene override")
+local pikachuHeadFillState = Renderer.primitiveRenderState({ species = 25 },
+  { decal = true, cull = true, texAnim = 4 }, { disableCulling = true })
+ok(not pikachuHeadFillState.cullEnabled,
+  "Pikachu's ROM head-fill triangles survive the scene body-culling override")
 ok(Renderer.FORMAT[4] and Renderer.FORMAT[4][1] == "VertexColor",
   "DSM4 mesh format carries source vertex RGBA")
-local _, normalDecls = Renderer.SHADER_SOURCE:gsub("varying vec3 vNormal;", "")
-local _, sunDecls = Renderer.SHADER_SOURCE:gsub("varying vec3 vSun;", "")
-ok(normalDecls == 1 and sunDecls == 1,
-  "shared shader varyings are declared once across LÖVE's combined stages")
-local _, shadowReads = Renderer.SHADER_SOURCE:gsub("shadowDepth%(p%.xy", "")
-ok(shadowReads == 4,
-  "softened Pokemon shadows retain the four-fetch PCF cost")
+local _, normalDecls = Renderer.SHADER_SOURCE:gsub("varying STADIUM_FLOAT vec3 vNormal;", "")
+local _, sunDecls = Renderer.SHADER_SOURCE:gsub("varying STADIUM_FLOAT vec3 vSun;", "")
+local _, eyeNormalDecls = Renderer.SHADER_SOURCE:gsub("varying STADIUM_FLOAT vec3 vEyeNormal;", "")
+ok(normalDecls == 1 and sunDecls == 1 and eyeNormalDecls == 1,
+  "shared shader varyings retain the desktop path with adaptive mobile precision")
+ok(Renderer.SHADER_SOURCE:find("shadowDepth(p.xy+sunTexel", 1, true) ~= nil,
+  "desktop shadow path retains the four-fetch PCF footprint")
+ok(Renderer.SHADER_SOURCE:find("#ifdef GL_ES", 1, true) ~= nil
+    and Renderer.SHADER_SOURCE:find("smoothstep%(mapDepth", 1, false) ~= nil,
+  "GLES uses a single soft sun shadow compare instead of binary PCF speckle")
 ok(Renderer.SHADER_SOURCE:find("0.30+(stadiumShade-0.30)*shadowVisibility", 1, true) ~= nil,
   "Pokemon self-shadow preserves the authored ambient lighting floor")
+ok(Renderer.SHADER_SOURCE:find(
+    "effectIntensityMode > 1.5 ? texel.a : intensity", 1, true) ~= nil,
+  "IA8 flame coverage uses TEXEL0 alpha instead of I4 smoke intensity")
+ok(Renderer.SHADER_SOURCE:find(
+    "vec4(mix(texel.rgb, other.rgb, secondaryMix), texel.a)", 1, true) ~= nil
+  and Renderer.MOBILE_SHADER_SOURCE:find(
+    "vec4(mix(texel.rgb,other.rgb,secondaryMix),texel.a)", 1, true) ~= nil,
+  "dual-texture slime keeps opaque primary alpha on desktop and mobile")
+ok(Renderer.SHADER_SOURCE:find(
+    "texture_coords*secondaryCoordinateScale", 1, true) ~= nil
+  and Renderer.MOBILE_SHADER_SOURCE:find(
+    "VaryingTexCoord.st*secondaryCoordinateScale", 1, true) ~= nil,
+  "secondary callback tile preserves raw coordinates independently of authored detail UVs")
+ok(Renderer.SHADER_SOURCE:find("uniform float decalDepthBias;",1,true)~=nil
+  and Renderer.SHADER_SOURCE:find("clip.z-=decalDepthBias*clip.w",1,true)~=nil,
+  "coplanar detail primitives can be stabilized on reduced-depth mobile buffers")
+do
+  local oldLove=love
+  love={graphics={getRendererInfo=function() return "Metal","3.1","Apple","GPU" end}}
+  ok(Renderer.shouldReceiveModelSunShadows({})==false,
+    "mobile Metal uses the clean cast-shadow-only fallback")
+  love=oldLove
+end
 ok(Renderer.SHADER_SOURCE:find("vGeneratedUV", 1, true) ~= nil,
   "shared shader implements normal-driven Stadium reflection coordinates")
-ok(Renderer.primitiveRenderState({}, { geometryMode = 0x40000 }).textureGenEnabled,
-  "G_TEXTURE_GEN enables the shared reflection path")
+ok(Renderer.SHADER_SOURCE:find("void effect()", 1, true) ~= nil,
+  "lit shader reads VaryingTexCoord directly instead of mediump effect() parameters")
+ok(Renderer.SHADER_SOURCE:find("VaryingTexCoord.st", 1, true) ~= nil,
+  "texture coordinates stay at LOVE's highp varying precision on GLES")
+ok(Renderer.SHADER_SOURCE:find("vec4 color=VaryingColor;", 1, true) ~= nil,
+  "phase-5 combiners consume the arena's authored vertex SHADE input")
+ok(Renderer.SHADER_SOURCE:find("if (mangaAmount > 0.001)", 1, true) ~= nil,
+  "watercolor treatment is skipped entirely in Stadium lighting mode")
+ok(Renderer.SHADER_SOURCE:find(
+    "if (smoothTextureFiltering > 0.5) return Texel(image, uv);", 1, true) ~= nil,
+  "arena shader can use bilinear mipmapped sampling without changing Pokemon three-point filtering")
 
 local emitterModel = { species = 109, rootScale = 0.1,
   handlers = { records = {{ commandOffset = 0x1118, family = "dynamic-object-renderer" }} },
@@ -166,9 +455,112 @@ ok(rig:currentTexture(model.prims[1]) == 2, "authored texture survives site call
 local savedHandlers = model.handlers
 model.handlers = { records = {{ commandOffset = 0x44, descriptor = 0x81000048 }} }
 model.textures[2].rgba = "\255\0\0\255\0\255\0\255\0\0\255\255\255\255\255\255"
-ok(rig:currentTexture(model.prims[1]) == 3,
-  "dual-texture material builder replaces every non-decal owned body input")
+ok(rig:currentTexture(model.prims[1]) == 2,
+  "dual-texture material builder preserves authored nonuniform detail inputs")
+ok(rig:callbackUsesMaterialFx(model.prims[1]),
+  "authored detail retains the ROM two-texture color combiner")
+model.handlers.records[1].descriptor = 0x81000148
+ok(not rig:callbackUsesMaterialFx(model.prims[1]),
+  "phase-5 callbacks preserve a local authored texture at their graph node")
+model.prims[1].callbackTextureRequired = true
+ok(rig:callbackUsesMaterialFx(model.prims[1]),
+  "callback-owned phase-5 surfaces retain their ROM material combiner")
+model.prims[1].callbackTextureRequired = false
+model.handlers.records[1].descriptor = 0x81000048
+local detailPrimaryScroll, detailSecondaryScroll = Renderer.callbackTextureScroll({
+  scroll = {{0.25, 0.5}, {0.75, 1}},
+}, false)
+ok(detailPrimaryScroll == nil and detailSecondaryScroll[1] == 0.75,
+  "authored detail stays fixed while the secondary slime tile scrolls")
+local detailWrapS, detailWrapT = Renderer.callbackPrimaryWrap({},
+  { wrapS = "clamp", wrapT = "clamp" }, { wrap = "repeat" }, false)
+ok(detailWrapS == "clamp" and detailWrapT == "clamp",
+  "authored detail retains its ROM clamp modes under the slime callback")
+model.textures[3] = { w = model.textures[2].w, h = model.textures[2].h,
+  rgba = model.textures[2].rgba }
+ok(rig:currentTexture(model.prims[1]) == 3
+    and rig:callbackUsesMaterialFx(model.prims[1]),
+  "an authored copy of the callback primary tile remains a scrolling body input")
+local bodyPrimaryScroll = Renderer.callbackTextureScroll({
+  scroll = {{0.25, 0.5}, {0.75, 1}},
+}, true)
+ok(bodyPrimaryScroll[1] == 0.25,
+  "callback-owned body primary retains its ROM tile scroll")
+local bodyWrapS, bodyWrapT = Renderer.callbackPrimaryWrap({},
+  { wrapS = "clamp", wrapT = "clamp" }, { wrap = "repeat" }, true)
+ok(bodyWrapS == "repeat" and bodyWrapT == "repeat",
+  "callback-owned body primary uses the generated tile repeat mode")
+local waterWrapS, waterWrapT = Renderer.callbackPrimaryWrap({}, nil, {
+  samplers = {{ cms = 0, cmt = 0 }, { cms = 1, cmt = 1 }},
+}, true)
+local waterSecondaryS, waterSecondaryT = Renderer.callbackSecondaryWrap({
+  samplers = {{ cms = 0, cmt = 0 }, { cms = 1, cmt = 1 }},
+})
+ok(waterWrapS == "repeat" and waterWrapT == "repeat"
+    and waterSecondaryS == "mirroredrepeat"
+    and waterSecondaryT == "mirroredrepeat",
+  "phase-5 water layers retain their independent ROM tile addressing")
+local localEyeMaterial, generatedPhase5Material = {}, {}
+local phase5Rig = setmetatable({
+  model = { handlers = { records = {{
+    descriptor = 0x81000148, commandOffset = 0x1234,
+  }} } },
+  handlerState = { materialBySite = { [0x1234] = generatedPhase5Material } },
+}, Renderer)
+local localEye = { callbackOffset = 0x1234, material = localEyeMaterial,
+  tex = 1, texAnim = 0, callbackTextureRequired = false }
+local callbackSurface = { callbackOffset = 0x1234,
+  material = localEyeMaterial, callbackTextureRequired = true }
+ok(not phase5Rig:callbackUsesMaterialFx(localEye)
+    and phase5Rig:currentMaterial(localEye) == localEyeMaterial,
+  "phase-5 mode 2 preserves a locally textured eye atlas at the same callback site")
+ok(phase5Rig:callbackUsesMaterialFx(callbackSurface)
+    and phase5Rig:currentMaterial(callbackSurface) == generatedPhase5Material,
+  "phase-5 mode 2 still supplies its generated callback surface and animated FX")
+local arenaPhase5Rig = setmetatable({
+  model = { species = 0, staticPose = true, handlers = phase5Rig.model.handlers },
+  handlerState = phase5Rig.handlerState,
+}, Renderer)
+ok(arenaPhase5Rig:callbackUsesMaterialFx(localEye)
+    and arenaPhase5Rig:currentMaterial(localEye) == generatedPhase5Material,
+  "arena phase-5 combines its locally textured floor carrier with the callback mask")
+phase5Rig.model.handlers.records[1].descriptor = 0x81000140
+ok(not phase5Rig:callbackUsesMaterialFx(localEye)
+    and phase5Rig:currentMaterial(localEye) == localEyeMaterial,
+  "phase-5 mode 1 uses the same ROM replace-untextured ownership rule")
+ok(not require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+    .ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+          pos = { 0, 0, 0, 0, 40, 0 } },
+      { w = 32, h = 64, rgba = "\0\0\0\255"
+          .. string.rep("\255\255\255\255", 32 * 64 - 1) },
+      { w = 32, h = 32, rgba = string.rep("\0\0\0\255", 32 * 32) },
+      0x81000048),
+  "authored 32x64 tongue atlas remains a local primary detail")
+ok(require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+    .ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+          pos = { 0, 30, 0, 0, 200, 0 } },
+      { w = 32, h = 64, rgba = "\0\0\0\255"
+          .. string.rep("\255\255\255\255", 32 * 64 - 1) },
+      { w = 32, h = 32, rgba = string.rep("\0\0\0\255", 32 * 32) },
+      0x81000048),
+  "Muk rear-head geometry replaces the reused tongue atlas with body material")
+local DualTexture = require(
+  "mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+local sharedEyeAtlas = { w = 64, h = 32,
+  rgba = "\0\0\0\255" .. string.rep("\255\255\255\255", 64 * 32 - 1) }
+local slimeTile = { w = 32, h = 32,
+  rgba = string.rep("\0\0\0\255", 32 * 32) }
+ok(DualTexture.ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+      nverts = 97 }, sharedEyeAtlas, slimeTile, 0x81000048),
+  "large Grimer arm geometry does not retain the eye atlas inherited before command 0x08")
+ok(not DualTexture.ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+      nverts = 53 }, sharedEyeAtlas, slimeTile, 0x81000048),
+  "Muk's complete authored eye and pupil mesh retains its local atlas")
+ok(DualTexture.ownsAuthoredTexture({ callbackDescriptor = 0x81000048,
+      nverts = 28 }, sharedEyeAtlas, slimeTile, 0x81000048),
+  "Muk's small inherited head shell uses the generated body material")
 model.textures[2].rgba = string.rep("\255\255\255\255", 4)
+model.textures[3].rgba = "\0\0\0\255"
 ok(rig:currentTexture(model.prims[1]) == 3,
   "dual-texture material builder replaces a uniform body fill")
 model.prims[1].decal = false
@@ -179,6 +571,28 @@ local uvS,uvT=Renderer.callbackTextureCoordinateScale({textures={
 }}, {tex=1,sampler={shifts=0,shiftt=1},textureScale={1,1}}, 2)
 ok(math.abs(uvS-0.125)<0.000001 and math.abs(uvT-0.5)<0.000001,
   "callback texture replacement preserves raw N64 S/T across texture size and shift changes")
+local arenaPrimaryS,arenaPrimaryT=Renderer.callbackTextureCoordinateScale({
+  textures={[15]={w=32,h=32},[16]={w=32,h=32}},
+},{tex=0x10000,sampler={shifts=2,shiftt=2}},15,
+  {shifts=2,shiftt=2})
+local arenaDetailS,arenaDetailT=Renderer.callbackTextureCoordinateScale({
+  textures={[15]={w=32,h=32},[16]={w=32,h=32}},
+},{tex=0x10000,sampler={shifts=2,shiftt=2}},16,
+  {shifts=15,shiftt=15})
+ok(arenaPrimaryS==1 and arenaPrimaryT==1
+    and arenaDetailS==8 and arenaDetailT==8,
+  "phase-5 TEXEL0 mesh coordinates preserve independent TEXEL1 tile shifts")
+local centrePrimaryS,centrePrimaryT=Renderer.callbackTextureCoordinateScale({
+  textures={[20]={w=32,h=32},[21]={w=64,h=64}},
+},{tex=0x10000,sampler={shifts=0,shiftt=0}},20,
+  {shifts=0,shiftt=0})
+local centreMaskS,centreMaskT=Renderer.callbackTextureCoordinateScale({
+  textures={[20]={w=32,h=32},[21]={w=64,h=64}},
+},{tex=0x10000,sampler={shifts=0,shiftt=0}},21,
+  {shifts=1,shiftt=1})
+ok(centrePrimaryS==1 and centrePrimaryT==1
+    and centreMaskS==0.25 and centreMaskT==0.25,
+  "arena centre gravel and Poké Ball mask retain separate ROM coordinate rates")
 model.prims[1].decal = true
 ok(not rig:callbackUsesMaterialFx(model.prims[1]),
   "dual-texture material FX does not cover an alpha face decal")
@@ -214,6 +628,13 @@ ok(movedBounds.cx ~= stableCamera.bounds.cx, "animated pose can move independent
 ok(math.abs(stableCamera.bounds.cx - cameraSquare.bounds.cx) < 0.000001,
   "camera framing stays locked to bind pose instead of chasing animation")
 rig:setAnimation("idle", true)
+rig.displayTime = 1.25
+rig.time = .25
+ok(rig:handlerValues().materialFrame == 75,
+  "shared callback display counter advances independently of animation time")
+rig:setAnimation("idle", true)
+ok(rig:handlerValues().materialFrame == 75,
+  "shared callback display counter does not reset when animations change")
 ok(cameraSquare.near > 0 and cameraSquare.far > cameraSquare.near, "camera clip range valid")
 local orient = Renderer.modelMatrix(0, 0, 1, 0, 5, 0, true)
 ok(math.abs(orient[6] + 1) < 0.000001 and math.abs(orient[8] - 5) < 0.000001, "Stadium model matrix flips vertical axis around model center")
@@ -223,12 +644,11 @@ local billboardUniforms = {}
 local billboardShader = { send = function(_, name, value)
   billboardUniforms[name] = value
 end }
-local billboardRows = {}
-for row = 1, 5 do
-  local y = 200 - (row - 1) * 50
-  billboardRows[(row-1)*2+1] = {-50,y,0}
-  billboardRows[(row-1)*2+2] = {50,y,0}
-end
+local billboardRows = {
+  {-50,200,0}, {-50,150,0}, {50,150,0}, {50,200,0},
+  {-50,100,0}, {50,100,0}, {-50,50,0}, {50,50,0},
+  {-50,0,0}, {50,0,0},
+}
 Renderer.sendFlameBillboard(billboardShader,
   { prim={effect="fire"}, rows=billboardRows },
   Renderer.identity(), Renderer.identity())
@@ -241,6 +661,21 @@ ok(billboardUniforms.billboardCenter[1] == 0
     and billboardUniforms.billboardRight[1] == 1
     and billboardUniforms.billboardUp[2] == 1,
   "shared flame object derives camera-facing axes from the view transform")
+
+local gastlyModel=Renderer.modelMatrix(math.pi/2,0,2,0,0,0,false)
+local gastlyAxes=Renderer.cameraFacingAxes(Renderer.identity(),gastlyModel)
+local gastlyGeometry=Renderer.koffingGasGeometryState(
+  {absolute=true,x=0,y=0,z=0,sx=20,sy=20,sz=20}, {0,0,0}, nil,32,32,
+  gastlyAxes)
+local left,right=gastlyGeometry.vertices[1],gastlyGeometry.vertices[2]
+ok(math.abs(left[3]-right[3])>199.999 and math.abs(left[1]-right[1])<0.000001,
+  "Gastly gas rotates into model-local camera axes instead of turning edge-on")
+local normalRuntime=Renderer.dynamicObjectRuntime({species=92,variant="normal"},{})
+local shinyRuntime=Renderer.dynamicObjectRuntime({species=92,variant="shiny"},{})
+ok(normalRuntime.dynamicObjectGastlyAlternate==false
+    and shinyRuntime.dynamicObjectGastlyAlternate==true
+    and shinyRuntime.modelAlphaByte==255,
+  "Gastly gas inherits the normal/shiny model state and owning model alpha")
 
 rig:setHandlerRuntime({ selector = 4, rangeValue = 3000 })
 rig:updatePose(true)
@@ -362,7 +797,7 @@ function g.setShader(v) calls[#calls + 1] = { "shader", v } end
 function g.setBlendMode(a, b) calls[#calls + 1] = { "blend", a, b } end
 function g.setMeshCullMode(v) calls[#calls + 1] = { "cull", v } end
 function g.draw(v, ...) calls[#calls + 1] = { "draw", v and v.id or "canvas", ... } end
-function g.setColor(...) end
+function g.setColor(...) calls[#calls + 1] = { "color", ... } end
 
 local gpuModel = assert(Pack.parse(bytes))
 local p1 = gpuModel.prims[1]
@@ -380,6 +815,18 @@ ok(normalColor[9] == 1 and normalColor[10] == 1
   "lit normal geometry reaches the shader with neutral vertex colour")
 local canvas, renderErr = gpuRig:renderToCanvas(64, 64)
 ok(canvas ~= nil, renderErr or "GPU canvas")
+local canvasNeutralColor, canvasFirstDraw
+for index, call in ipairs(calls) do
+  if call[1] == "color" and call[2] == 1 and call[3] == 1
+      and call[4] == 1 and call[5] == 1 then
+    canvasNeutralColor = canvasNeutralColor or index
+  end
+  if call[1] == "draw" then canvasFirstDraw = canvasFirstDraw or index end
+end
+ok(canvasNeutralColor and canvasFirstDraw and canvasNeutralColor < canvasFirstDraw,
+  "private viewer rendering clears global draw colour before consuming ROM vertex SHADE")
+ok(gpuRig.shader.uniforms.effectIntensityMode == 2,
+  "shared flame selects the IA8 intensity-and-alpha shader path")
 ok(gpuRig.shader.uniforms.celShadingEnabled == 0,
   "Stadium shader style leaves source lighting continuous")
 local liveShaderStyle = "cel"
@@ -421,15 +868,23 @@ local ident={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}
 local sceneOK,sceneErr=gpuRig:drawScene("opaque",ident,{viewProjection=ident})
 ok(sceneOK,sceneErr or "shared scene draw")
 local sceneCanvas,sceneDraws,sceneDepthContract=false,0,false
-for _,call in ipairs(calls) do
+local sceneNeutralColor,sceneFirstDraw
+for index,call in ipairs(calls) do
   if call[1]=="canvas" then sceneCanvas=true end
-  if call[1]=="draw" and type(call[2])=="number" then sceneDraws=sceneDraws+1 end
+  if call[1]=="color" and call[2]==1 and call[3]==1
+      and call[4]==1 and call[5]==1 then sceneNeutralColor=sceneNeutralColor or index end
+  if call[1]=="draw" and type(call[2])=="number" then
+    sceneDraws=sceneDraws+1
+    sceneFirstDraw=sceneFirstDraw or index
+  end
   if call[1]=="depth" and call[2]==RenderContract.MODEL_DEPTH_COMPARE then
     sceneDepthContract=true
   end
 end
 ok(not sceneCanvas,"shared scene draw never binds a private actor canvas")
 ok(sceneDraws==1,"shared opaque pass excludes additive attached effects")
+ok(sceneNeutralColor and sceneFirstDraw and sceneNeutralColor < sceneFirstDraw,
+  "shared arena rendering clears global draw colour before consuming ROM vertex SHADE")
 ok(sceneDepthContract,"battle scene uses the shared authored eye and face depth contract")
 calls = {}
 local drawOk, drawErr = gpuRig:draw(4, 8, 64, 64, { supersample = 2, msaa = 4, zoom = 1.5, panX = 0.2, panY = -0.1 })

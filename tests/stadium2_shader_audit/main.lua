@@ -15,12 +15,16 @@ local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
 
 function love.load()
   local ok, err = Renderer.compileShaderAudit()
-  if ok then
-    print("shader parity audit: lit=compiled fallback=unused failures=0")
+  local mobileOK, mobileErr = Renderer.compileMobileShaderAudit()
+  if ok and mobileOK then
+    print("shader parity audit: lit=compiled mobile-simple=compiled fallback=unused failures=0")
     love.event.quit(0)
   else
-    print("shader parity audit: lit=rejected fallback=active failures=1")
-    print("FAIL " .. tostring(err))
+    print("shader parity audit: lit=" .. (ok and "compiled" or "rejected")
+      .. " mobile-simple=" .. (mobileOK and "compiled" or "rejected")
+      .. " fallback=active failures=1")
+    if not ok then print("FAIL lit: " .. tostring(err)) end
+    if not mobileOK then print("FAIL mobile-simple: " .. tostring(mobileErr)) end
     love.event.quit(1)
   end
 end

@@ -49,24 +49,11 @@ check("battle scene uses original AA expansion",contains(scene,"AA.expand(pixelW
 check("battle scene has no watercolor canvas scaling",not contains(scene,"watercolorRenderFactor"),nil,true)
 check("shader uses current canvas dimensions",contains(renderer,"love_ScreenSize.y"),nil,true)
 check("shader reference height is 1080",contains(renderer,"1080.0/max(1.0,love_ScreenSize.y)"),nil,true)
-check("shader has exact high-resolution gate",contains(renderer,"if(watercolorScreenScale<=1.0001){"),nil,true)
-check("small-resolution path uses virtual coordinates",contains(renderer,"vec2 watercolorCoords=screen_coords.xy*watercolorScreenScale;"),nil,true)
-
-local legacy=[=[float paperNoise=fract(sin(dot(floor(screen_coords.xy*0.5),
-      vec2(12.9898,78.233)))*43758.5453)-0.5;
-    float broadWash=sin(screen_coords.x*0.021+screen_coords.y*0.017)*0.5
-      +sin(screen_coords.x*0.009-screen_coords.y*0.013)*0.5;
-    float pigmentVariation=1.0+paperNoise*0.075+broadWash*0.025;
-    float pigmentGray=dot(shaded,vec3(0.299,0.587,0.114));
-    vec3 watercolor=mix(vec3(pigmentGray),shaded,0.82)*pigmentVariation;
-    watercolor=mix(vec3(1.0,0.965,0.885),watercolor,0.94);
-    float ink=1.0-smoothstep(0.025,0.15,abs(vEyeNormal.z));
-    float hatch=smoothstep(0.58,0.76,
-      fract((screen_coords.x+screen_coords.y)*0.115+paperNoise*0.35));
-    float inkMark=ink*(0.22+0.78*hatch);
-    watercolor*=mix(1.0,0.18,inkMark);
-    shaded=mix(shaded,watercolor,mangaAmount);]=]
-check("1080p-plus branch retains legacy watercolor math",contains(renderer,legacy),nil,true)
+check("watercolor runs only in manga mode",contains(renderer,"if (mangaAmount > 0.001)"),nil,true)
+check("small-resolution path uses virtual coordinates",
+  contains(renderer,"screen_coords.xy*watercolorScreenScale;"),nil,true)
+check("watercolor precision follows mobile shader tier",
+  contains(renderer,"STADIUM_FLOAT float watercolorScreenScale="),nil,true)
 
 check("1080p scale unchanged",near(scaleFor(1080),1),scaleFor(1080),1)
 check("1440p scale unchanged",near(scaleFor(1440),1),scaleFor(1440),1)

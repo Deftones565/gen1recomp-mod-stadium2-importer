@@ -43,17 +43,12 @@ function Selector.resolve(context)
   local ctx=type(context)=="table" and context or {}
   if tonumber(ctx.generation)~=2 then return nil,"not-gen2" end
 
-  -- battle.started.kind is the engine's authoritative distinction.  Wild
-  -- encounters use Stadium 2's two general-purpose fields: the park outdoors
-  -- and the indoor field in caves/buildings.  This keeps Silver battles in the
-  -- extracted Stadium presentation instead of falling back to the small
-  -- classic platforms merely because the opponent has no trainer.
+  -- battle.started.kind is the engine's authoritative distinction. Stadium
+  -- fields are presentation for trainer encounters only: every wild path
+  -- (grass, cave, surf, fishing, roaming and scripted wild Pokémon) retains
+  -- the established classic battle scene, regardless of its current map.
   local battleKind=key(ctx.kind)
-  if battleKind=="WILD" then
-    if ctx.outside==true then return 28,"wild:outdoor" end
-    if ctx.outside==false then return 27,"wild:indoor" end
-    return 28,"wild:outdoor-default"
-  end
+  if battleKind=="WILD" then return nil,"wild:classic" end
   if battleKind~="TRAINER" then return nil,"unsupported-kind:classic" end
 
   local mapId=key(ctx.mapId)

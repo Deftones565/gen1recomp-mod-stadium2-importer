@@ -8,15 +8,31 @@ end
 
 package.loaded["mods.STADIUM2_IMPORTER.lib.importer"] = nil
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
-local models, battle, shader = true, true, "stadium"
+local models, battle, shader, rapidashCut = true, true, "stadium", true
+local betaArena, betaTod = false, false
 Importer.bind({ options={ get=function(_, key)
   if key == "stadium2_models" then return models end
   if key == "stadium2_battle" then return battle end
   if key == "stadium2_shader" then return shader end
+  if key == "stadium2_rapidash_cut_fx" then return rapidashCut end
+  if key == "stadium2_beta_arena_test" then return betaArena end
+  if key == "stadium2_beta_arena_tod" then return betaTod end
 end } })
 ok(Importer.modelsEnabled(), "Stadium 2 models default/ON state is enabled")
 ok(Importer.battleEnabled(), "Stadium 2 carried 3D battle default/ON state is enabled")
 ok(Importer.shaderStyle() == "stadium", "Stadium lighting is the default model shader")
+rapidashCut=false
+ok(not Importer.rapidashCutEffectEnabled(), "cut Rapidash particles follow the OFF mod option")
+rapidashCut=true
+ok(Importer.rapidashCutEffectEnabled(), "cut Rapidash particles default ON")
+ok(not Importer.betaArenaEnabled(), "unfinished Stadium fields remain opt-in")
+betaArena=true
+ok(Importer.betaArenaEnabled(), "beta arena setting reaches the battle adapters")
+betaArena=false
+ok(not Importer.betaArenaTimeOfDayEnabled(), "beta Park time-of-day remains independently opt-in")
+betaTod=true
+ok(Importer.betaArenaTimeOfDayEnabled(), "beta Park time-of-day setting reaches arena lighting")
+betaTod=false
 shader = "cel"
 ok(Importer.shaderStyle() == "cel", "cel-shaded model option reaches the renderer configuration")
 shader = "invalid"
@@ -38,9 +54,23 @@ ok(main:find('key="stadium2_battle"', 1, true) ~= nil, "importer exposes the Sta
 ok(main:find('key="stadium2_shader"', 1, true) ~= nil
     and main:find('{"WATERCOLOR MANGA","cel"}', 1, true) ~= nil,
   "importer exposes Stadium and watercolor-manga model shader choices")
+ok(main:find('key="stadium2_rapidash_cut_fx"',1,true)~=nil
+    and main:find('label="RAPIDASH CUT PARTICLES"',1,true)~=nil
+    and main:find('type="toggle", default=true',1,true)~=nil,
+  "importer exposes the opt-in Rapidash cut-particle option")
+ok(main:find('key="stadium2_beta_arena_test"',1,true)~=nil
+    and main:find('label="BETA CONTEXT ARENAS"',1,true)~=nil
+    and main:find('type="toggle", default=false',1,true)~=nil,
+  "importer exposes contextual Gen 2 arenas as a default-OFF beta option")
+ok(main:find('key="stadium2_beta_arena_tod"',1,true)~=nil
+    and main:find('label="BETA PARK TIME OF DAY"',1,true)~=nil,
+  "importer exposes Park time-of-day lighting as a separate beta option")
 ok(main:find('label="STADIUM 2 BATTLE"', 1, true) ~= nil, "battle option uses the requested Stadium label")
 ok(not main:find("lib.battle_stage", 1, true), "stage wiring stays outside the bootstrap")
 ok(not main:find("RENDER QUALITY", 1, true) and not main:find("TEXTURE FILTERING", 1, true), "no unrelated Stadium renderer options are exposed")
+ok(not main:find("stadium2_hud_panels",1,true)
+    and not main:find("DRAW HUD PANELS",1,true),
+  "Stadium glass panels are presentation chrome rather than a disableable option")
 ok(main:find('render_pipelines:register("stadium2_battle_clock"', 1, true) ~= nil,
   "battle clock uses the real-time presentation update path")
 ok(not main:find("Importer.step()\n    Battle.update(dt)", 1, true),

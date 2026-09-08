@@ -11,7 +11,7 @@ if not unownOk then
   end
 end
 
-local calls={pic=0,wide=0,mouse=0,wheel=0,objects=0,scene=0,hud=0,modal=0,composite=0,lastRunner=nil}
+local calls={pic=0,wide=0,mouse=0,wheel=0,objects=0,scene=0,hud=0,modal=0,composite=0,lastRunner=nil,layerOpts=nil}
 local BattleState={
   drawPic=function() calls.pic=calls.pic+1 end,
   drawWidescreen=function() calls.wide=calls.wide+1 end,
@@ -50,10 +50,21 @@ Importer.newRenderer=function()
 end
 
 local Hud=require("mods.STADIUM2_IMPORTER.lib.battle_hud")
-Hud.layer=function(draw) if draw then draw() end; return {} end
+Hud.layer=function(draw,opts) calls.layerOpts=opts; if draw then draw() end; return {} end
 Hud.hudLayer=function(draw) if draw then draw() end; return {} end
 Hud.modalLayer=function(draw) calls.modal=calls.modal+1; if draw then draw() end; return {} end
 Hud.composite=function() calls.composite=calls.composite+1; return true end
+
+local statusHook
+local UIOwnership=require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
+UIOwnership.resetForTests()
+UIOwnership.bind({hooks={wrap=function(_,name,callback)
+  if name=="battle.status_hud_visible" then statusHook=callback end
+end}},function(candidate) return candidate and candidate.__stadiumActive==true end)
+function BattleState:statusHUDVisible()
+  return statusHook(function() return true end,self)~=false
+end
+function BattleState:bottomUIVisible() return true end
 
 package.loaded["mods.STADIUM2_IMPORTER.lib.gen2_battle"]=nil
 local Gen2=require("mods.STADIUM2_IMPORTER.lib.gen2_battle")
@@ -65,15 +76,33 @@ local battle={player=mon,data={pokemon={PIKACHU={dex=25}}},
   volatile=function() return {} end}
 assert(Gen2.ensure(battle))
 local screen=setmetatable({battle=battle,game={data=battle.data},
+  __stadiumActive=true,
   activeMon=function(_,side) return side=="player" and mon or nil end,
   showPlayerTrainer=false,showEnemyTrainer=false,
   picHidden={player=false,enemy=false},animPicState=function() return nil end,
   drawScene=function() calls.scene=calls.scene+1 end,phase="resolving"}, {__index=BattleState})
 
 screen:drawPic(mon,true)
-assert(calls.pic==0,"native Pokemon pic ran before the first owned 3D frame")
+assert(calls.pic==1,"native Pokemon pic did not fail open before the first valid 3D frame")
+local ownedScene=Gen2.currentScene()
+ownedScene.readyFrame=true
+ownedScene.width,ownedScene.height=1280,720
+ownedScene.hudBox={lx=0,ly=0,scale=1}
+ownedScene.presentCanvas={getWidth=function() return 1280 end,getHeight=function() return 720 end}
 screen:drawWidescreen(1280,720)
 assert(calls.wide==0,"native widescreen battle ran during an owned session")
+assert(calls.layerOpts and calls.layerOpts.crystalMovePane==false,
+  "non-Crystal game unexpectedly enabled the Crystal move pane")
+
+local GameVersion=require("src.core.GameVersion")
+local priorVersion=GameVersion.get()
+GameVersion.set("crystal")
+screen.phase="moves"
+screen:drawWidescreen(1280,720)
+assert(calls.layerOpts and calls.layerOpts.crystalMovePane==true,
+  "Crystal game identity did not enable its raised move-info pane")
+GameVersion.set(priorVersion)
+screen.phase="resolving"
 screen.anim={}
 screen.animView=View
 screen:drawWidescreen(1280,720)
@@ -125,4 +154,4 @@ assert(Camera.state().zoomGoal<1,"battle wheel did not zoom the owned camera")
 assert(calls.wheel==0,"claimed battle wheel leaked into the overworld zoom")
 
 Gen2.finish(nil,true)
-print("11 checks passed (Stadium 2 permanent Gen 2 hooks and controls)")
+print("13 checks passed (Stadium 2 permanent Gen 2 hooks and controls)")

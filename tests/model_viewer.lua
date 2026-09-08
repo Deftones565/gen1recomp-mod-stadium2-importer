@@ -60,9 +60,12 @@ local function viewerLayout(width, height)
   local viewport = math.max(64, math.min(width - margin * 2, availableHeight))
   local vx = floor((width - viewport) * 0.5)
   local vy = header + margin
+  local cutWidth=math.min(width-margin*4,150*textScale)
   return {
     width = width, height = height, margin = margin, textScale = textScale,
     header = header, footer = footer, viewport = viewport, vx = vx, vy = vy,
+    cutButton={x=width-margin-cutWidth,y=margin+8*textScale,
+      width=cutWidth,height=25*textScale},
   }
 end
 
@@ -93,6 +96,8 @@ function Viewer.new(game, importer)
     panX = 0,
     panY = 0,
     paused = false,
+    rapidashCutEffect = not importer.rapidashCutEffectEnabled
+      or importer.rapidashCutEffectEnabled() ~= false,
     dragMode = nil,
     dragX = nil,
     dragY = nil,
@@ -188,6 +193,7 @@ function Viewer:loadEntry()
     anisotropy = 8,
     ambient = { 0.62, 0.62, 0.62 },
     diffuse = { 0.62, 0.62, 0.62 },
+    rapidashCutEffect=self.rapidashCutEffect,
   })
   if not rig then
     self.error = err or "Unable to load model"
@@ -215,6 +221,14 @@ end
 
 function Viewer:toggleVariant()
   return self:setEntry(encodeEntry(self.species, self.variant == "shiny" and "normal" or "shiny"))
+end
+
+function Viewer:toggleRapidashCutEffect()
+  self.rapidashCutEffect=not self.rapidashCutEffect
+  if self.rig and self.rig.setRapidashCutEffect then
+    self.rig:setRapidashCutEffect(self.rapidashCutEffect)
+  end
+  return self.rapidashCutEffect
 end
 
 function Viewer:animationCount()
@@ -251,6 +265,8 @@ function Viewer:onKeyPressed(key)
     self:nextAnimation()
   elseif key == "space" then
     self.paused = not self.paused
+  elseif key == "f" then
+    self:toggleRapidashCutEffect()
   elseif key == "=" or key == "+" or key == "kp+" then
     self:zoomBy(1)
   elseif key == "-" or key == "_" or key == "kp-" then
@@ -274,6 +290,13 @@ end
 function Viewer:onMousePressed(x, y, button)
   local sx, sy = self:windowToSurface(x, y)
   local l = self:layout()
+  local cut=l.cutButton
+  if button==1 and self.species==78 and cut
+      and sx>=cut.x and sy>=cut.y
+      and sx<=cut.x+cut.width and sy<=cut.y+cut.height then
+    self:toggleRapidashCutEffect()
+    return true
+  end
   if sx < l.vx or sy < l.vy or sx > l.vx + l.viewport or sy > l.vy + l.viewport then return false end
   if button == 1 then
     self.dragMode = "pan"
@@ -408,6 +431,14 @@ function Viewer:draw()
   scaledPrintf(g, "POKEMON STADIUM 2 MODEL VIEWER", margin * 2, margin + 5 * ts, w - margin * 4, "center", ts)
   g.setColor(variantColor)
   scaledPrintf(g, ("SPECIES %03d   %s   %03d/%03d"):format(self.species, variantLabel, self.entry, Viewer.ENTRIES), margin * 2, margin + 20 * ts, w - margin * 4, "center", ts)
+  if self.species==78 then
+    local cut=layout.cutButton
+    g.setColor(self.rapidashCutEffect and {0.22,0.55,0.32,1} or {0.18,0.2,0.27,1})
+    g.rectangle("fill",cut.x,cut.y,cut.width,cut.height,4*ts,4*ts)
+    g.setColor(0.88,0.91,0.98,1)
+    scaledPrintf(g,"CUT PARTICLES: "..(self.rapidashCutEffect and "ON" or "OFF"),
+      cut.x,cut.y+6*ts,cut.width,"center",ts)
+  end
 
   local infoY = h - layout.footer + 5 * ts
   if self.error then
@@ -425,7 +456,8 @@ function Viewer:draw()
   end
 
   g.setColor(0.78, 0.81, 0.88, 1)
-  scaledPrintf(g, "LEFT / RIGHT model    S shiny    Q / E or PGUP / PGDN animation    SPACE pause    R reset", margin * 2, h - margin - 29 * ts, w - margin * 4, "center", ts)
+  local cutLabel=self.rapidashCutEffect and "ON" or "OFF"
+  scaledPrintf(g, "LEFT / RIGHT model    S shiny    Q / E animation    F Rapidash cut FX: "..cutLabel.."    SPACE pause    R reset", margin * 2, h - margin - 29 * ts, w - margin * 4, "center", ts)
   scaledPrintf(g, "MOUSE WHEEL or +/- zoom    LEFT DRAG move    RIGHT DRAG orbit    HOME / END first / last    ESC close", margin * 2, h - margin - 14 * ts, w - margin * 4, "center", ts)
   if g.setLineWidth then g.setLineWidth(1) end
   g.setColor(1, 1, 1, 1)
