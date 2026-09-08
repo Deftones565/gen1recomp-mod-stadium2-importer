@@ -28,6 +28,10 @@ function StadiumFragment.setBase(value)
   BASE = assert(tonumber(value), "fragment base must be numeric")
 end
 
+function StadiumFragment.getBase()
+  return BASE
+end
+
 local CMD_SIZES = {
   [0x00] = 0x08, [0x01] = 0x04, [0x02] = 0x08, [0x03] = 0x08, [0x04] = 0x04,
   [0x05] = 0x04, [0x06] = 0x04, [0x07] = 0x08, [0x08] = 0x0C, [0x09] = 0x04,
@@ -597,8 +601,15 @@ function Model:runDL(o, bone, depth)
       local n = floor(w0 / 0x1000) % 256
       local v0 = floor((w0 % 0x1000) / 2) - n
       local a = f:off(w1)
-      if a then
-        for i = 0, n - 1 do
+      if a and a >= 0 and a < #f.d then
+        local available = math.max(0, floor((#f.d - a) / 0x10))
+        local count = math.min(n, available)
+        if count < n then
+          self.warnings[#self.warnings + 1] =
+            ("truncated vertex load at 0x%X: requested %d, available %d")
+              :format(a, n, count)
+        end
+        for i = 0, count - 1 do
           local p = a + i * 0x10
           local slot = v0 + i
           if slot >= 0 and slot < 64 then
@@ -608,6 +619,10 @@ function Model:runDL(o, bone, depth)
                            f:u8(p + 15), bone }
           end
         end
+      elseif a then
+        self.warnings[#self.warnings + 1] =
+          ("vertex pointer 0x%08X is outside the resource module")
+            :format(w1)
       end
     elseif op == 0xD9 then                            
       -- F3DEX2 stores a 24-bit keep mask in w0 and the bits to set in w1.
@@ -697,14 +712,14 @@ function Model:bakePhase5Geometry()
   local f = self.f
   local seen = {}
   for _, node in ipairs(self.fx) do
-    if (node.handler == 0x81000140 or node.handler == 0x81000030
+    if (node.handler == 0x81000140 or node.handler == 0x81000138 or node.handler == 0x81000030
         or node.handler == 0x81000040 or node.handler == 0x81000070) and node.arg then
       local item = node.handler == 0x81000140 and f:ptr(node.arg) or nil
       local staticPhase5 = item and f:u32(item + 4) == 0
       -- The static 0x140 path only changes render state. Its argument is not
       -- a display-list table; scanning 0x400 bytes crosses into adjacent data
       -- and manufactured hundreds of triangles for Misdreavus and its peers.
-      if node.handler == 0x81000140 then
+      if node.handler == 0x81000140 or node.handler == 0x81000138 then
         -- func_810024E0 only emits render-state commands before delegating
         -- texture loading to func_81001F14. item[4] controls dynamic state;
         -- it is not a geometry pointer or display-list table.
@@ -1003,26 +1018,40 @@ local function decodeTexture(f, tex, tlut, palette)
   local d = f.d
   local out = {}
 
+  -- Callback resources are dynamically linked by Stadium. If a corrupt or
+  -- unsupported descriptor points outside its owning module, keep the model
+  -- drawable instead of indexing nil bytes and terminating the battle.
+  local function sample(offset)
+    return (offset and offset >= 0 and offset < #d) and byte(d, offset + 1) or 0
+  end
+
   local function nibble(i)
-    local v = byte(d, addr + floor(i / 2) + 1)
+    local v = sample(addr + floor(i / 2))
     if i % 2 == 1 then return v % 16 end
     return floor(v / 16)
   end
 
   if fmt == 0 and siz == 2 then                       
     for i = 0, n - 1 do
-      local a, b = byte(d, addr + i * 2 + 1, addr + i * 2 + 2)
+      local a, b = sample(addr + i * 2), sample(addr + i * 2 + 1)
       out[i + 1] = char(rgba5551(a * 256 + b))
     end
   elseif fmt == 0 and siz == 3 then                   
-    return w, h, sub(d, addr + 1, addr + n * 4)
+    local rgba = sub(d, addr + 1, addr + n * 4)
+    local expected = n * 4
+    if #rgba < expected then
+      rgba = rgba .. string.rep("\255\0\255\255",
+        math.ceil((expected - #rgba) / 4))
+      rgba = sub(rgba, 1, expected)
+    end
+    return w, h, rgba
   elseif fmt == 2 then                                
     local pal, np = {}, 0
     if tlut ~= nil and tlut.data ~= nil then
       local base = tlut.data + (siz == 0 and palette * 16 * 2 or 0)
       np = (siz == 0) and 16 or 256
       for i = 0, np - 1 do
-        local a, b = byte(d, base + i * 2 + 1, base + i * 2 + 2)
+        local a, b = sample(base + i * 2), sample(base + i * 2 + 1)
         pal[i + 1] = char(rgba5551(a * 256 + b))
       end
     end
@@ -1031,17 +1060,17 @@ local function decodeTexture(f, tex, tlut, palette)
       for i = 1, np do pal[i] = "\255\0\255\255" end
     end
     for i = 0, n - 1 do
-      local idx = (siz == 0) and nibble(i) or byte(d, addr + i + 1)
+      local idx = (siz == 0) and nibble(i) or sample(addr + i)
       out[i + 1] = pal[idx % np + 1]
     end
   elseif fmt == 3 then                                
     for i = 0, n - 1 do
       local l, a
       if siz == 2 then
-        local x, y = byte(d, addr + i * 2 + 1, addr + i * 2 + 2)
+        local x, y = sample(addr + i * 2), sample(addr + i * 2 + 1)
         l, a = x, y
       elseif siz == 1 then
-        local v = byte(d, addr + i + 1)
+        local v = sample(addr + i)
         l, a = floor(v / 16) * 17, v % 16 * 17
       else
         local v = nibble(i)
@@ -1051,7 +1080,7 @@ local function decodeTexture(f, tex, tlut, palette)
     end
   elseif fmt == 4 then                                
     for i = 0, n - 1 do
-      local l = (siz == 1) and byte(d, addr + i + 1) or nibble(i) * 17
+      local l = (siz == 1) and sample(addr + i) or nibble(i) * 17
       out[i + 1] = char(l, l, l, 255)
     end
   else
@@ -1061,6 +1090,98 @@ local function decodeTexture(f, tex, tlut, palette)
 end
 
 StadiumFragment.decodeTexture = decodeTexture
+
+-- Decode standalone F3DEX2 display lists from a relocated FRAGMENT module.
+-- Battle FX resource modules do not contain Pokemon model roots, but their
+-- kind-2 shape exports use the same vertex/display-list format. Keeping this
+-- path on Model:runDL also preserves the persistent 64-entry N64 vertex cache.
+function StadiumFragment.extractDisplayLists(data,draws,name,sourceBase)
+  local previousBase=BASE
+  BASE=tonumber(sourceBase) or 0x8FF00000
+  local frag,err=StadiumFragment.open(data,name or "<battle-fx-resource>")
+  if not frag then BASE=previousBase; return nil,err end
+  local m=setmetatable({
+    f=frag,species=0,textures={},tluts={},bones={{parent=-1,boneId=0,chan=-1,
+      t={0,0,0},r={0,0,0},s={1,1,1}}},
+    prims={},primsByKey={},vbuf={},geometryMode=0,drawSerial=0,
+    curTex=-1,curTlut=-1,curMat=nil,curTexAnim=-1,curNodeColor=nil,
+    warnings={},options={},
+  },Model)
+  local textures,textureByKey={},{ }
+  local function register(spec)
+    local key=table.concat({spec.pointer,spec.w,spec.h,spec.format,spec.size},":")
+    local slot=textureByKey[key]
+    if slot~=nil then return slot end
+    local offset=spec.pointer-BASE
+    local w,h,rgba=decodeTexture(frag,{w=spec.w,h=spec.h,fmt=spec.format,
+      siz=spec.size,data=offset},nil,0)
+    slot=#textures
+    textureByKey[key]=slot
+    textures[slot+1]={index=-1,w=w,h=h,rgba=rgba,format=spec.format,
+      size=spec.size,sourcePointer=spec.pointer,callback=true}
+    m.textures[slot+1]={w=w,h=h,fmt=spec.format,siz=spec.size,data=offset}
+    return slot
+  end
+  for _,draw in ipairs(draws or {}) do
+    local slots={}
+    for _,spec in ipairs(draw.textures or {}) do slots[#slots+1]=register(spec) end
+    local firstPrim=#m.prims+1
+    m.curTex=slots[1] or -1
+    m.curMat=draw.materialOffset
+    m.geometryMode=tonumber(draw.geometryMode) or m.geometryMode
+    m:runDL(draw.displayListOffset,0,0)
+    for index=firstPrim,#m.prims do
+      local prim=m.prims[index]
+      prim.fxFrames=slots
+      prim.battleFxMaterial=draw.material
+      prim.battleFxController=draw.controller
+      prim.battleFxState=draw.state
+      prim.battleFxRenderState=draw.renderState
+      prim.battleFxSampler=draw.textures and draw.textures[1]
+        and draw.textures[1].sampler or nil
+    end
+  end
+  local prims={}
+  for _,p in ipairs(m.prims) do
+    if p.ntris>0 then
+      local texture=textures[(p.tex or -1)+1]
+      local tw,th=texture and texture.w or 32,texture and texture.h or 32
+      local pos,uv,nrm,color,skin,idx={},{},{},{},{},{}
+      for i=1,p.nverts do
+        local v=p.verts[i]
+        pos[i*3-2],pos[i*3-1],pos[i*3]=v[1],v[2],v[3]
+        uv[i*2-1],uv[i*2]=(v[4]/32)/tw,(v[5]/32)/th
+        nrm[i*3-2],nrm[i*3-1],nrm[i*3]=v[6]/127,v[7]/127,v[8]/127
+        color[i*4-3]=(v[6]<0 and v[6]+256 or v[6])
+        color[i*4-2]=(v[7]<0 and v[7]+256 or v[7])
+        color[i*4-1]=(v[8]<0 and v[8]+256 or v[8])
+        color[i*4]=v[9]
+        skin[i]=0
+      end
+      local n=0
+      for _,tri in ipairs(p.tris) do
+        idx[n+1],idx[n+2],idx[n+3]=tri[1],tri[2],tri[3]; n=n+3
+      end
+      local semantics=VertexSemantics.classify(nrm)
+      local material=p.battleFxMaterial or {
+        primitiveColor={1,1,1,1},environmentColor={1,1,1,1},textureEnabled=true}
+      prims[#prims+1]={
+        tex=p.tex,cull=floor((p.cull or 0)/0x400)%2==1,
+        geometryMode=p.cull or 0,lighting=semantics=="normal",
+        vertexSemantics=semantics,color=color,texAnim=-1,texMap=nil,
+        fxFrames=p.fxFrames,sampler=p.battleFxSampler,
+        material=material,battleFxController=p.battleFxController,
+        battleFxState=p.battleFxState,battleFxRenderState=p.battleFxRenderState,
+        blend="alpha",alphaMode="blend",decal=false,
+        pos=pos,uv=uv,nrm=nrm,skin=skin,nverts=p.nverts,idx=idx,nidx=n,
+      }
+    end
+  end
+  BASE=previousBase
+  return {species=0,staticPose=false,file=name or "battle-fx",rootScale={1,1,1},
+    bones=m.bones,textures=textures,prims=prims,anims={},auxAnims={},fx={},
+    moveAnim={},contextAnim={},warnings=m.warnings}
+end
 
 
 local function compress(values, n, nd)
@@ -1338,7 +1459,7 @@ function StadiumFragment.extract(data, name, options)
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 4 + i * 4), 64, 32, 0, 2) end
       elseif handler == 0x81000070 then
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 32, 4, 0) end
-      elseif handler == 0x81000140 or handler == 0x81000148 then
+      elseif handler == 0x81000138 or handler == 0x81000140 or handler == 0x81000148 then
         for _, texture in ipairs(Phase5Geometry.textureSpecs(frag.d, BASE, arg)) do
           registerCallback(node, texture.pointer, texture.w, texture.h,
             texture.format, texture.size, texture.sampler, texture.descriptorOffset)
@@ -1348,7 +1469,7 @@ function StadiumFragment.extract(data, name, options)
   end
 
 
-  local callbackTextureBySite, callbackStateBySite = {}, {}
+  local callbackTextureBySite, callbackStateBySite, callbackMaterialBySite = {}, {}, {}
   for _, row in ipairs(handlerTextures) do
     -- Phase-5 callbacks register TEXEL0 followed by TEXEL1.  Mesh UVs are
     -- authored against TEXEL0's render tile; retaining the last registration
@@ -1360,8 +1481,13 @@ function StadiumFragment.extract(data, name, options)
     end
   end
   for _, node in ipairs(m.fx) do
-    if (node.handler == 0x81000140 or node.handler == 0x81000148) and node.arg then
+    if (node.handler == 0x81000138 or node.handler == 0x81000140
+        or node.handler == 0x81000148) and node.arg then
       callbackStateBySite[node.commandOffset] = Phase5Geometry.stateSpec(frag.d, BASE, node.arg)
+      local submissionMode=node.handler==0x81000138 and 0
+        or (node.handler==0x81000148 and 2 or 1)
+      callbackMaterialBySite[node.commandOffset] = Phase5Geometry.materialSpec(
+        frag.d,BASE,node.arg,submissionMode)
     end
   end
 
@@ -1422,7 +1548,8 @@ function StadiumFragment.extract(data, name, options)
       local lighting = vertexSemantics == "normal"
       local callbackOffset, callbackDescriptor = p.callbackOffset,
         p.callbackDescriptor
-      if callbackDescriptor == 0x81000140 or callbackDescriptor == 0x81000148 then
+      if callbackDescriptor == 0x81000138 or callbackDescriptor == 0x81000140
+          or callbackDescriptor == 0x81000148 then
         inheritedPhase5Offset = callbackOffset
         inheritedPhase5Descriptor = callbackDescriptor
       elseif ti >= 0 then
@@ -1487,6 +1614,7 @@ function StadiumFragment.extract(data, name, options)
         blend = (p.callbackDescriptor == 0x81000038 or p.callbackDescriptor == 0x81000068)
           and "add" or "alpha",
         materialOffset = p.mat, callbackOffset = callbackOffset,
+        material = callbackMaterialBySite[callbackOffset],
         nodeColor = p.nodeColor,
         arenaRenderProfile = p.arenaRenderProfile,
         arenaSubmissionClass = p.arenaSubmissionClass,

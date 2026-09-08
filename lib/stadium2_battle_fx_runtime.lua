@@ -1,0 +1,714 @@
+-- Persistent, deterministic Stadium 2 battle-effect runtime.
+--
+-- This layer owns effect and particle lifetime.  ROM decoding, route
+-- selection, motion, attachments, materials, and drawing deliberately stay
+-- outside it.  In particular, a renderer consumes snapshots from this
+-- module; it must never reconstruct the particle list from frame zero.
+local Native = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native")
+local NativeObjects = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native_objects")
+local Lifecycle = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_lifecycle")
+local Material = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_material")
+local Router = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_router")
+local Motion = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_motion")
+
+local Runtime = {}
+Runtime.__index = Runtime
+
+local function integer(value)
+  local number = tonumber(value)
+  if number == nil or number ~= math.floor(number) then return nil end
+  return math.floor(number)
+end
+
+local function vector(value, default)
+  if type(value) ~= "table" then
+    return {default or 0, default or 0, default or 0}
+  end
+  return {
+    tonumber(value[1] or value.x) or default or 0,
+    tonumber(value[2] or value.y) or default or 0,
+    tonumber(value[3] or value.z) or default or 0,
+  }
+end
+
+local function copy(value, seen)
+  if type(value) ~= "table" then return value end
+  seen = seen or {}
+  if seen[value] then return seen[value] end
+  local out = {}
+  seen[value] = out
+  for key, child in pairs(value) do
+    out[copy(key, seen)] = copy(child, seen)
+  end
+  return out
+end
+
+local function copyContext(context)
+  local out = {}
+  for key, value in pairs(type(context) == "table" and context or {}) do
+    out[key] = value
+  end
+  return out
+end
+
+local function orderedLess(a, b)
+  if a.effectId ~= b.effectId then return a.effectId < b.effectId end
+  if a.schedulerIndex ~= b.schedulerIndex then
+    return a.schedulerIndex < b.schedulerIndex
+  end
+  if a.generation ~= b.generation then return a.generation < b.generation end
+  if a.particleIndex ~= b.particleIndex then
+    return a.particleIndex < b.particleIndex
+  end
+  return a.id < b.id
+end
+
+local function warning(runtime, diagnostic)
+  local key = table.concat({tostring(diagnostic.code), tostring(diagnostic.effectId),
+    tostring(diagnostic.programId), tostring(diagnostic.address),
+    tostring(diagnostic.message)}, "\31")
+  runtime._diagnosticKeys = runtime._diagnosticKeys or {}
+  if runtime._diagnosticKeys[key] then return end
+  runtime._diagnosticKeys[key] = true
+  runtime.diagnostics[#runtime.diagnostics + 1] = diagnostic
+  if type(runtime.warn) == "function" then
+    pcall(runtime.warn, diagnostic)
+  end
+end
+
+local function diagnostic(runtime, code, effect, fields)
+  local out = {
+    code = code,
+    severity = "warning",
+    effectId = effect and effect.id or nil,
+    programId = fields and fields.programId or nil,
+    address = fields and fields.address or nil,
+    kind = fields and fields.kind or nil,
+    message = fields and fields.message or code,
+  }
+  if fields then
+    for key, value in pairs(fields) do
+      if out[key] == nil then out[key] = value end
+    end
+  end
+  warning(runtime, out)
+end
+
+local function copyMotionFields(particle, motionState)
+  for _, field in ipairs({"age", "lifetime", "position", "velocity", "rotation", "scale"}) do
+    if motionState[field] ~= nil then
+      particle[field] = copy(motionState[field])
+    elseif field == "lifetime" then
+      particle[field] = nil
+    end
+  end
+  if motionState.alive ~= nil then
+    particle.active = motionState.alive
+    particle.alive = motionState.alive
+  end
+end
+
+local function validateTicks(count)
+  local value = integer(count)
+  if not value or value < 0 then
+    error("battle FX step count must be a non-negative integer", 3)
+  end
+  return value
+end
+
+function Runtime.new(options)
+  options = type(options) == "table" and options or {}
+  local clockHz = tonumber(options.clockHz) or 30
+  if clockHz <= 0 then error("battle FX clockHz must be positive", 2) end
+  local catchUpLimit = options.catchUpLimit
+  if catchUpLimit ~= nil then
+    catchUpLimit = validateTicks(catchUpLimit)
+    if catchUpLimit == 0 then error("battle FX catchUpLimit must be positive", 2) end
+  end
+  local motionOptions = copy(options.motionOptions or {})
+  -- A motion-specific RNG wins, so evaluating FX cannot perturb the battle RNG.
+  if motionOptions.rng == nil then motionOptions.rng = options.rng end
+  local nativeObjects = options.nativeObjects
+  if nativeObjects == nil then
+    nativeObjects = NativeObjects.new(options.nativeObjectOptions or {})
+  end
+  local lifecycle = options.lifecycle
+  if lifecycle == nil then lifecycle = Lifecycle.new(options.lifecycleOptions or {}) end
+  local material = options.material or Material
+  return setmetatable({
+    catalog = options.catalog or {},
+    native = options.native or Native,
+    router = options.router or Router,
+    motion = options.motion or Motion,
+    motionOptions = motionOptions,
+    nativeObjects = nativeObjects,
+    lifecycle = lifecycle,
+    material = material,
+    materialOptions = copy(options.materialOptions or {}),
+    clockHz = clockHz,
+    catchUpLimit = catchUpLimit,
+    lifetimeResolver = options.lifetimeResolver,
+    rng = options.rng,
+    warn = options.warn,
+    frame = 0,
+    accumulator = 0,
+    nextEffectId = 1,
+    nextParticleId = 1,
+    effects = {},
+    effectOrder = {},
+    diagnostics = {},
+    _diagnosticKeys = {},
+    released = false,
+  }, Runtime)
+end
+
+function Runtime:_emitUnsupported(effect, code, fields)
+  diagnostic(self, code, effect, fields)
+end
+
+function Runtime:_resolveLifetime(effect, particle)
+  if type(self.lifetimeResolver) ~= "function" then
+    -- Motion may have an authored scale-entry lifetime.  Leave resolution to
+    -- it when no explicit runtime resolver was supplied.
+    return nil
+  end
+  local ok, value = pcall(self.lifetimeResolver, particle, particle.event)
+  if not ok then
+    self:_emitUnsupported(effect, "unsupported-lifetime", {
+      programId = particle.event and particle.event.programId,
+      address = particle.event and particle.event.address,
+      kind = "particle",
+      message = tostring(value),
+    })
+    return nil
+  end
+  value = tonumber(value)
+  if value == nil or value < 0 then
+    self:_emitUnsupported(effect, "unsupported-lifetime", {
+      programId = particle.event and particle.event.programId,
+      address = particle.event and particle.event.address,
+      kind = "particle",
+      message = "lifetime resolver returned no non-negative lifetime",
+    })
+    return nil
+  end
+  return value
+end
+
+function Runtime:_particle(effect, source)
+  local scaleEntry = source.scale
+  local scale = tonumber(scaleEntry and scaleEntry.scale) or 1
+  local event = source.event or {}
+  local state = {
+    id = self.nextParticleId,
+    effectId = effect.id,
+    schedulerIndex = source.schedulerIndex or 0,
+    generation = source.generation or 0,
+    particleIndex = source.particleIndex or 0,
+    born = source.born or self.frame,
+    age = source.age or 0,
+    lifetime = nil,
+    position = vector(source.position),
+    velocity = vector(source.velocity),
+    attribute = source.attribute,
+    transform = copy(source.transform or {}),
+    rotation = {0, 0, 0},
+    scale = {scale, scale, scale},
+    -- Keep the authored table entry available to lifetime/material workers;
+    -- `scale` above is the renderer-facing normalized vector.
+    scaleEntry = copy(scaleEntry),
+    shapeId = source.material and source.material.shapeId or event.shapeId,
+    material = copy(source.material or {}),
+    attachment = copy(event.attachment or {}),
+    event = copy(event),
+    active = true,
+  }
+  -- The resolver receives the source-shaped particle and event, so later
+  -- motion/lifecycle workers can use authored fields without re-decoding ROM.
+  local resolvedLifetime = self:_resolveLifetime(effect, state)
+  local motionInput = copy(source)
+  motionInput.id = state.id
+  motionInput.effectId = effect.id
+  motionInput.event = copy(event)
+  if resolvedLifetime ~= nil then motionInput.lifetime = resolvedLifetime end
+  local init = self.motion and (self.motion.init or self.motion.initialize)
+  local motionState
+  if type(init) == "function" then
+    local ok, value = pcall(init, motionInput, self.motionOptions)
+    if ok and type(value) == "table" then
+      motionState = value
+    else
+      self:_emitUnsupported(effect, "motion-initialization", {
+        programId = event.programId, address = event.address, kind = "motion",
+        message = ok and "motion initializer returned no state" or tostring(value),
+      })
+    end
+  else
+    self:_emitUnsupported(effect, "motion-initialization", {
+      programId = event.programId, address = event.address, kind = "motion",
+      message = "motion evaluator has no init function",
+    })
+  end
+  self.nextParticleId = self.nextParticleId + 1
+  state._motionState = motionState
+  if motionState then
+    copyMotionFields(state, motionState)
+    state.active = motionState.alive ~= false
+    state.lifetime = motionState.lifetime
+    state._motionDiagnosticKeys = {}
+    self:_appendMotionDiagnostics(effect, state, motionState)
+  end
+  self:_initMaterial(effect, state, source)
+  if state.lifetime == 0 then state.active = false end
+  return state
+end
+
+function Runtime:_appendMotionDiagnostics(effect, particle, motionState)
+  if type(motionState) ~= "table" or type(motionState.diagnostics) ~= "table" then
+    return
+  end
+  particle._motionDiagnosticKeys = particle._motionDiagnosticKeys or {}
+  for _, item in ipairs(motionState.diagnostics) do
+    if type(item) == "table" then
+      local code = item.code or "unsupported-motion"
+      local address = item.address
+      local message = item.message or item.detail or code
+      local key = table.concat({tostring(code), tostring(address), tostring(message)}, ":")
+      if not particle._motionDiagnosticKeys[key] then
+        particle._motionDiagnosticKeys[key] = true
+        diagnostic(self, code, effect, {
+          severity = item.severity or "warning",
+          programId = item.programId or (particle.event and particle.event.programId),
+          address = address or (particle.event and particle.event.address),
+          kind = item.kind or "motion",
+          message = message,
+        })
+      end
+    end
+  end
+end
+
+function Runtime:_appendMaterialDiagnostics(effect, particle, materialState)
+  if type(materialState) ~= "table" or type(materialState.diagnostics) ~= "table" then
+    return
+  end
+  particle._materialDiagnosticKeys = particle._materialDiagnosticKeys or {}
+  for _, item in ipairs(materialState.diagnostics) do
+    if type(item) == "table" then
+      local code = item.code or "unsupported-material"
+      local address = item.address or (particle.event and particle.event.address)
+      local message = item.message or item.detail or code
+      local key = table.concat({tostring(code), tostring(address), tostring(message)}, ":")
+      if not particle._materialDiagnosticKeys[key] then
+        particle._materialDiagnosticKeys[key] = true
+        diagnostic(self, code, effect, {
+          severity = item.severity or "warning",
+          programId = item.programId or (particle.event and particle.event.programId),
+          address = address, kind = item.kind or "material", message = message,
+        })
+      end
+    end
+  end
+end
+
+function Runtime:_materialSnapshot(state)
+  local snapshot = self.material and self.material.snapshot
+  if type(snapshot) == "function" then
+    local ok, value = pcall(snapshot, state)
+    if ok and value ~= nil then return copy(value) end
+  end
+  return copy(state)
+end
+
+function Runtime:_initMaterial(effect, particle, source)
+  local init = self.material and (self.material.init or self.material.initialize)
+  if type(init) ~= "function" then
+    particle._materialState = copy(particle.material)
+    return
+  end
+  local context = copy(self.materialOptions)
+  for key, value in pairs(effect.context) do context[key] = copy(value) end
+  for key, value in pairs(particle.event or {}) do context[key] = copy(value) end
+  context.effectId = effect.id
+  context.programId = particle.event and particle.event.programId
+  context.address = particle.event and particle.event.address
+  context.age = particle.age
+  local ok, value = pcall(init, source.material or {}, context)
+  if not ok or type(value) ~= "table" then
+    self:_emitUnsupported(effect, "material-initialization", {
+      programId = particle.event and particle.event.programId,
+      address = particle.event and particle.event.address,
+      kind = "material",
+      message = ok and "material initializer returned no state" or tostring(value),
+    })
+    particle._materialState = copy(particle.material)
+    return
+  end
+  particle._materialState = value
+  particle.material = self:_materialSnapshot(value)
+  particle._materialDiagnosticKeys = {}
+  self:_appendMaterialDiagnostics(effect, particle, value)
+end
+
+function Runtime:_stepMaterial(effect, particle)
+  if not particle._materialState then return end
+  local step = self.material and (self.material.step or self.material.evaluate)
+  if type(step) ~= "function" then return end
+  local options = copy(self.materialOptions)
+  options.delta = options.delta or 1
+  options.age = particle.age
+  options.effectId = effect.id
+  options.programId = particle.event and particle.event.programId
+  options.address = particle.event and particle.event.address
+  local ok, value = pcall(step, particle._materialState, options)
+  if not ok or type(value) ~= "table" then
+    self:_emitUnsupported(effect, "material-evaluation", {
+      programId = particle.event and particle.event.programId,
+      address = particle.event and particle.event.address,
+      kind = "material",
+      message = ok and "material evaluator returned no state" or tostring(value),
+    })
+    return
+  end
+  particle._materialState = value
+  particle.material = self:_materialSnapshot(value)
+  self:_appendMaterialDiagnostics(effect, particle, value)
+end
+
+function Runtime:_mergeManagerDiagnostics(manager)
+  if type(manager) ~= "table" then return end
+  local items
+  if type(manager.diagnosticSnapshot) == "function" then
+    local ok, value = pcall(manager.diagnosticSnapshot, manager)
+    if ok then items = value end
+  end
+  if items == nil and type(manager.snapshot) == "function" then
+    local ok, value = pcall(manager.snapshot, manager)
+    if ok and type(value) == "table" then items = value.diagnostics end
+  end
+  if type(items) == "table" then
+    for _, item in ipairs(items) do
+      if type(item) == "table" then warning(self, copy(item)) end
+    end
+  end
+end
+
+function Runtime:_stepManagers()
+  local step = self.nativeObjects and (self.nativeObjects.step or self.nativeObjects.tick)
+  if type(step) == "function" then
+    local ok, value = pcall(step, self.nativeObjects, 1)
+    if not ok then
+      self:_emitUnsupported(nil, "native-object-manager", {
+        kind = "native-object", message = tostring(value),
+      })
+    end
+  end
+  self:_mergeManagerDiagnostics(self.nativeObjects)
+  step = self.lifecycle and (self.lifecycle.step or self.lifecycle.update)
+  if type(step) == "function" then
+    local ok, value = pcall(step, self.lifecycle, 1)
+    if not ok then
+      self:_emitUnsupported(nil, "lifecycle-manager", {
+        kind = "lifecycle", message = tostring(value),
+      })
+    end
+  end
+  self:_mergeManagerDiagnostics(self.lifecycle)
+end
+
+function Runtime:_spawn(effect, previousFrame, frame)
+  -- Program schedulers are authored relative to the move's start, whereas
+  -- the runtime clock is shared by every active move.  Keep that local frame
+  -- conversion here so a move triggered at presentation frame 240 still
+  -- starts its ROM scheduler at local frame zero.
+  local previousLocal = previousFrame - effect.originFrame
+  local localFrame = frame - effect.originFrame
+  for _, execution in ipairs(effect.executions) do
+    local particles = self.native.particles(execution, previousLocal, localFrame)
+    for _, source in ipairs(particles or {}) do
+      source.born = source.born + effect.originFrame
+      local state = self:_particle(effect, source)
+      effect.particles[#effect.particles + 1] = state
+    end
+  end
+end
+
+function Runtime:_stepEffect(effect, previousFrame, frame)
+  for _, particle in ipairs(effect.particles) do
+    if particle.active then
+      local step = self.motion and self.motion.step
+      if type(step) == "function" and particle._motionState then
+        local ok, value = pcall(step, particle._motionState, 1,
+          self.motionOptions)
+      if ok and type(value) == "table" then
+          particle._motionState = value
+          copyMotionFields(particle, value)
+          self:_appendMotionDiagnostics(effect, particle, value)
+        else
+          self:_emitUnsupported(effect, "motion-evaluation", {
+            programId = particle.event and particle.event.programId,
+            address = particle.event and particle.event.address,
+            kind = "motion",
+            message = ok and "motion evaluator returned no state" or tostring(value),
+          })
+        end
+      elseif not particle._motionState then
+        self:_emitUnsupported(effect, "motion-evaluation", {
+          programId = particle.event and particle.event.programId,
+          address = particle.event and particle.event.address,
+          kind = "motion",
+          message = "particle has no persistent motion state",
+        })
+      end
+      self:_stepMaterial(effect, particle)
+    end
+  end
+  self:_spawn(effect, previousFrame, frame)
+end
+
+local function program(catalog, id)
+  return catalog.programs and catalog.programs[id]
+end
+
+function Runtime:trigger(context)
+  if self.released then return nil, "battle FX runtime has been released" end
+  if type(context) ~= "table" then return nil, "battle FX trigger context is required" end
+  local moveId = integer(context.moveId)
+  if not moveId then return nil, "battle FX move ID is required" end
+  local move = self.catalog.moves and self.catalog.moves[moveId]
+  if not move then return nil, "battle FX move is unavailable" end
+  local alternate = context.alternate == true
+  local select = self.router and (self.router.resolve or self.router.select
+    or self.router.channel)
+  if type(select) ~= "function" then return nil, "battle FX router is unavailable" end
+  local okRoute, dispatch, routeError = pcall(select, move, alternate)
+  if not okRoute then return nil, tostring(dispatch) end
+  if type(dispatch) ~= "table" then
+    return nil, routeError or "battle FX dispatch is unavailable"
+  end
+
+  local effect = {
+    id = self.nextEffectId,
+    moveId = moveId,
+    sourceSide = context.sourceSide,
+    targetSide = context.targetSide,
+    alternate = alternate,
+    originFrame = self.frame,
+    context = copyContext(context),
+    executions = {},
+    dispatch = copy(dispatch),
+    particles = {},
+  }
+  self.nextEffectId = self.nextEffectId + 1
+  effect.context.moveId = moveId
+  effect.context.alternate = alternate
+  effect.context.effectId = effect.id
+  self.effects[effect.id] = effect
+  self.effectOrder[#self.effectOrder + 1] = effect.id
+
+  for _, entry in ipairs(dispatch) do
+    if entry.kind == "program" then
+      local nativeProgram = program(self.catalog, entry.programId)
+      if not nativeProgram then
+        self:_emitUnsupported(effect, "missing-program", {
+          programId = entry.programId,
+          kind = "program",
+          message = "dispatch references an unavailable native FX program",
+        })
+      else
+        local ok, execution = pcall(self.native.execute, nativeProgram,
+          effect.context)
+        if ok and execution then
+          execution.programId = entry.programId
+          for _, event in ipairs(execution.scheduled or {}) do
+            event.programId = entry.programId
+            event.effectId = effect.id
+            event.context = copyContext(effect.context)
+            if event.descriptorKind == "native-object" then
+              local enqueue = self.nativeObjects and
+                (self.nativeObjects.enqueue or self.nativeObjects.schedule)
+              if type(enqueue) == "function" then
+                local okEnqueue, index, enqueueError = pcall(enqueue,
+                  self.nativeObjects, event.commandPointer, event)
+                if okEnqueue and index ~= nil then
+                  event.schedulerIndex = index
+                  effect.nativeObjectEvents = effect.nativeObjectEvents or {}
+                  effect.nativeObjectEvents[#effect.nativeObjectEvents + 1] = copy(event)
+                elseif not okEnqueue then
+                  self:_emitUnsupported(effect, "native-object-enqueue", {
+                    programId = entry.programId, address = event.address,
+                    kind = "native-object", message = tostring(index),
+                  })
+                elseif type(enqueueError) == "table" then
+                  -- The manager owns unsupported-resolution diagnostics.
+                  -- They are merged once below, without a runtime duplicate.
+                end
+              else
+                self:_emitUnsupported(effect, "native-object-manager", {
+                  programId = entry.programId, address = event.address,
+                  kind = "native-object", message = "native-object manager is unavailable",
+                })
+              end
+            end
+          end
+          effect.executions[#effect.executions + 1] = execution
+        else
+          self:_emitUnsupported(effect, "program-execution", {
+            programId = entry.programId,
+            kind = "program",
+            message = ok and "native FX program returned no execution"
+              or tostring(execution),
+          })
+        end
+      end
+    elseif entry.kind == "lifecycle" then
+      local lifecycle = self.catalog.lifecycle
+        and self.catalog.lifecycle[entry.lifecycleId]
+      local spawn = self.lifecycle and self.lifecycle.spawn
+      local lifecycleContext = copyContext(effect.context)
+      lifecycleContext.familyId = entry.lifecycleId
+      lifecycleContext.lifecycleId = entry.lifecycleId
+      lifecycleContext.programId = entry.programId
+      lifecycleContext.address = lifecycle and lifecycle.init or nil
+      if type(spawn) == "function" then
+        local okSpawn, instanceId = pcall(spawn, self.lifecycle,
+          entry.lifecycleId, lifecycleContext)
+        if okSpawn and instanceId ~= nil then
+          effect.lifecycleInstances = effect.lifecycleInstances or {}
+          effect.lifecycleInstances[#effect.lifecycleInstances + 1] = instanceId
+        elseif not okSpawn then
+          self:_emitUnsupported(effect, "lifecycle-spawn", {
+            programId = entry.programId, address = lifecycleContext.address,
+            kind = "lifecycle", message = tostring(instanceId),
+          })
+        end
+      else
+        self:_emitUnsupported(effect, "lifecycle-manager", {
+          programId = entry.programId, address = lifecycleContext.address,
+          kind = "lifecycle", message = "lifecycle manager is unavailable",
+        })
+      end
+    else
+      self:_emitUnsupported(effect, "unsupported-dispatch", {
+        kind = tostring(entry.kind),
+        message = "unknown native FX dispatch kind",
+      })
+    end
+  end
+
+  self:_mergeManagerDiagnostics(self.nativeObjects)
+  self:_mergeManagerDiagnostics(self.lifecycle)
+
+  -- Frame zero is a real Stadium tick.  Spawn its zero-time births now so a
+  -- caller can inspect the initial snapshot without forcing a fake update.
+  self:_spawn(effect, self.frame - 1, self.frame)
+  return effect.id
+end
+
+function Runtime:step(count)
+  if self.released then return self.frame end
+  count = validateTicks(count)
+  for _ = 1, count do
+    local previousFrame = self.frame
+    self.frame = self.frame + 1
+    for _, id in ipairs(self.effectOrder) do
+      local effect = self.effects[id]
+      if effect then self:_stepEffect(effect, previousFrame, self.frame) end
+    end
+    -- Native-object scheduling and lifecycle updates are separate engines.
+    -- Their order is part of the runtime contract and each receives one tick.
+    self:_stepManagers()
+  end
+  return self.frame
+end
+
+function Runtime:update(dt)
+  if self.released then return self.frame end
+  dt = tonumber(dt)
+  if dt == nil or dt < 0 then error("battle FX update dt must be non-negative", 2) end
+  self.accumulator = self.accumulator + dt * self.clockHz
+  local available = math.floor(self.accumulator + 1e-9)
+  local advance = available
+  if self.catchUpLimit and advance > self.catchUpLimit then
+    advance = self.catchUpLimit
+  end
+  if advance > 0 then
+    self.accumulator = self.accumulator - advance
+    self:step(advance)
+  end
+  return self.frame
+end
+
+function Runtime:snapshot()
+  self:_mergeManagerDiagnostics(self.nativeObjects)
+  self:_mergeManagerDiagnostics(self.lifecycle)
+  local particles = {}
+  for _, id in ipairs(self.effectOrder) do
+    local effect = self.effects[id]
+    if effect then
+      for _, particle in ipairs(effect.particles) do
+        if particle.active then particles[#particles + 1] = particle end
+      end
+    end
+  end
+  table.sort(particles, orderedLess)
+  local result = {
+    frame = self.frame,
+    accumulator = self.accumulator,
+    effects = {},
+    particles = {},
+    materials = {},
+    nativeObjects = {},
+    lifecycles = {},
+    diagnostics = copy(self.diagnostics),
+  }
+  if self.nativeObjects and type(self.nativeObjects.snapshot) == "function" then
+    local ok, value = pcall(self.nativeObjects.snapshot, self.nativeObjects)
+    if ok then result.nativeObjects = copy(value) end
+  end
+  if self.lifecycle and type(self.lifecycle.snapshot) == "function" then
+    local ok, value = pcall(self.lifecycle.snapshot, self.lifecycle)
+    if ok then result.lifecycles = copy(value) end
+  end
+  for _, id in ipairs(self.effectOrder) do
+    local effect = self.effects[id]
+    if effect then
+      result.effects[#result.effects + 1] = {
+        id = effect.id, moveId = effect.moveId,
+        sourceSide = effect.sourceSide, targetSide = effect.targetSide,
+        alternate = effect.alternate,
+      }
+    end
+  end
+  for index, particle in ipairs(particles) do
+    result.particles[index] = copy(particle)
+    -- Evaluator state is persistent runtime-owned data, not part of the
+    -- caller-facing snapshot.  The evaluated fields above remain available.
+    result.particles[index]._motionState = nil
+    result.particles[index]._motionDiagnosticKeys = nil
+    result.particles[index]._materialState = nil
+    result.particles[index]._materialDiagnosticKeys = nil
+    result.materials[index] = {
+      particleId = particle.id,
+      effectId = particle.effectId,
+      state = copy(result.particles[index].material),
+    }
+  end
+  return result
+end
+
+function Runtime:release()
+  if self.released then return false end
+  if self.nativeObjects and type(self.nativeObjects.release) == "function" then
+    pcall(self.nativeObjects.release, self.nativeObjects)
+  end
+  if self.lifecycle and type(self.lifecycle.release) == "function" then
+    pcall(self.lifecycle.release, self.lifecycle)
+  end
+  self.effects = {}
+  self.effectOrder = {}
+  self.released = true
+  return true
+end
+
+return Runtime

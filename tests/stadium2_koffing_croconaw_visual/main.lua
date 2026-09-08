@@ -9,6 +9,10 @@ local ArenaFragment
 local ArenaHandlers
 local ArenaMaterials
 local ArenaPack
+local BattleFxNative
+local BattleFxPack
+local BattleFxRom
+local BattleFxResources
 local root
 local loadError
 local paused = false
@@ -40,6 +44,7 @@ local rapidashCutEffect = os.getenv("STADIUM2_VISUAL_RAPIDASH_CUT_FX") ~= "0"
 local rapidashButtonHeld = false
 local arenaButtonHeld = false
 local cameraButtonHeld = false
+local battleFxButtonHeld = false
 local arenaSceneEnabled = os.getenv("STADIUM2_VISUAL_SCENE") ~= "classic"
 local arenaIndex = math.max(0, math.min(29,
   math.floor(tonumber(os.getenv("STADIUM2_VISUAL_ARENA")) or 0)))
@@ -52,6 +57,11 @@ local arenaModel
 local arenaSource
 local arenaError
 local arenaUnhook
+local battleFxUnhook
+local battleFxMove=math.max(1,math.min(251,
+  math.floor(tonumber(os.getenv("STADIUM2_VISUAL_MOVE_FX")) or 7)))
+local battleFx={active=false,frame=0,previousFrame=-1,duration=0,
+  executions={},renderers={},models={},error=nil,catalog=nil,resolved=nil}
 local tagData
 local tagFilePath
 local tagEditing = false
@@ -543,6 +553,224 @@ local function installArenaHook()
     drawArena, 1000, "stadium2-arena-visual")
 end
 
+local function releaseBattleFx()
+  for _,renderer in pairs(battleFx.renderers or {}) do
+    if renderer and renderer.release then pcall(renderer.release,renderer) end
+  end
+  for _,model in pairs(battleFx.models or {}) do
+    if model and BattleFxPack then pcall(BattleFxPack.release,model) end
+  end
+  battleFx.active=false
+  battleFx.executions,battleFx.renderers,battleFx.models={},{},{}
+end
+
+local function fxTranslateScale(x,y,z,value)
+  return {value,0,0,x, 0,value,0,y, 0,0,value,z, 0,0,0,1}
+end
+
+local function directBattleFxPrograms(moveId)
+  if not (arenaRomData and BattleFxRom and BattleFxResources) then
+    local primary,primaryError=Importer.battleFxProgram(moveId,false)
+    local alternate,alternateError=Importer.battleFxProgram(moveId,true)
+    return primary,alternate,nil,primaryError or alternateError
+  end
+  if not battleFx.catalog then
+    local catalog,catalogError=BattleFxRom.catalog(arenaRomData)
+    if not catalog then return nil,nil,nil,catalogError end
+    battleFx.catalog=catalog
+  end
+  local move=battleFx.catalog.moves[moveId]
+  if not move then return nil,nil,nil,"move ID out of range" end
+  local function channel(dispatch,alternate)
+    local out={moveId=moveId,alternate=alternate,dispatch={},resources=move.resources}
+    for _,entry in ipairs(dispatch or {}) do
+      if entry.kind=="program" then
+        out.dispatch[#out.dispatch+1]={kind="program",programId=entry.programId,
+          execution=BattleFxNative.execute(
+            battleFx.catalog.programs[entry.programId],
+            {moveId=moveId,alternate=alternate})}
+      else
+        out.dispatch[#out.dispatch+1]=entry
+      end
+    end
+    return out
+  end
+  local archive=arenaRomData:sub(BattleFxResources.ROM_START+1,
+    BattleFxResources.ROM_END)
+  local resolved,resolveError=BattleFxResources.resolve(archive,move.resources)
+  if not resolved then return nil,nil,nil,resolveError end
+  return channel(move.primaryDispatch,false),channel(move.alternateDispatch,true),
+    resolved
+end
+
+local function battleFxShapeModel(moveId,shapeId,resolved)
+  if resolved then
+    local shape,shapeError=BattleFxResources.shapeFromResolved(resolved,shapeId)
+    if not shape then return nil,shapeError end
+    return BattleFxResources.modelFromShape(shape,
+      ("stadium2_move_%03d_shape_%03d"):format(moveId,shapeId))
+  end
+  return Importer.battleFxShapeModel(moveId,shapeId)
+end
+
+local function startBattleFx()
+  releaseBattleFx()
+  battleFx.error=nil
+  -- A model viewer has no battle-state result telling it which side-variant
+  -- Stadium selected. Preview both ROM-authored channels; selectedSide only
+  -- chooses the on-field source actor.
+  local primary,alternate,resolved,programError=directBattleFxPrograms(battleFxMove)
+  if not primary and not alternate then
+    battleFx.error=tostring(programError)
+    showMessage("move FX unavailable: "..battleFx.error)
+    return false
+  end
+  local latest=0
+  local scheduledCount,shapeCount=0,0
+  for _,channel in ipairs({primary or {},alternate or {}}) do
+    for _,dispatch in ipairs(channel.dispatch or {}) do
+      local execution=dispatch.execution
+      if execution then
+        battleFx.executions[#battleFx.executions+1]=execution
+        for _,event in ipairs(execution.scheduled or {}) do
+          scheduledCount=scheduledCount+1
+          local repeats=event.repeats==0xFF and 60 or math.max(1,event.repeats or 1)
+          latest=math.max(latest,(event.start or 0)+(event.interval or 0)*(repeats-1)+60)
+          local shapeId=tonumber(event.shapeId)
+          if event.descriptorKind=="particle" and shapeId and shapeId>0
+              and not battleFx.renderers[shapeId] then
+            local modelOk,model,modelError=pcall(
+              battleFxShapeModel,battleFxMove,shapeId,resolved)
+            if not modelOk then
+              modelError=model
+              model=nil
+            end
+            if model then
+              local rendererOk,renderer,rendererError=pcall(
+                Importer.newRendererFromModel,model,{
+                  shaderStyleProvider=function() return shaderStyle end,
+                  textureFilter="nearest",
+                })
+              if not rendererOk then
+                rendererError=renderer
+                renderer=nil
+              end
+              if renderer then
+                battleFx.models[shapeId]=model
+                battleFx.renderers[shapeId]=renderer
+                shapeCount=shapeCount+1
+              else
+                BattleFxPack.release(model)
+                battleFx.error=tostring(rendererError)
+              end
+            else
+              battleFx.error=tostring(modelError)
+            end
+          end
+        end
+      end
+    end
+  end
+  battleFx.frame,battleFx.previousFrame=0,-1
+  battleFx.duration=math.max(60,latest)
+  battleFx.active=next(battleFx.renderers)~=nil
+  warn(("ROM_FX move=%03d dispatch=%d schedulers=%d drawableShapes=%d error=%s")
+    :format(battleFxMove,#battleFx.executions,scheduledCount,shapeCount,
+      tostring(battleFx.error)))
+  showMessage(battleFx.active
+    and ("Playing Stadium 2 ROM move FX #%03d"):format(battleFxMove)
+    or ("move FX #%03d has no common drawable shapes%s"):format(battleFxMove,
+      battleFx.error and (": "..battleFx.error) or ""))
+  return battleFx.active
+end
+
+local function cycleBattleFx(delta)
+  battleFxMove=((battleFxMove-1+(tonumber(delta) or 0))%251)+1
+  return startBattleFx()
+end
+
+local function battleFxWorldUnits(context)
+  local host=context.scene and context.scene.host
+  local actor=host and host.visualActor and host:visualActor(selectedSide)
+  if host and actor and host.modelMatrix then
+    local ok,matrix=pcall(host.modelMatrix,host,selectedSide,actor)
+    if ok and type(matrix)=="table" then
+      local value=math.sqrt((matrix[1] or 0)^2+(matrix[5] or 0)^2
+        +(matrix[9] or 0)^2)
+      if value>0 then return value end
+    end
+  end
+  return context.scene and context.scene.arena and arenaScale or .05
+end
+
+local function battleFxAnchor(context,event,particle)
+  local slots=context.world and context.world.actorSlots or {}
+  local attacker=slots[selectedSide] or {x=0,y=0,z=0}
+  local targetSide=selectedSide=="player" and "enemy" or "player"
+  local target=slots[targetSide] or {x=0,y=0,z=0}
+  local contract=event.attachment or {}
+  local anchor=contract.mode=="world-origin" and {x=0,y=context.world.groundY or 0,z=0}
+    or contract.mode=="side-lane" and {x=(attacker.x or 0),y=context.world.groundY or 0,z=0}
+    or attacker
+  -- The descriptor's table vectors are source-space offsets. This preview
+  -- deliberately does not invent a trajectory when Stadium supplies none.
+  local position=particle.position
+  local units=battleFxWorldUnits(context)
+  return (anchor.x or anchor[1] or 0)+(position and position[1] or 0)*units,
+    (anchor.y or anchor[2] or 0)+(position and position[2] or 0)*units,
+    (anchor.z or anchor[3] or 0)+(position and position[3] or 0)*units,
+    target
+end
+
+local function drawBattleFx(nextDraw,context)
+  local result=nextDraw()
+  if not battleFx.active then return result end
+  local environment=context.environment or {}
+  local camera=context.camera or {}
+  for _,execution in ipairs(battleFx.executions) do
+    for _,particle in ipairs(BattleFxNative.particles(execution,-1,
+        math.floor(battleFx.frame))) do
+      -- Retain particles for the controller's authored ramp window. The
+      -- native lifecycle callbacks will replace this bound as they are ported.
+      local entry=particle.scale
+      local life=math.max(1,tonumber(entry and entry.value2) or 30)
+      if particle.age<life then
+        local shapeId=particle.material and particle.material.shapeId
+          or particle.event.shapeId
+        local renderer=battleFx.renderers[shapeId]
+        if renderer then
+          renderer:setHandlerRuntime({callbackFrame=particle.age},false)
+          local x,y,z=battleFxAnchor(context,particle.event,particle)
+          local authored=tonumber(entry and entry.scale) or 1
+          local units=battleFxWorldUnits(context)
+          local matrix=fxTranslateScale(x,y,z,math.max(.001,authored*units))
+          local options={
+            viewProjection=camera.vp or camera.viewProjection,
+            viewMatrix=camera.view,
+            normalMatrix={1,0,0,0,1,0,0,0,1},
+            lightDir=environment.light,ambient=environment.ambient,
+            diffuse=environment.diffuse,tint={1,1,1,1},
+            disableCulling=false,flipWinding=true,
+          }
+          renderer:drawScene("opaque",matrix,options)
+          renderer:drawScene("additive",matrix,options)
+        end
+      end
+    end
+  end
+  return result
+end
+
+local function installBattleFxHook()
+  local Runtime=require("src.mods.Runtime")
+  if type(Runtime.hooks.wrap)~="function" then
+    local Hooks=require("src.mods.Hooks")
+    Runtime.install(Runtime.events,Hooks.new(),Runtime.errors)
+  end
+  battleFxUnhook=Runtime.hooks:wrap("battle.scene.geometry.v1",
+    drawBattleFx,1100,"stadium2-rom-fx-visual")
+end
+
 local function animationTagPath()
   local supplied = os.getenv("STADIUM2_ANIMATION_TAGS_EXPORT")
   if supplied and supplied ~= "" then return supplied end
@@ -1001,6 +1229,27 @@ local function drawCameraButtons(g)
   g.printf(">",x+previousWidth+labelWidth,y+9,nextWidth,"center")
 end
 
+local function battleFxButtonBounds()
+  local x,y,previousWidth,labelWidth,nextWidth,height=cameraButtonBounds()
+  return x,y+44,previousWidth,labelWidth,nextWidth,height
+end
+
+local function drawBattleFxButtons(g)
+  local x,y,previousWidth,labelWidth,nextWidth,height=battleFxButtonBounds()
+  g.setColor(.12,.14,.19,.94)
+  g.rectangle("fill",x,y,previousWidth,height,6,6)
+  g.rectangle("fill",x+previousWidth+labelWidth,y,nextWidth,height,6,6)
+  g.setColor(battleFx.active and .18 or .25,battleFx.active and .55 or .24,
+    battleFx.active and .28 or .42,.94)
+  g.rectangle("fill",x+previousWidth+3,y,labelWidth-6,height,6,6)
+  g.setColor(.9,.93,1,1)
+  g.printf("<",x,y+9,previousWidth,"center")
+  g.printf(("PLAY ROM FX %03d%s"):format(battleFxMove,
+    battleFx.active and ("  %dF"):format(math.floor(battleFx.frame)) or ""),
+    x+previousWidth,y+9,labelWidth,"center")
+  g.printf(">",x+previousWidth+labelWidth,y+9,nextWidth,"center")
+end
+
 local function initialise()
   -- LOVE's distro boot scripts do not all honor conf.lua's appendidentity
   -- field.  Select it explicitly before SaveData or Storage touches the
@@ -1041,6 +1290,11 @@ local function initialise()
     ArenaHandlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
     ArenaMaterials = require("mods.STADIUM2_IMPORTER.lib.materials")
     ArenaPack = require("mods.STADIUM2_IMPORTER.lib.pack")
+    BattleFxNative=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native")
+    BattleFxRom=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_rom")
+    BattleFxResources=require(
+      "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_resources")
+    BattleFxPack=ArenaPack
     loadAnimationTags()
     local shadowBias=tonumber(os.getenv("STADIUM2_VISUAL_SHADOW_BIAS"))
     if os.getenv("STADIUM2_VISUAL_DISABLE_SUN_SHADOW") == "1" or shadowBias then
@@ -1060,6 +1314,7 @@ local function initialise()
       arenaError = tostring(arenaSourceError)
       warn("ARENA_UNAVAILABLE " .. arenaError)
     end
+    installBattleFxHook()
     if not Importer.available(251) then
       local started, err = Importer.autoImport()
       if not started then error(err or "Stadium 2 cache is stale and automatic re-import failed") end
@@ -1119,6 +1374,7 @@ local function drawText(g)
     g.print("Q/E animation   R recenter   SPACE pause", 24, 194)
     g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 212)
     g.print("0 all primitives   1-9 isolate   ,/. arena   B scene   C camera   V shader   S shot", 24, 230)
+    g.print("J/L previous/next ROM move FX   K play selected ROM FX",24,248)
   end
   if debugPanel then
     local d = gasSnapshot()
@@ -1153,6 +1409,7 @@ local function drawText(g)
   end
   drawArenaButtons(g)
   drawCameraButtons(g)
+  drawBattleFxButtons(g)
   drawRapidashButton(g)
 end
 
@@ -1202,6 +1459,11 @@ function love.update(dt)
     Camera.update(dt)
     if arenaRenderer then arenaRenderer:step(dt) end
     for _, actor in pairs(scene.actors or {}) do actor:update(dt) end
+    if battleFx.active then
+      battleFx.previousFrame=battleFx.frame
+      battleFx.frame=battleFx.frame+dt*30
+      if battleFx.frame>=battleFx.duration then battleFx.active=false end
+    end
     applyDebugControls()
     ensureForcedGas()
     local ok = scene:render()
@@ -1284,6 +1546,12 @@ function love.keypressed(key)
     cycleArena(1)
   elseif key == "c" then
     cycleCameraMode(1)
+  elseif key == "j" then
+    cycleBattleFx(-1)
+  elseif key == "k" then
+    startBattleFx()
+  elseif key == "l" then
+    cycleBattleFx(1)
   elseif key == "b" then
     toggleSceneMode()
   elseif key == "t" then
@@ -1373,6 +1641,25 @@ function love.mousepressed(x, y, button)
       return
     end
   end
+  local fx,fy,fxPreviousWidth,fxLabelWidth,fxNextWidth,fxHeight=battleFxButtonBounds()
+  if y>=fy and y<=fy+fxHeight then
+    if x>=fx and x<=fx+fxPreviousWidth then
+      battleFxButtonHeld=true
+      cycleBattleFx(-1)
+      return
+    end
+    if x>=fx+fxPreviousWidth and x<=fx+fxPreviousWidth+fxLabelWidth then
+      battleFxButtonHeld=true
+      startBattleFx()
+      return
+    end
+    local nextX=fx+fxPreviousWidth+fxLabelWidth
+    if x>=nextX and x<=nextX+fxNextWidth then
+      battleFxButtonHeld=true
+      cycleBattleFx(1)
+      return
+    end
+  end
   local bx, by, width, height = rapidashButtonBounds()
   if x >= bx and y >= by and x <= bx + width and y <= by + height then
     rapidashButtonHeld = true
@@ -1385,12 +1672,13 @@ function love.mousereleased(_, _, button)
     rapidashButtonHeld = false
     arenaButtonHeld = false
     cameraButtonHeld = false
+    battleFxButtonHeld=false
   end
 end
 
 function love.mousemoved(x, y, dx, dy)
   if Camera and not rapidashButtonHeld and not arenaButtonHeld
-      and not cameraButtonHeld and love.mouse.isDown(1) then
+      and not cameraButtonHeld and not battleFxButtonHeld and love.mouse.isDown(1) then
     Camera.mouseOrbit(dx)
     Camera.mousePitch(dy)
   end
@@ -1408,6 +1696,8 @@ function love.quit()
     arenaRenderer = nil
   end
   if arenaModel and ArenaPack then ArenaPack.release(arenaModel); arenaModel = nil end
+  if battleFxUnhook then pcall(battleFxUnhook); battleFxUnhook=nil end
+  releaseBattleFx()
   if scene then scene:release() end
   if Importer then Importer.releaseModels() end
 end

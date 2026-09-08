@@ -83,6 +83,8 @@ return function(mod)
       help="Experimental, Gen 2 trainer battles only: select Stadium 2 fields from the current gym, story battle, or indoor/outdoor location. All wild battles keep the classic scene." },
     { key="stadium2_beta_arena_tod", label="BETA PARK TIME OF DAY", type="toggle", default=false,
       help="Experimental: when context arenas are enabled, tint Free Battle Park for Gen 2 morning, day, or night. Turn OFF for the arena's normal lighting." },
+    { key="stadium2_beta_battle_fx", label="BETA STADIUM 2 MOVE FX", type="toggle", default=false,
+      help="Experimental: use move effects decoded from your imported Stadium 2 ROM. OFF keeps the game's normal battle effects." },
   })
 
   -- DSM animations are authored at 30 Hz, but advance from presented-frame
@@ -111,6 +113,7 @@ return function(mod)
   mod.exports.rapidashCutEffectEnabled = Importer.rapidashCutEffectEnabled
   mod.exports.betaArenaEnabled = Importer.betaArenaEnabled
   mod.exports.betaArenaTimeOfDayEnabled = Importer.betaArenaTimeOfDayEnabled
+  mod.exports.betaBattleFxEnabled = Importer.betaBattleFxEnabled
   mod.exports.battleStatus = Battle.status
   mod.exports.configureGame = Battle.configureGame
   mod.exports.presentation = BattlePresentation
@@ -127,6 +130,13 @@ return function(mod)
   mod.exports.loadModel = Importer.loadModel
   mod.exports.createModel = Importer.createModel
   mod.exports.createSpecialModel = Importer.createSpecialModel
+  mod.exports.battleFxCatalog = Importer.battleFxCatalog
+  mod.exports.battleFxResource = Importer.battleFxResource
+  mod.exports.battleFxResources = Importer.battleFxResources
+  mod.exports.battleFxShape = Importer.battleFxShape
+  mod.exports.battleFxShapeModel = Importer.battleFxShapeModel
+  mod.exports.battleFxProgram = Importer.battleFxProgram
+  mod.exports.newBattleFxPlayer = Importer.newBattleFxPlayer
   mod.exports.releaseModel = Importer.releaseModel
   mod.exports.newRenderer = Importer.newRenderer
   mod.exports.newRendererFromModel = Importer.newRendererFromModel

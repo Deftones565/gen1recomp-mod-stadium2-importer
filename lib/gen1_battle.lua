@@ -14,6 +14,8 @@ local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
+local BattleFxAdapter = require(
+  "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
 
 local Gen1={COUNT=251}
 local modRef,installed,session
@@ -90,6 +92,11 @@ function Scene.new(battle)
   self.lastPicKind={player=nil,enemy=nil}
   self.animWasPlaying=false
   self.hudSnapped=false
+  -- The adapter owns the persistent FX player. A missing beta option or an
+  -- importer mock from an older host is intentionally a no-op.
+  local battleFx,battleFxError=BattleFxAdapter.new(Importer,{warn=warn})
+  if battleFx then self.battleFx=battleFx
+  elseif battleFxError then warn("Gen 1 battle FX unavailable: "..tostring(battleFxError)) end
   return self
 end
 
@@ -249,7 +256,16 @@ function Scene:syncPresentationState()
     local def=battle.data and battle.data.moves and battle.data.moves[name]
     if def then
       local side=battle.animAttackerIsPlayer and "player" or "enemy"
-      self.actors[side]:attack(tonumber(def.index or def.number))
+      local moveId=tonumber(def.index or def.number)
+      if moveId then
+        self.actors[side]:attack(moveId)
+        if self.battleFx then
+          -- Gen 1's host state does not expose a second Stadium dispatch
+          -- bank; keep the authored primary route unless a host explicitly
+          -- supplies an alternate presentation selector.
+          self.battleFx:trigger(moveId,side,battle.animAlternate==true)
+        end
+      end
     end
   end
   self.animWasPlaying=playing
@@ -266,6 +282,7 @@ function Scene:update(dt)
   self.actors.enemy:update(dt)
   self.substituteActors.player:update(dt)
   self.substituteActors.enemy:update(dt)
+  self:updateBattleFx(dt)
   return self:render()
 end
 

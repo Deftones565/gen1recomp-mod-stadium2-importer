@@ -14,6 +14,8 @@ local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 local ArenaSelector = require("mods.STADIUM2_IMPORTER.lib.arena_selector")
 local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
+local BattleFxAdapter = require(
+  "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
 local Unown = require("src.core.gen2.Unown")
 local GameVersion = require("src.core.GameVersion")
 
@@ -81,6 +83,23 @@ local function gen2ActorOptions()
   return {warn=warn,dexOf=dexOf,shiny=shiny,formFor=unownPack,label="Gen 2 battle"}
 end
 
+-- The ROM move-FX player is presentation-only and remains opt-in.  Keep the
+-- construction boundary defensive: an unavailable cache, renderer, or
+-- partially initialized importer must leave the ordinary Gen 2 scene intact.
+local function newBattleFx()
+  local enabledOk,enabled=pcall(Importer.betaBattleFxEnabled)
+  if not enabledOk or enabled~=true then return nil end
+  local ok,player,err=pcall(BattleFxAdapter.new,Importer,{warn=warn})
+  if not ok then
+    warn("BETA BATTLE FX could not be initialized: "..tostring(player))
+    return nil
+  end
+  if not player and err then
+    warn("BETA BATTLE FX could not be initialized: "..tostring(err))
+  end
+  return player
+end
+
 function Scene.new(battle,context)
   local actorOpts=gen2ActorOptions()
   local self=setmetatable({},Scene)
@@ -107,6 +126,8 @@ function Scene.new(battle,context)
   }
   self.substituteActive={player=false,enemy=false}
   self.vanish={player={active=false},enemy={active=false}}
+  self.battleFx=newBattleFx()
+  self.battleFxUpdateError=nil
   return self
 end
 
@@ -291,6 +312,22 @@ function Scene:handleEvent(event)
   if event.kind=="move" and side then
     local data=self.screen and self.screen.game and self.screen.game.data
     local def=data and data.moves and data.moves[event.move]
+    -- BattleState presents each queue event once and marks a miss on the same
+    -- event object before it reaches this hook.  Trigger only that presented,
+    -- successful move; mechanics and the host battle RNG remain untouched.
+    -- `event.move` is the BattleState move ID.  Keep it authoritative; the
+    -- data record's index/number is only a fallback for legacy presenters
+    -- that supplied a symbolic move key.
+    local moveId=tonumber(event.move)
+      or (def and tonumber(def.id or def.index or def.number))
+    if self.battleFx and event.missed~=true and moveId then
+      local ok,err=pcall(self.battleFx.trigger,self.battleFx,moveId,side,
+        event.alternate==true)
+      if not ok and not self.battleFxTriggerError then
+        self.battleFxTriggerError=true
+        warn("Gen 2 battle FX trigger failed: "..tostring(err))
+      end
+    end
     if def and def.effect=="EFFECT_SUBSTITUTE" and not event.missed then
       self.substituteActive[side]=true
     end
@@ -387,6 +424,7 @@ function Scene:update(dt)
   self.actors.enemy:update(dt)
   self.substituteActors.player:update(dt)
   self.substituteActors.enemy:update(dt)
+  self:updateBattleFx(dt)
   return self:render()
 end
 

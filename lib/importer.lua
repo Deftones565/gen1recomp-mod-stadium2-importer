@@ -7,6 +7,10 @@ local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
 local Handlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
 local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
 local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
+local BattleFxRom = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_rom")
+local BattleFxResources = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_resources")
+local BattleFxNative = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native")
+local BattleFxPlayer = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_player")
 
 local Importer = {}
 
@@ -15,6 +19,8 @@ local job
 local romMeta
 local modelCache = {}
 local modelOrder = {}
+local battleFxCatalog
+local battleFxResourceArchive
 local ownedModels = setmetatable({}, {__mode="k"})
 local MODEL_KEEP = 4
 local configuredCount = 151
@@ -167,6 +173,15 @@ function Importer.betaArenaTimeOfDayEnabled()
   return false
 end
 
+function Importer.betaBattleFxEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,
+      "stadium2_beta_battle_fx")
+    if ok and value~=nil then return value==true end
+  end
+  return false
+end
+
 local function rendererOptions(options)
   local out = {}
   for key, value in pairs(type(options) == "table" and options or {}) do
@@ -297,9 +312,119 @@ function Importer.newSpecialRenderer(name,options)
   return Renderer.new(model,rendererOptions(options))
 end
 
+-- Decode the battle-effect graph cached from the user's own Stadium 2 ROM.
+-- The records stay ROM-native: routing IDs, bytecode, emitter timing,
+-- callbacks and lifecycle triples are never replaced by visual categories.
+function Importer.battleFxCatalog()
+  if battleFxCatalog then return battleFxCatalog end
+  local overlay=Cache.readSpecial("battle_fx_rom")
+  if not overlay then
+    return nil,"Stadium 2 battle FX cache unavailable; reimport the ROM"
+  end
+  local catalog,err=BattleFxRom.catalog(overlay)
+  if not catalog then return nil,err end
+  battleFxCatalog=catalog
+  return catalog
+end
+
+-- Return one decompressed Stadium 2 battle resource module by the exact ID
+-- named in a move's ROM resource list. Data remains private to the user's
+-- playthrough cache and is never included in the mod package.
+function Importer.battleFxResource(resourceId)
+  battleFxResourceArchive=battleFxResourceArchive
+    or Cache.readSpecial("battle_fx_resources")
+  if not battleFxResourceArchive then
+    return nil,"Stadium 2 battle FX resource cache unavailable; reimport the ROM"
+  end
+  return BattleFxResources.member(battleFxResourceArchive,resourceId)
+end
+
+-- Resolve the exact common and move-local export bindings installed by the
+-- game before it runs a move's native FX controller.
+function Importer.battleFxResources(moveId)
+  local catalog,catalogError=Importer.battleFxCatalog()
+  if not catalog then return nil,catalogError end
+  local move=catalog.moves[math.floor(tonumber(moveId) or -1)]
+  if not move then return nil,"move ID out of range" end
+  battleFxResourceArchive=battleFxResourceArchive
+    or Cache.readSpecial("battle_fx_resources")
+  if not battleFxResourceArchive then
+    return nil,"Stadium 2 battle FX resource cache unavailable; reimport the ROM"
+  end
+  return BattleFxResources.resolve(battleFxResourceArchive,move.resources)
+end
+
+function Importer.battleFxShape(moveId,shapeId)
+  local resources,err=Importer.battleFxResources(moveId)
+  if not resources then return nil,err end
+  return BattleFxResources.shapeFromResolved(resources,
+    math.floor(tonumber(shapeId) or -1))
+end
+
+function Importer.battleFxShapeModel(moveId,shapeId)
+  local shape,err=Importer.battleFxShape(moveId,shapeId)
+  if not shape then return nil,err end
+  return BattleFxResources.modelFromShape(shape,
+    ("stadium2_move_%03d_shape_%03d"):format(moveId,shapeId))
+end
+
+-- Construct the persistent runtime/player against models extracted from the
+-- user's own cached ROM. Placement/native callback resolvers are injected by
+-- the battle adapter; this factory never substitutes procedural effects.
+function Importer.newBattleFxPlayer(options)
+  options=type(options)=="table" and options or {}
+  local catalog,err=Importer.battleFxCatalog()
+  if not catalog then return nil,err end
+  local playerOptions={}
+  for key,value in pairs(options) do playerOptions[key]=value end
+  playerOptions.catalog=catalog
+  if not playerOptions.loadRenderer then
+    playerOptions.loadRenderer=function(moveId,shapeId)
+      local model,modelError=Importer.battleFxShapeModel(moveId,shapeId)
+      if not model then return nil,modelError end
+      local renderer,rendererError=Importer.newRendererFromModel(model,{
+        textureFilter="nearest",anisotropy=4,flipY=false,
+      })
+      if not renderer then Pack.release(model);return nil,rendererError end
+      return renderer,model
+    end
+  end
+  if not playerOptions.releaseRenderer then
+    playerOptions.releaseRenderer=function(renderer,model)
+      if renderer and renderer.release then pcall(renderer.release,renderer) end
+      if model then Pack.release(model) end
+    end
+  end
+  return BattleFxPlayer.new(playerOptions)
+end
+
+function Importer.battleFxProgram(moveId,alternate,context)
+  local catalog,err=Importer.battleFxCatalog()
+  if not catalog then return nil,err end
+  local move=catalog.moves[math.floor(tonumber(moveId) or -1)]
+  if not move then return nil,"move ID out of range" end
+  local dispatch=alternate and move.alternateDispatch or move.primaryDispatch
+  local out={moveId=move.moveId,alternate=alternate==true,dispatch={},resources=move.resources}
+  for _,entry in ipairs(dispatch) do
+    if entry.kind=="program" then
+      local executionContext={moveId=move.moveId,alternate=alternate==true}
+      for key,value in pairs(type(context)=="table" and context or {}) do
+        executionContext[key]=value
+      end
+      out.dispatch[#out.dispatch]={kind="program",programId=entry.programId,
+        execution=BattleFxNative.execute(catalog.programs[entry.programId],executionContext)}
+    else
+      out.dispatch[#out.dispatch]=entry
+    end
+  end
+  return out
+end
+
 function Importer.releaseModels()
   for _, model in pairs(modelCache) do Pack.release(model) end
   modelCache, modelOrder = {}, {}
+  battleFxCatalog=nil
+  battleFxResourceArchive=nil
 end
 
 function Importer.parsePack(bytes)

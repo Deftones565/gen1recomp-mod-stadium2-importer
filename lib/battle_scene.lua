@@ -80,6 +80,10 @@ function Scene.init(self,opts)
   self.arenaEnvironment=type(opts.arenaEnvironment)=="table"
     and opts.arenaEnvironment
     or (self.arena and self.arena.environment) or Scene.ARENA_ENVIRONMENT
+  -- Generation scenes may inject the opt-in Stadium 2 FX bridge.  Keeping
+  -- this as an injected seam means the default battle path does not load or
+  -- allocate any FX runtime state when the beta toggle is off.
+  self.battleFx=type(opts.battleFx)=="table" and opts.battleFx or nil
   return self
 end
 
@@ -102,6 +106,11 @@ function Scene.new(opts)
 end
 
 function Scene:release()
+  local battleFx=self.battleFx
+  self.battleFx=nil
+  if battleFx and type(battleFx.release)=="function" then
+    pcall(battleFx.release,battleFx)
+  end
   for _,actor in pairs(self.actors or {}) do
     if actor and actor.release then actor:release() end
   end
@@ -117,6 +126,17 @@ function Scene:release()
   Hud.invalidate()
   AA.release()
   Camera.reset()
+end
+
+-- Generation-specific update loops call this after their host presentation
+-- state has advanced.  The shared scene deliberately does not own battle
+-- timing, but provides one guarded seam for the persistent FX clock.
+function Scene:updateBattleFx(dt)
+  local battleFx=self.battleFx
+  if not battleFx or type(battleFx.update)~="function" then return nil end
+  local ok,result=pcall(battleFx.update,battleFx,dt)
+  if not ok and self.warn then pcall(self.warn,tostring(result)) end
+  return ok and result or nil
 end
 
 function Scene:stepArena(dt)
@@ -481,6 +501,16 @@ function Scene:render(requestedWidth,requestedHeight)
     restoreWorldTarget(self,g)
     Extensions.geometry(ext)
     restoreWorldTarget(self,g)
+    -- Move FX are presented after the arena geometry has established the
+    -- world target.  The bridge owns its renderer state, so restore the
+    -- target both before and after the call even when a provider changes
+    -- shader, blend, or depth state internally.
+    if self.battleFx and type(self.battleFx.draw)=="function" then
+      restoreWorldTarget(self,g)
+      local fxOk,fxError=pcall(self.battleFx.draw,self.battleFx,ext)
+      restoreWorldTarget(self,g)
+      if not fxOk and self.warn then pcall(self.warn,tostring(fxError)) end
+    end
     local box=frame.letterbox
     self.uiAnchors={
       player={(marks.player.x-box.lx)/box.scale,(marks.player.y-box.ly)/box.scale},

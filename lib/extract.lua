@@ -947,7 +947,9 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
     if not species then
       if not includeSpecials then return finish() end
       if not self.specialQueue then
-        self.specialQueue={{kind="substitute",record=SUBSTITUTE_RECORD,
+        self.specialQueue={{kind="battle_fx_rom",name="battle_fx_rom"},
+          {kind="battle_fx_resources",name="battle_fx_resources"},
+          {kind="substitute",record=SUBSTITUTE_RECORD,
           name="substitute",source=self.specialModelSource,
           animations=self.specialAnimationSources}}
         for record=UNOWN_FIRST_FORM_RECORD,UNOWN_LAST_FORM_RECORD do
@@ -961,6 +963,33 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
       local special=self.specialQueue[self.specialIndex]
       if not special then return finish() end
       self.specialIndex=self.specialIndex+1
+      if special.kind=="battle_fx_rom" or special.kind=="battle_fx_resources" then
+        self.specialWorker=coroutine.create(function()
+          -- Fragment 79 is the complete Stadium 2 battle actor/effect overlay.
+          -- Cache the user's own ROM bytes verbatim for the native FX decoder;
+          -- no ROM-derived payload is shipped with the mod or release archive.
+          local first,last
+          if special.kind=="battle_fx_resources" then
+            -- Main archive group 5. Move rows in fragment 79 name these
+            -- members, whose kind-2 exports provide the referenced shapes.
+            first,last=0x267D000+1,0x27ED000
+          else
+            first,last=0x36F890+1,0x419480
+          end
+          local bytes=data:sub(first,last)
+          if #bytes~=(last-first+1) then
+            return nil,"Stadium 2 battle FX source is truncated"
+          end
+          coroutine.yield("battle-fx-rom")
+          if type(writeSpecial)~="function" then
+            return nil,"special pack writer unavailable"
+          end
+          local wrote,writeErr=writeSpecial(special.name,bytes)
+          if not wrote then return nil,writeErr end
+          return {bytes=#bytes,kind=special.kind}
+        end)
+        return true
+      end
       local source=special.source
       if not source then
         self.lastError=("Stadium 2 model-table record %d (%s) is missing")
