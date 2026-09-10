@@ -241,7 +241,7 @@ ok(source:find("drawNicknameModal",1,true)==nil
   and source:find("Hud.hudLayer",1,true)~=nil
   and source:find("Hud.modalLayer",1,true)~=nil
   and source:find("self.drawHud=function() end",1,true)~=nil
-  and source:find("Hud.composite(scene,self,layer,hudLayer,modalLayer)",1,true)~=nil,
+  and source:find("Hud.composite(scene,self,layer,hudLayer,modalLayer,",1,true)~=nil,
   "nickname prompt separates snapped HUD and clean modal-only captures")
 
 ok(source:find('self.hudCleared=function() return false end',1,true)~=nil

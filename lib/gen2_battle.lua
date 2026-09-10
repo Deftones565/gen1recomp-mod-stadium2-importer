@@ -558,7 +558,9 @@ local function installScreenHooks()
     scene.crystalMovePane=GameVersion.engine()=="crystal"
       and self.phase=="moves"
     local layerOk,layer=pcall(Hud.layer,function() self:drawScene() end,
-      {crystalMovePane=scene.crystalMovePane})
+      {crystalMovePane=scene.crystalMovePane,
+        statusOwned=scene.statusHudOwned,bottomOwned=scene.bottomUiVisible,
+        preservePaper=not UIOwnership.hudEnabled()})
     -- The reference wide compositor snaps status HUDs from a HUD-only texture
     -- and leaves battle text/windows in the centred Game Boy frame.  Do the same for
     -- AskNickname so opening the modal never changes the wide HUD geometry.
@@ -575,7 +577,11 @@ local function installScreenHooks()
       hudLayerOk,hudLayer=pcall(UIOwnership.withNativeStatus,self,function()
       local had=rawget(self,"hudCleared")
       self.hudCleared=function() return false end
-      local ok,result=pcall(Hud.hudLayer,function() self:drawHud() end)
+      local ok,result=pcall(Hud.hudLayer,function()
+        self:drawHud()
+        UIOwnership.drawLegacyGen2Status(self)
+        UIOwnership.drawStatusOverlay(self)
+      end)
       self.hudCleared=had
       if not ok then error(result,0) end
       return result
@@ -598,7 +604,8 @@ local function installScreenHooks()
     if not layerOk then error(layer,0) end
     if not hudLayerOk then error(hudLayer,0) end
     if not modalLayerOk then error(modalLayer,0) end
-    local composed=Hud.composite(scene,self,layer,hudLayer,modalLayer)
+    local composed=Hud.composite(scene,self,layer,hudLayer,modalLayer,
+      {decorate=UIOwnership.hudEnabled()})
     if deferObjects and objectRunner and self.animView then
       local box=scene.hudBox
       g.push()

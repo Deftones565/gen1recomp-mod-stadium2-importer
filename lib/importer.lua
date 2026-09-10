@@ -133,6 +133,15 @@ function Importer.battleEnabled()
   return true
 end
 
+function Importer.battleHudEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok, value = pcall(modRef.options.get, modRef.options,
+      "stadium2_battle_hud")
+    if ok and value == false then return false end
+  end
+  return true
+end
+
 function Importer.shaderStyle()
   if modRef and modRef.options and modRef.options.get then
     local ok, value = pcall(modRef.options.get, modRef.options, "stadium2_shader")

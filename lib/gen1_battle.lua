@@ -14,6 +14,7 @@ local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
+local UILayers = require("mods.STADIUM2_IMPORTER.lib.battle_ui_layers")
 
 local Gen1={COUNT=251}
 local modRef,installed,session
@@ -367,7 +368,10 @@ function Scene:captureHud(slide)
   local had=rawget(battle,"colorMode")
   battle.colorMode=function() return false end
   local ok,layer=pcall(UIOwnership.withNativeStatus,battle,function()
-    return Hud.hudLayer(function() originals.drawHUDs(battle,slide) end)
+    return Hud.hudLayer(function()
+      originals.drawHUDs(battle,slide)
+      UIOwnership.drawStatusOverlay(battle)
+    end)
   end)
   battle.colorMode=had
   if not ok then error(layer,0) end
@@ -406,7 +410,10 @@ function Scene:composeWorld()
             battle.dramaticShapeShot=nil
             battle.stadium2ImporterGen1Shot=nil
             battle.colorMode=function() return false end
-            local ok,result=pcall(originals.drawHUDs,battle,slide)
+            local ok,result=pcall(function()
+              originals.drawHUDs(battle,slide)
+              UIOwnership.drawStatusOverlay(battle)
+            end)
             battle.colorMode=had
             battle.dramaticShapeShot=shot
             battle.stadium2ImporterGen1Shot=hosted
@@ -416,13 +423,13 @@ function Scene:composeWorld()
         end})
       if handled then
         self.battleArtUI=true
-        self.statusHudOwned=true
+        self.statusHudOwned=statusAvailable
         return target
       end
     end
   end
   local statusOwned=UIOwnership.claimStatus(battle)
-  local bottomVisible=UIOwnership.bottomVisible(battle)
+  local bottomVisible=UIOwnership.bottomVisible(battle) and UIOwnership.hudEnabled()
   self.statusHudOwned=statusOwned
   self.bottomUiVisible=bottomVisible
   local hudLayer=statusOwned and self:captureHud(slide) or nil
@@ -559,6 +566,15 @@ local function installHooks()
     self.colorMode=hadColor
     self.stadium2ImporterGen1Shot=nil
     if not ok then error(result,0) end
+    -- Instance wrappers (including QoL) append native-coordinate HUD ink
+    -- after this class method. The outer scope installed below collects it
+    -- exactly once before the final render.compose pass.
+    if scene.collectLateStatus and not scene.battleArtUI
+        and (scene.statusHudOwned or self:statusHUDVisible()==false) then
+      UILayers.begin(scene)
+      scene.closeLateStatus=UIOwnership.beginNativeStatus(self)
+      scene.lateStatusStarted=true
+    end
     return result
   end
 
@@ -599,7 +615,8 @@ local function installHooks()
   function BattleState:drawTextArea(...)
     local args={...}
     local scene=active(self)
-    if not scene or scene.battleArtUI then
+    if not scene or scene.battleArtUI or not UIOwnership.hudEnabled()
+        or not UIOwnership.bottomVisible(self) then
       return originals.drawTextArea(self,unpack(args))
     end
     return withBoxPaperRemoved(function()
@@ -881,6 +898,56 @@ end
 
 function Gen1.update(dt)
   if not session then return false end
+  local scene=session
+  local battle=scene.battle
+  local qos=modRef and modRef.find and modRef.find("quality_of_life")
+  if qos and battle and rawget(battle,"draw") and battle.draw~=scene.lateStatusWrapper then
+    local original=battle.draw
+    local wrapper
+    wrapper=function(self,...)
+      if not active(self) or scene.collectLateStatus then return original(self,...) end
+      scene.collectLateStatus=true
+      local result=pack(pcall(original,self,...))
+      scene.collectLateStatus=nil
+      if scene.lateStatusStarted then
+        scene.lateStatusStarted=nil
+        scene.closeLateStatus()
+        scene.closeLateStatus=nil
+        local rects={HUD_RECT.enemy,HUD_RECT.player}
+        UILayers.finish(scene,rects)
+        local g=love.graphics
+        g.push("all")
+        local ok,err=pcall(function()
+          -- Replacement status providers must not acquire late native ink.
+          if not scene.statusHudOwned then return end
+          g.setCanvas(scene.composedWorld)
+          g.origin();g.setScissor();g.setShader()
+          g.setColor(1,1,1,1)
+          g.setBlendMode("alpha","premultiplied")
+          local width,height=scene.composedWorld:getDimensions()
+          g.scale(width/scene.width,height/scene.height)
+          local box=scene.hudBox
+          local panels=BattleViewport.statusPanels(
+            BattleViewport.resolve(scene.width,scene.height,self.game),
+            box,box.scale,HUD_RECT.enemy,HUD_RECT.player)
+          local ps=panels.scale or box.scale
+          for _,side in ipairs({"enemy","player"}) do
+            local r=HUD_RECT[side]
+            local q=g.newQuad(r[1],r[2],r[3],r[4],160,144)
+            g.draw(scene.statusOverlay,q,panels[side.."X"],panels[side.."Y"],0,ps,ps)
+            if q.release then q:release() end
+          end
+        end)
+        g.pop()
+        if not ok then error(err,0) end
+      end
+      if not result[1] then error(result[2],0) end
+      return unpack(result,2,result.n)
+    end
+    scene.lateStatusWrapper=wrapper
+    scene.lateStatusOriginal=original
+    battle.draw=wrapper
+  end
   return session:update(math.min(math.max(tonumber(dt) or 0,0),.1))
 end
 
@@ -888,6 +955,9 @@ function Gen1.finish(battle)
   if battle and session and session.battle~=battle then return false end
   if session then
     if session.battle then
+      if session.battle.draw==session.lateStatusWrapper then
+        session.battle.draw=session.lateStatusOriginal
+      end
       session.battle.stadium2ImporterGen1Shot=nil
     end
     session:release()

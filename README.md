@@ -113,10 +113,46 @@ scene, models, camera, effects, and battle logic untouched. Pixels contributed
 through `battle.overlay` remain in the engine-authored centred layer when a
 foreign UI owns those regions.
 
-The installed Gen 3 Inspired UI predates these visibility hooks. Stadium uses
-the same narrow, option-aware compatibility detection as Crystal 251 and Battle
-Art so its glass UI yields whenever that replacement battle UI is enabled. A
-disabled Gen 3 battle UI restores Stadium's presentation immediately.
+`STADIUM 2 BATTLE HUD` can also disable Stadium's glass status cards and lower
+panel chrome without disabling the 3D arena, models, camera, or effects. The
+native game UI (or another provider) remains available underneath.
+
+Modern UI Suite's Battle Info HUD enhances the native status data inside
+Stadium's HUD capture, retaining Stadium's detached placement. Its
+Typed Move Colors component claims the lower move area through the official
+`battle.bottom_ui_visible` hook on Gen 2. Suite 0.1.23's Gen 1 renderer instead
+wraps native text drawing directly; Stadium follows that wrapper's live
+ownership predicate so its glass backing also yields for replacement commands,
+dialogue and move selection, including live option and layout changes.
+
+Gen 2 Suite status labels are added inside the HUD capture, within the detached
+card bounds. The Gen 1 Quality of Life instance-draw adapter collects late HUD
+ink once, moves status pixels with the cards, and retains other pixels in the
+native layer. Replacement status owners suppress those late status pixels.
+Gen1 Modern UI receives a `gen1ModernUi.battle.native3d` contract through its
+public adapter registration, so its default 3D-bypass setting recognizes Stadium.
+Other UI mods are never modified.
+
+For future integrations, `exports.battleUI` describes three hooks:
+
+- `battle.status_hud_visible`: return `false` while replacing the complete status
+  HUD; Stadium omits its captured cards and their backing.
+- `battle.bottom_ui_visible`: return `false` while replacing command, move or
+  dialogue UI; Stadium omits the corresponding glass backing.
+- `battle.ui.status_overlay.v1`: draw native-coordinate status enhancements
+  inside Stadium's HUD capture. Call `next(state)` to preserve other providers.
+  This pass runs only when Stadium owns the status region. Use `battle.overlay`
+  for effects that should remain in the battlefield, and `render.hud` for an
+  independently positioned replacement UI.
+
+Visibility decisions must be live and specific to the region actually drawn.
+Installing a UI mod alone must not suppress native prompts. Arbitrary future
+mods that bypass these hooks need their own compatibility adapter.
+
+The installed Gen 3 Inspired UI exposes a live `uiOwnership.ownsBattleUi`
+contract as well as the visibility hooks. Stadium respects that contract,
+including explicit native-UI hiding and full-frame-provider deferral. Older
+versions without the contract retain a narrow, option-aware fallback.
 
 ## Integration API
 

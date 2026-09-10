@@ -102,6 +102,8 @@ function Scene.new(opts)
 end
 
 function Scene:release()
+  if self.statusOverlay and self.statusOverlay.release then self.statusOverlay:release() end
+  self.statusOverlay,self.statusOverlayReady=nil,nil
   for _,actor in pairs(self.actors or {}) do
     if actor and actor.release then actor:release() end
   end

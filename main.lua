@@ -71,6 +71,9 @@ return function(mod)
   mod.options:define({
     { key="stadium2_models", label="STADIUM 2 MODELS", type="toggle", default=true },
     { key="stadium2_battle", label="STADIUM 2 BATTLE", type="toggle", default=true },
+    { key="stadium2_battle_hud", label="STADIUM 2 BATTLE HUD", type="toggle",
+      default=true,
+      help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
     { key="stadium2_shader", label="MODEL SHADER", type="choice", default="stadium",
       choices={{"STADIUM","stadium"},{"WATERCOLOR MANGA","cel"}},
       help="Choose authentic Stadium lighting or an inked watercolor-manga treatment for imported Pokemon models." },
@@ -100,13 +103,37 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.12.1"
+  mod.exports.version = "0.12.3"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
   mod.exports.available = Importer.available
   mod.exports.modelsEnabled = Importer.modelsEnabled
   mod.exports.battleEnabled = Importer.battleEnabled
+  mod.exports.battleHudEnabled = Importer.battleHudEnabled
+  mod.exports.battleUI = {
+    apiVersion=1,
+    statusVisibleHook="battle.status_hud_visible",
+    bottomVisibleHook="battle.bottom_ui_visible",
+    statusOverlayHook="battle.ui.status_overlay.v1",
+  }
+  mod.exports.gen1ModernUi = {apiVersion=1,screens={},battle={
+    native3d=function(_,state)
+      local scene=Battle.currentScene()
+      return scene~=nil and (scene.battle==state or scene.screen==state)
+    end,
+  }}
+  local modernRegistered
+  mod.hooks:wrap("input.step",function(next,game,dt)
+    local handle=mod.find and mod.find("gen1_modern_ui")
+    local api=handle and handle.exports
+    if api and api~=modernRegistered and type(api.registerAdapter)=="function" then
+      local ok,registered=pcall(api.registerAdapter,{owner="STADIUM2_IMPORTER",
+        contract=mod.exports.gen1ModernUi})
+      if ok and registered then modernRegistered=api end
+    end
+    return next(game,dt)
+  end,6)
   mod.exports.shaderStyle = Importer.shaderStyle
   mod.exports.rapidashCutEffectEnabled = Importer.rapidashCutEffectEnabled
   mod.exports.betaArenaEnabled = Importer.betaArenaEnabled

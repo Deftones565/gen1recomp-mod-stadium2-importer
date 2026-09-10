@@ -10,7 +10,8 @@ end}
 local Scene={}
 local env=setmetatable({diagnostic=function() end,Scene=Scene,love={graphics={}},
  modRef={find=function(id) assert(id=="BATTLE_ART_VOXEL_FORK");return {exports={battlePresentation=ui}} end},
- UIOwnership={claimStatus=function() return true end,withNativeStatus=function(_,fn)return fn()end},
+ UIOwnership={claimStatus=function() return true end,withNativeStatus=function(_,fn)return fn()end,
+ drawStatusOverlay=function() end},
  originals={drawHUDs=function(battle) assert(battle:colorMode()==false);assert(battle.dramaticShapeShot==nil);assert(battle.stadium2ImporterGen1Shot==nil) end},
 },{__index=_G})
 local chunk=assert(loadstring(s:sub(a,b-1)));setfenv(chunk,env);chunk()
