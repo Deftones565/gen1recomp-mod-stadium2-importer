@@ -10,6 +10,7 @@ local BattleUIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownershi
 
 return function(mod)
   Importer.bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_nature").bind(mod)
   Fx.bind(mod)
   Battle.bind(mod)
   BattleAA.bind(mod)
@@ -77,6 +78,9 @@ return function(mod)
     { key="stadium2_shader", label="MODEL SHADER", type="choice", default="stadium",
       choices={{"STADIUM","stadium"},{"WATERCOLOR MANGA","cel"}},
       help="Choose authentic Stadium lighting or an inked watercolor-manga treatment for imported Pokemon models." },
+    { key="stadium2_environment", label="BATTLE ENVIRONMENT", type="choice", default="classic",
+      choices={{"CLASSIC","classic"},{"KENNEY NATURE","kenney"}},
+      help="Lightweight Nature Kit grass clearings and outdoor trainer battles. Other environments keep their normal presentation." },
     { key="stadium2_battle_aa", label="BATTLE AA", type="choice", default=0,
       choices={{"OFF",0},{"2X",2},{"4X",4}},
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },

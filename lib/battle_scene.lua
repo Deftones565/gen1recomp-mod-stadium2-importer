@@ -15,6 +15,10 @@ local AA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
 local Extensions = require("mods.STADIUM2_IMPORTER.lib.battle_scene_extensions")
 local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 
+local Watercolor = require("mods.STADIUM2_IMPORTER.lib.battle_watercolor")
+local Nature = require("mods.STADIUM2_IMPORTER.lib.battle_nature")
+local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
+
 local Scene = {}
 Scene.__index = Scene
 Scene.MODE_CLASSIC="classic"
@@ -114,6 +118,8 @@ function Scene:release()
   if self.arena and self.arena.release then pcall(self.arena.release,self.arena) end
   self.arena,self.arenaRenderer=nil,nil
   self.providerBattlerModes=nil
+  Watercolor.release()
+  Nature.release()
   Stage.invalidate()
   Shadow.release()
   Hud.invalidate()
@@ -393,6 +399,10 @@ function Scene:render(requestedWidth,requestedHeight)
   local ok,err=pcall(function()
     g.setCanvas(sceneTarget(self))
     self.environment=self:resolveEnvironment()
+    local natureActive=self.sceneMode==Scene.MODE_CLASSIC
+      and Importer.environmentStyle()=="kenney" and Nature.matches(self.battleContext,self.environment)
+    self.natureActive=natureActive
+    if natureActive then self.environment=Nature.lighting(self.environment) end
     local defaultFrame
     if self.arenaMode then
       defaultFrame=Camera.sceneFrame(width,height,{
@@ -402,6 +412,7 @@ function Scene:render(requestedWidth,requestedHeight)
     else
       defaultFrame=Camera.sceneFrame(width,height)
     end
+    if natureActive then defaultFrame=Nature.frame(defaultFrame) end
     local initialMarks=projectedMarks(self,defaultFrame,width,height)
     local cameraCtx=extensionContext(self,g,defaultFrame,width,height,renderWidth,renderHeight,initialMarks)
     cameraCtx.cameraPhase="select"
@@ -429,7 +440,9 @@ function Scene:render(requestedWidth,requestedHeight)
       -- Outdoor field geometry omits the parent battle cyclorama, so paint
       -- only an explicitly attached arena backdrop. Enclosed arenas retain
       -- their authored clear colour and never inherit the Gen 1/2 world sky.
-      if self.sceneMode==Scene.MODE_CLASSIC then
+      if natureActive then
+        Nature.sky(g,renderWidth,renderHeight,self.environment,frame)
+      elseif self.sceneMode==Scene.MODE_CLASSIC then
         Sky.paint(g,renderWidth,renderHeight,self.environment,frame)
       elseif self.environment.backdrop==true then
         Sky.paint(g,renderWidth,renderHeight,self.environment,frame)
@@ -459,6 +472,7 @@ function Scene:render(requestedWidth,requestedHeight)
 
     local lightVP=Shadow.begin(self.environment.light,self.environment.shadowStrength)
     if lightVP then
+      if natureActive then Nature.castShadow(g,lightVP) end
       ext.shadowPhase="cast"
       ext.shadow={viewProjection=lightVP}
       Extensions.shadow(ext)
@@ -474,11 +488,16 @@ function Scene:render(requestedWidth,requestedHeight)
       end
     end
     local shadow=lightVP and Shadow.finish() or nil
+    if natureActive then Nature.updateTorchShadows(g,candidateActors,matrices,battlerModes,self.environment) end
     ext.shadow=shadow
     g.setCanvas(sceneTarget(self))
 
     local providerMarks,stageErr=Extensions.environment(ext,function()
       if self.sceneMode==Scene.MODE_ARENA then return self:drawArena(ext,marks) end
+      if natureActive then
+        Nature.draw(g,frame,self.environment,shadow)
+        return marks
+      end
       return Stage.draw(g,width,height,frame,self.actors,shadow,self.environment)
     end)
     if type(providerMarks)=="table" and providerMarks.player and providerMarks.enemy then
@@ -526,6 +545,8 @@ function Scene:render(requestedWidth,requestedHeight)
           local drawn,drawErr=actor.renderer:drawScene(pass,entry[1],{
             viewProjection=vp,viewMatrix=frame.view,
             normalMatrix=Renderer.normalMatrix(entry[2],0,false),
+            bindTorchLighting=natureActive and Nature.bindTorchLighting or nil,
+            sceneWatercolor=natureActive,
             lightDir=self.environment.light,ambient=self.environment.ambient,
             diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
             modernLighting=self.sceneMode==Scene.MODE_ARENA,
@@ -552,6 +573,8 @@ function Scene:render(requestedWidth,requestedHeight)
     end
 
     restoreWorldTarget(self,g)
+    if natureActive then require("mods.STADIUM2_IMPORTER.lib.battle_torches").draw(g,frame) end
+    restoreWorldTarget(self,g)
     Extensions.overlay(ext)
     restoreWorldTarget(self,g)
     g.setColor(1,1,1,1)
@@ -573,6 +596,7 @@ function Scene:render(requestedWidth,requestedHeight)
   end
 
   self.presentCanvas=AA.resolve(self.canvas,pixelWidth,pixelHeight)
+  if self.natureActive then self.presentCanvas=Watercolor.resolve(self.presentCanvas) end
   Hud.build(self.presentCanvas)
   self.readyFrame=true
   self.defect=nil

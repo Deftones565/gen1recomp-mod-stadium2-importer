@@ -150,6 +150,14 @@ function Importer.shaderStyle()
   return "stadium"
 end
 
+function Importer.environmentStyle()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_environment")
+    if ok and value=="kenney" then return "kenney" end
+  end
+  return "classic"
+end
+
 function Importer.rapidashCutEffectEnabled()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_rapidash_cut_fx")

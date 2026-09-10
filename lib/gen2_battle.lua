@@ -85,7 +85,9 @@ function Scene.new(battle,context)
   local actorOpts=gen2ActorOptions()
   local self=setmetatable({},Scene)
   local arena,arenaError
-  if Importer.betaArenaEnabled() then
+  local nature=Importer.environmentStyle()=="kenney"
+    and require("mods.STADIUM2_IMPORTER.lib.battle_nature").matches(context)
+  if Importer.betaArenaEnabled() and not nature then
     local arenaIndex,reason=ArenaSelector.resolve(context)
     self.arenaSelectionReason=reason
     if arenaIndex~=nil then arena,arenaError=ArenaRuntime.load(arenaIndex,Importer) end
@@ -100,6 +102,7 @@ function Scene.new(battle,context)
     actors={player=Actor.new("player",actorOpts),enemy=Actor.new("enemy",actorOpts)},
     warn=warn,label="Gen 2 battle",arena=arena,arenaMode=arena~=nil,
   })
+  self.battleContext=context
   self.battle=battle
   self.screen=nil
   self.substituteActors={

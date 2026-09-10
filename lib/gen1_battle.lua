@@ -89,7 +89,7 @@ local function actorOptions()
   return {warn=warn,dexOf=dexOf,label="Gen 1 battle"}
 end
 
-function Scene.new(battle)
+function Scene.new(battle,context)
   local opts=actorOptions()
   local self=setmetatable({},Scene)
   Presentation.init(self,{
@@ -97,6 +97,7 @@ function Scene.new(battle)
     warn=warn,label="Gen 1 battle",
   })
   self.battle=battle
+  self.battleContext=context
   self.game=battle and battle.game
   self.substituteActors={player=Actor.new("player",opts),enemy=Actor.new("enemy",opts)}
   self.lastGrow={player=false,enemy=false}
@@ -1003,13 +1004,13 @@ function Gen1.install()
   return true
 end
 
-function Gen1.ensure(battle)
+function Gen1.ensure(battle,context)
   if not (installed and battle and Importer.battleEnabled() and Importer.available(configured)) then
     return false
   end
   if session and session.battle==battle then return true end
   Gen1.finish()
-  session=Scene.new(battle)
+  session=Scene.new(battle,context)
   session:sync()
   return true
 end

@@ -428,3 +428,73 @@ end, 100)
 ```
 
 Battler modes are `host` (Stadium draws its model), `provider` (the extension draws it), and `native` (the game may draw its normal sprite). If a provider requests a side but does not report it drawn, Stadium safely falls back to its model. `battleSceneCapabilities` remains available for feature detection, and contains the exact raw hook names for mods that prefer `mod.hooks:wrap` directly.
+
+### Kenney woodland battle presentation
+
+Select **BATTLE ENVIRONMENT → KENNEY NATURE** in the mod options. Grass
+encounters and outdoor trainer battles use a textured woodland clearing with
+Kenney Nature Kit trees, bushes, flowers, and grass. Tree crowns are rounded
+into irregular foliage clusters with smooth normals. Classic remains the default;
+water, cave and indoor battles retain their existing presentation. Matching
+outdoor encounters take precedence over the experimental contextual trainer
+arena option when a battle starts.
+
+The clearing includes watercolor leaf, bark, stone and petal materials, painted
+grass/clover, layered foliage, tree shadows in the
+existing sun map, a painted cloud sky with time-of-day tint, and a lower camera
+angle. Camera providers can still override the shot. Environment providers can
+still replace the ground. The scene is currently 482,866 triangles batched into
+one static mesh, with a second draw for scenery shadows and a separate sky dome, three mipmapped images,
+plus one RGBA8 watercolor target. This version prioritizes appearance; mobile
+performance has not been benchmarked. Assets load lazily and release with the
+scene. See `assets/kenney_nature/README.md` for sources, license, and rebuild steps.
+
+From the game root, run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_nature_test.lua`
+for routing, deterministic layout, options and camera checks. The live Crystal
+visual driver is `mods/STADIUM2_IMPORTER/tests/drivers/gen2_nature_visual.lua` and
+requires an imported Crystal ROM and ready Stadium model cache.
+
+The woodland now surrounds the clearing, with tall trees outside the camera
+orbit and lower plants around the fighting lane. A Kenney Survival Kit wooden
+trail shelter sits in the outer foreground area. The ground extends to a distant
+apron instead of ending at the old square boundary. The sky dome uses camera
+rotation and projection only: it has no positional parallax when orbiting or
+moving the camera. Four cardinal views and a high/zoomed-out view are checked
+with the isolated renderer; third-party unrestricted camera ranges remain outside
+those checks.
+
+Irregular understory patches now surround tree roots throughout the woodland: bushes,
+broad-leaf plants, grass, occasional flowers, and small rocks. The shelter approach
+and central fighting lane remain open.
+
+
+The Kenney scene uses warm directional sunlight and cool hemispheric fill. Its
+watercolor manga finish runs on the complete rendered image after antialiasing
+and before the HUD, including sky, plants, buildings, flames and Pokémon. Shared
+pigment bands, edge-aware color washes, colored ink and subtle paper grain unify
+the materials. Lighting is resolved first; the finish preserves warm flame colors,
+cool shadows and nighttime blacks. The separate model-only manga pass is disabled
+for this presentation to avoid applying the style twice to Pokémon.
+
+Desktop uses nine scene texture samples; Android/iOS use five with simpler
+softening. Both use GLES 2-compatible syntax and RGBA8 output without depth reads,
+float targets or derivatives. Shader or allocation failure preserves the original
+scene. GLES validation and the mobile shader path were tested on a desktop GPU;
+physical Android/iOS performance remains unmeasured.
+
+Two irregularly placed wooden torches use the Charmander family's animated flame
+textures. Each is a 360-degree point source with six 256×256 radial-depth shadow
+faces, packed into a 768×512 atlas. Static nearby scenery is captured once and
+rebuilt after window resizing; only moving battlers are redrawn at most 20 times
+per second. The two atlases, twelve cached static faces and scratch color target
+use about 6.25 MiB, plus depth storage. Both scenery and Pokémon use four filtered
+shadow samples with world-space slope bias; filter directions cross cube seams.
+Light falls off over 100 world units. Allocation failure preserves unshadowed
+point lighting on both scenery and Pokémon.
+
+Three outer tree rings and matching horizon fog conceal the extended ground apron.
+Run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_torch_shadows_test.lua` from the
+game root for cube projection, static-cache reuse, resize and failure checks.
+`tests/drivers/torch_cube_visual.lua` exports an isolated LOVE GPU test (call its
+returned function after initializing graphics); it needs no model/ROM data and
+checks occluder depth and lit/shadowed receivers in all six directions.

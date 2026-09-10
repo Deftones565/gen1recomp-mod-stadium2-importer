@@ -509,6 +509,10 @@ void effect() {
 #endif
 ]]
 
+local TorchLightingShader=require("mods.STADIUM2_IMPORTER.lib.torch_lighting_shader")
+SHADER=TorchLightingShader.apply(SHADER)
+MOBILE_SHADER=TorchLightingShader.apply(MOBILE_SHADER)
+
 local SHADOW_SHADER = [[
 varying float vDepth;
 #ifdef VERTEX
@@ -2293,7 +2297,7 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send, self.shader, "modernLightingEnabled",
       modernLighting == true and 1 or 0)
     pcall(self.shader.send, self.shader, "celShadingEnabled",
-      self:currentShaderStyle() == "cel" and 1 or 0)
+      not options.sceneWatercolor and self:currentShaderStyle() == "cel" and 1 or 0)
     pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
     pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
     pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
@@ -2304,6 +2308,8 @@ function Renderer:drawScene(pass, model, options)
       self.boundedTextureUV and 1 or 0)
     pcall(self.shader.send, self.shader, "smoothTextureFiltering",
       self.smoothArenaTextures and 1 or 0)
+    pcall(self.shader.send,self.shader,"localTorchEnabled",0)
+    if options.bindTorchLighting then options.bindTorchLighting(self.shader) end
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
     pcall(self.shader.send, self.shader, "sunEnabled",
       options.sunMap and self.receiveModelSunShadows and 1 or 0)
@@ -2557,6 +2563,7 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "textureScroll", { 0, 0, 0, 0 })
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
       pcall(self.shader.send, self.shader, "sceneTint", {1,1,1,1})
+      pcall(self.shader.send, self.shader, "localTorchEnabled", 0)
       pcall(self.shader.send, self.shader, "flashAmount", 0)
       pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
       pcall(self.shader.send, self.shader, "n64CoveragePassthrough", 0)
