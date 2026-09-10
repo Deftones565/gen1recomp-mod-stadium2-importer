@@ -22,6 +22,15 @@ for _,p in ipairs(T.positions) do
   end
  end
 end
+-- Current bounds cross face seams conservatively, while opposite faces cull.
+local Mat=require(root..'renderer')
+local p0=T.positions[1]
+local bounds={minX=p0[1]+7,maxX=p0[1]+9,minY=p0[2],maxY=p0[2]+2,minZ=p0[3]-1,maxZ=p0[3]+1}
+assert(S.visibleInFace(S.frame(p0,1),Mat.identity(),bounds))
+assert(not S.visibleInFace(S.frame(p0,2),Mat.identity(),bounds))
+local seam={minX=p0[1]+7,maxX=p0[1]+9,minY=p0[2],maxY=p0[2]+2,minZ=p0[3]+7,maxZ=p0[3]+9}
+assert(S.visibleInFace(S.frame(p0,1),Mat.identity(),seam))
+assert(S.visibleInFace(S.frame(p0,5),Mat.identity(),seam))
 local p=T.positions[1]
 local now,draws,allocations,pushes=0,0,0,0
 local oldTime=T.time;T.time=function() return now end
@@ -34,10 +43,10 @@ local g={getDimensions=function() return width,720 end,push=function() pushes=pu
 local vertices={}
 for i=1,3 do vertices[i]={p[1],0,p[3],0,0,0,0,0,0,1} end
 assert(S.update(g,vertices,{}, {},{},{}))
-assert(draws==30 and allocations==15 and pushes==0)
-now=.01;S.update(g,vertices,{}, {},{},{});assert(draws==30,'shadow refresh exceeded 20Hz')
-now=.06;S.update(g,vertices,{}, {},{},{});assert(draws==54 and allocations==15,'shadow targets not reused')
-width=720;now=.07;S.update(g,vertices,{}, {},{},{});assert(draws==84,'resize must rebuild cleared static maps')
+assert(draws==18 and allocations==15 and pushes==0)
+now=.01;S.update(g,vertices,{}, {},{},{});assert(draws==18,'shadow refresh exceeded 20Hz')
+now=.06;S.update(g,vertices,{}, {},{},{});assert(draws==18 and allocations==15,'shadow targets not reused')
+width=720;now=.07;S.update(g,vertices,{}, {},{},{});assert(draws==36,'resize must rebuild cleared static maps')
 S.release()
 g.newCanvas=function() error('allocation failed') end
 assert(S.update(g,vertices,{}, {},{},{})==nil and S.error and pushes==0,'failure leaked graphics state')

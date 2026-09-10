@@ -31,6 +31,27 @@ S.source=SOURCE
 function S.frame(p,face)
  return Mat.matMul(Mat.perspective(math.rad(90),1,.1,P.range),P.view(p,face or 1))
 end
+-- Conservative clip test of the current posed bounds. A face is skipped only
+-- when all eight corners lie beyond one clip plane, including seam crossings.
+function S.visibleInFace(vp,model,bounds)
+ if not bounds then return true end
+ local m=Mat.matMul(vp,model)
+ local outside={true,true,true,true,true,true}
+ for _,x in ipairs({bounds.minX,bounds.maxX}) do
+  for _,y in ipairs({bounds.minY,bounds.maxY}) do
+   for _,z in ipairs({bounds.minZ,bounds.maxZ}) do
+    local c={}
+    for row=1,4 do local i=(row-1)*4;c[row]=m[i+1]*x+m[i+2]*y+m[i+3]*z+m[i+4] end
+    for axis=1,3 do
+     outside[axis*2-1]=outside[axis*2-1] and c[axis]<-c[4]
+     outside[axis*2]=outside[axis*2] and c[axis]>c[4]
+    end
+   end
+  end
+ end
+ for _,v in ipairs(outside) do if v then return false end end
+ return true
+end
 local function canvas(g,w,h)
  local c=g.newCanvas(w,h,{format='rgba8',readable=true,dpiscale=1})
  c:setFilter('nearest','nearest');return c
@@ -55,6 +76,10 @@ function S.update(g,vertices,format,actors,matrices,modes)
  if last and now-last<S.interval then return maps end
  if not pcall(g.push,'all') then return nil end
  local ok,err=pcall(function()
+  local actorBounds={}
+  for side,actor in pairs(actors) do
+   if actor.renderer and actor.renderer.poseBounds then actorBounds[side]=actor.renderer:poseBounds() end
+  end
   shader=shader or g.newShader(SOURCE)
   scratch=scratch or canvas(g,P.size,P.size)
   for i,p in ipairs(Torches.positions) do
@@ -73,29 +98,38 @@ function S.update(g,vertices,format,actors,matrices,modes)
     for face=1,6 do
      local v=entry.faces[face]
      if not v then v={map=canvas(g,P.size,P.size),vp=S.frame(p,face)};entry.faces[face]=v end
+     v.hadActors=nil
      beginFace(g,v.map,p,v.vp);shader:send('staticDepth',scratch);shader:send('useStaticDepth',0);if entry.mesh then g.draw(entry.mesh) end
 
     end
     if entry.mesh then entry.mesh:release();entry.mesh=nil end;entry.ready=true
    end
    for face,v in ipairs(entry.faces) do
-    beginFace(g,scratch,p,v.vp)
-    -- Restore cached static color; static occlusion is compared explicitly in
-    -- the actor fragment shader, so no depth-buffer copies are needed.
-    g.setShader();g.setDepthMode('always',false);g.draw(v.map)
-    g.setShader(shader);g.setDepthMode('less',true)
-    shader:send('staticDepth',v.map);shader:send('useStaticDepth',1)
+    local visible={}
     for _,side in ipairs({'player','enemy'}) do
      local actor,matrix=actors[side],matrices[side]
-     if actor and actor.renderer and matrix and modes[side]=='host' then
-      local r=actor.renderer;local old=r.shadowShader;r.shadowShader=shader
-      local success,drawn,why=pcall(r.drawShadowMap,r,matrix[1],v.vp)
+     if actor and actor.renderer and matrix and modes[side]=='host'
+       and S.visibleInFace(v.vp,matrix[1],actorBounds[side]) then visible[#visible+1]=side end
+    end
+    if #visible>0 then
+     beginFace(g,scratch,p,v.vp)
+     g.setShader();g.setDepthMode('always',false);g.draw(v.map)
+     g.setShader(shader);g.setDepthMode('less',true)
+     shader:send('staticDepth',v.map);shader:send('useStaticDepth',1)
+     for _,side in ipairs(visible) do
+      local r=actors[side].renderer;local old=r.shadowShader;r.shadowShader=shader
+      local success,drawn,why=pcall(r.drawShadowMap,r,matrices[side][1],v.vp)
       r.shadowShader=old
       if not success or not drawn then error(why or drawn) end
      end
     end
-    g.setCanvas(entry.map);g.setShader();g.setDepthMode('always',false)
-    g.draw(scratch,((face-1)%3)*P.size,math.floor((face-1)/3)*P.size)
+    -- Empty faces remain cached. Restore a face once when an actor leaves it.
+    if #visible>0 or v.hadActors~=false then
+     g.setCanvas(entry.map);g.setShader();g.origin();g.setScissor()
+     g.setDepthMode('always',false);g.setBlendMode('replace','premultiplied');g.setColor(1,1,1,1)
+     g.draw(#visible>0 and scratch or v.map,((face-1)%3)*P.size,math.floor((face-1)/3)*P.size)
+    end
+    v.hadActors=#visible>0
    end
   end
  end)

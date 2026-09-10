@@ -12,7 +12,7 @@ local seed=12345
 math.randomseed(seed);local expected=math.random();math.randomseed(seed)
 local vertices=Nature.vertices()
 assert(math.random()==expected,"scenery must not consume game RNG")
-assert(#vertices%3==0 and #vertices/3<500000,"bounded authored geometry")
+assert(#vertices%3==0 and #vertices/3<350000,"bounded authored geometry")
 local materials={}
 for _,v in ipairs(vertices) do
  assert(#v==10)
