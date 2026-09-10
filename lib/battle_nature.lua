@@ -37,7 +37,11 @@ vec3 paint(vec2 uv,vec2 quadrant){
 }
 vec3 materialPaint(vec3 p,vec3 n,vec2 quadrant,vec2 scale){
  vec3 weights=pow(abs(n),vec3(4.));weights/=max(.0001,weights.x+weights.y+weights.z);
- return paint(p.zy*scale,quadrant)*weights.x+paint(p.xz*scale,quadrant)*weights.y+paint(p.xy*scale,quadrant)*weights.z;
+ vec3 result=vec3(0.);
+ if(weights.x>.001)result+=paint(p.zy*scale,quadrant)*weights.x;
+ if(weights.y>.001)result+=paint(p.xz*scale,quadrant)*weights.y;
+ if(weights.z>.001)result+=paint(p.xy*scale,quadrant)*weights.z;
+ return result;
 }
 ]]..require("mods.STADIUM2_IMPORTER.lib.torch_projection").source..[[
 float visibility(Image map,vec3 light,vec3 p,vec3 n){
@@ -164,7 +168,10 @@ function Nature.vertices()
     local radius=205+ring*65+hash(i+930)*24
     tree(math.cos(angle)*radius,math.sin(angle)*radius,32+hash(i+980)*22,2+i%2)
   end end
+  local groundColors={}
   local function ground(x,z)
+    local key=x..":"..z
+    if groundColors[key] then return groundColors[key] end
     local u=(x-z)*.70710678;local d=-(x+z)*.70710678
     local clearing=math.exp(-((u/35)^2+(d/43)^2))
     local variation=.045*math.sin(x*.21+math.sin(z*.13)*2)*math.cos(z*.24)
@@ -175,6 +182,7 @@ function Nature.vertices()
       shade=math.max(shade,.32*math.exp(-(dx*dx+dz*dz)*1.5))
     end
     for j=1,3 do c[j]=c[j]*(1-shade) end
+    groundColors[key]=c
     return c
   end
   -- Static vertex colour ground: mottled meadow + broad baked contact shade.
@@ -205,7 +213,9 @@ function Nature.vertices()
     end
   end
   for i,t in ipairs(trees) do
-    place(({"tree_detailed","tree_oak","tree_fat"})[t.variant],t.x,t.z,t.size,i*2.4,.88+hash(i)*.24)
+    local name=({"tree_detailed","tree_oak","tree_fat"})[t.variant]
+    if t.x*t.x+t.z*t.z>150^2 then name=name.."_lod" end
+    place(name,t.x,t.z,t.size,i*2.4,.88+hash(i)*.24)
   end
   -- Understory grows in uneven patches around the actual tree positions,
   -- rather than another concentric border around the battle clearing.

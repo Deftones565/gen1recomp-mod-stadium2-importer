@@ -29,7 +29,11 @@ float torchCompare(Image map,vec3 ray,float receiver){
  return smoothstep(receiver-.001,receiver+.001,d.r+d.g/255.);
 }
 float torchVisibility(Image map,vec3 light,vec3 p,vec3 n){
- vec3 ray=p+n*.18-light;
+ // Most forest pixels lie outside either torch. Skip all four atlas taps
+ // before computing the filter basis; the lighting falloff is already zero.
+ vec3 delta=p-light;
+ if(dot(delta,delta)>=10000.)return 1.;
+ vec3 ray=delta+n*.18;
  float distance=length(ray);
  vec3 dir=ray/max(distance,.0001);
  // World-space bias is independent of face orientation and perspective depth.
