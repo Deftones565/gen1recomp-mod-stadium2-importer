@@ -718,6 +718,23 @@ local function sampleComponent(c, frame, fallback)
   return c[at]
 end
 
+-- A malformed/alternate raw pose decoder can expose signed scale sentinels
+-- (notably in Dig/Diglett clips). Passing those through skinning inverts or
+-- explodes the mesh. Stadium battle poses never need a negative or enormous
+-- bone scale; preserve the authored value when it is physically plausible and
+-- fall back to the bind scale otherwise.
+local function safeScale(value, fallback)
+  value=tonumber(value)
+  if not value or value<=0 or value>4 then return fallback end
+  return value
+end
+
+local function safeTranslation(value, fallback)
+  value=tonumber(value)
+  if not value or math.abs(value)>4096 then return fallback end
+  return value
+end
+
 local function samplePose(model, animIndex, frame)
   local anim = animIndex and model.anims and model.anims[animIndex] or nil
   return function(i)
@@ -726,17 +743,17 @@ local function samplePose(model, animIndex, frame)
     local tr = anim.tracks[i]
     if not tr then return bone.t, bone.r, bone.s end
     return {
-      sampleComponent(tr.t[1], frame, bone.t[1]),
-      sampleComponent(tr.t[2], frame, bone.t[2]),
-      sampleComponent(tr.t[3], frame, bone.t[3]),
+      safeTranslation(sampleComponent(tr.t[1], frame, bone.t[1]),bone.t[1]),
+      safeTranslation(sampleComponent(tr.t[2], frame, bone.t[2]),bone.t[2]),
+      safeTranslation(sampleComponent(tr.t[3], frame, bone.t[3]),bone.t[3]),
     }, {
       sampleComponent(tr.r[1], frame, bone.r[1]),
       sampleComponent(tr.r[2], frame, bone.r[2]),
       sampleComponent(tr.r[3], frame, bone.r[3]),
     }, {
-      sampleComponent(tr.s[1], frame, bone.s[1]),
-      sampleComponent(tr.s[2], frame, bone.s[2]),
-      sampleComponent(tr.s[3], frame, bone.s[3]),
+      safeScale(sampleComponent(tr.s[1], frame, bone.s[1]),bone.s[1]),
+      safeScale(sampleComponent(tr.s[2], frame, bone.s[2]),bone.s[2]),
+      safeScale(sampleComponent(tr.s[3], frame, bone.s[3]),bone.s[3]),
     }
   end
 end
@@ -805,13 +822,15 @@ local function samplePoseInterpolated(model, animIndex, frame, alpha, loop)
     end
 
     return {
-      lerp(at[1], bt[1], moveBlend), lerp(at[2], bt[2], moveBlend),
-      lerp(at[3], bt[3], moveBlend),
+      safeTranslation(lerp(at[1], bt[1], moveBlend),at[1]),
+      safeTranslation(lerp(at[2], bt[2], moveBlend),at[2]),
+      safeTranslation(lerp(at[3], bt[3], moveBlend),at[3]),
     }, {
       ar[1] + rx * rotBlend, ar[2] + ry * rotBlend, ar[3] + rz * rotBlend,
     }, {
-      lerp(as[1], bs[1], alpha), lerp(as[2], bs[2], alpha),
-      lerp(as[3], bs[3], alpha),
+      safeScale(lerp(as[1], bs[1], alpha),as[1]),
+      safeScale(lerp(as[2], bs[2], alpha),as[2]),
+      safeScale(lerp(as[3], bs[3], alpha),as[3]),
     }
   end
 end
@@ -1790,13 +1809,13 @@ function Renderer:updatePose(force)
     local now=self:geometryAnchor()
     local dx,dy,dz=now[1]-self.bindAnchor[1],now[2]-self.bindAnchor[2],now[3]-self.bindAnchor[3]
     local dist=math.sqrt(dx*dx+dy*dy+dz*dz)
-    local allow=math.max(.001,(tonumber(self.model.height) or 1)*.75)
+    local allow=self.lockTravel and 0 or math.max(.001,(tonumber(self.model.height) or 1)*.75)
     local tx,ty,tz=0,0,0
     if dist>allow then
       local k=(dist-allow)/dist;tx,ty,tz=dx*k,dy*k,dz*k
     end
     local dt=self.poseDT
-    local a=dt and dt>0 and (1-.5^(dt/.05)) or 1
+    local a=self.lockTravel and 1 or (dt and dt>0 and (1-.5^(dt/.05)) or 1)
     self.anchorX=(self.anchorX or tx)+(tx-(self.anchorX or tx))*a
     self.anchorY=(self.anchorY or ty)+(ty-(self.anchorY or ty))*a
     self.anchorZ=(self.anchorZ or tz)+(tz-(self.anchorZ or tz))*a

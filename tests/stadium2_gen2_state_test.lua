@@ -59,7 +59,7 @@ ok(scene:visualState("player")=="hidden",
 volatile[mon]={}
 
 volatile[mon]={vanished=true,chargeMove="FLY"}
-scene:handleEvent({kind="move",side="player",move="FLY"})
+scene:handleEvent({kind="move",side="player",move="FLY",animParam=1})
 scene.screen.anim={}
 scene.screen.animPicState=function() return {hidden=false} end
 ok(scene:visualState("player")=="pokemon",
@@ -83,7 +83,7 @@ scene.screen.anim=nil
 scene.screen.animPicState=function() return nil end
 
 volatile[mon]={vanished=true,chargeMove="DIG"}
-scene:handleEvent({kind="move",side="player",move="DIG"})
+scene:handleEvent({kind="move",side="player",move="DIG",animParam=1})
 scene.screen.anim={}
 scene.screen.animPicState=function() return {hidden=false} end
 ok(scene:visualState("player")=="pokemon","Dig begins with its burrow visible")
@@ -111,10 +111,16 @@ ok(scene:visualState("player")=="empty" and scene:ownsSlot("player"),
   "completed faint leaves an empty owned platform")
 mon.hp=20;actor.context="idle";actor.faintFinished=false
 
-scene:handleEvent({kind="move",side="player",move="SUBSTITUTE"})
+volatile[mon]={substitute=10}
+local made={kind="damage",side="player",anim=false,amount=5}
+scene:recordEvent(made);scene:handleEvent(made)
 ok(scene:visualState("player")=="substitute" and scene:ownsSlot("player"),
   "Substitute replaces the Pokemon without enabling its sprite")
-scene:handleEvent({kind="message",text="PIKACHU's SUBSTITUTE broke!"})
+volatile[mon]={}
+local impact={kind="message",text="localized impact"}
+scene:recordEvent(impact)
+local broken={kind="message",text="localized break"}
+scene:recordEvent(broken);scene:handleEvent(broken)
 ok(scene:visualState("player")=="pokemon",
   "breaking Substitute restores the model directly")
 

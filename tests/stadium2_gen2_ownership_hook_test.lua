@@ -22,6 +22,7 @@ local BattleState={
     if not runner:step() then self.anim=nil end -- Gen1Recomp 0.1.78 behavior
   end,
   startAnim=function(self,runner) self.anim=runner; return true end,
+  animForMove=function(self) return not self.disableMove end,
   advanceQueue=function() end,finishBattle=function() end,
 }
 local View={present=function() end,drawObjects=function(_,runner) calls.objects=calls.objects+1; calls.lastRunner=runner end}
@@ -153,5 +154,28 @@ Game2:wheelmoved(0,1)
 assert(Camera.state().zoomGoal<1,"battle wheel did not zoom the owned camera")
 assert(calls.wheel==0,"claimed battle wheel leaked into the overworld zoom")
 
+local moveCalls,hitCalls={},0
+ownedScene.actors.player.attack=function(_,move) moveCalls[#moveCalls+1]=move end
+ownedScene.actors.player.hit=function() hitCalls=hitCalls+1 end
+battle.data.moves={SURF={index=57}}
+ownedScene:handleEvent({kind="move",side="player",move="SURF",deferAnim=true})
+assert(#moveCalls==0,"move announcement started its deferred clip early")
+screen:animForMove("SURF","player")
+screen:animForMove("SURF","player")
+assert(#moveCalls==2 and moveCalls[1]==57 and moveCalls[2]==57,
+  "actual repeated Surf starts did not select the move clip")
+screen.disableMove=true
+screen:animForMove("SURF","player")
+assert(#moveCalls==2,"disabled native move playback still started a model attack")
+ownedScene:handleEvent({kind="damage",side="player",amount=5})
+ownedScene:handleEvent({kind="damage",side="player",amount=5,anim=false})
+ownedScene:handleEvent({kind="damage",side="player",amount=0})
+assert(hitCalls==1,"impact routing confused direct damage with silent costs")
+local emitted={kind="message",text="localized"}
+battle.events={}
+require("src.battle.gen2.Battle").emit(battle,emitted)
+assert(battle.events[1]==emitted and ownedScene.eventVisuals[emitted],
+  "host emission did not record presentation state without altering the event")
+
 Gen2.finish(nil,true)
-print("13 checks passed (Stadium 2 permanent Gen 2 hooks and controls)")
+print("18 checks passed (Stadium 2 permanent Gen 2 hooks, controls and move triggers)")

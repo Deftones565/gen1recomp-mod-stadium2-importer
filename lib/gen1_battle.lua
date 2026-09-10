@@ -129,7 +129,9 @@ function Scene:sync()
     local actor=self.actors[side]
     local mon=self:shownMon(side)
     if mon and Importer.modelsEnabled() then
-      actor:load(data,mon,dexOf(data,mon))
+      local battler=self:shownBattler(side)
+      local copied=self.transformSprites and self.transformSprites[battler.sprite]
+      actor:load(data,mon,copied or dexOf(data,mon))
     else
       actor:release()
       actor.failedFor,actor.failedForm=nil,nil
@@ -154,8 +156,16 @@ function Scene:hostHidden(side)
   local battle,b=self.battle,self:shownBattler(side)
   if not (battle and b) then return true end
   if side=="enemy" and battle.enemyHidden then return true end
+  local pf=battle.picFx and battle.picFx[b]
+  if pf and pf.hidden then return true end
   if safeCall(battle,"fxHidden",b) then return true end
   return false
+end
+
+function Scene:substituteVisible(side)
+  local b=self:shownBattler(side)
+  return b and ((b.substituteHP and not b.substitutePending)
+    or (self.heldSubstitutes and self.heldSubstitutes[b])) or false
 end
 
 function Scene:ownsSlot(side)
@@ -170,7 +180,7 @@ function Scene:ownsSlot(side)
   if side=="player" and (battle.safari or battle.demo) then return false end
   local b=self:shownBattler(side)
   if not b then return false end
-  if b.substituteHP then return self:ensureSubstitute(side)~=nil end
+  if self:substituteVisible(side) then return self:ensureSubstitute(side)~=nil end
   return self.actors[side] and self.actors[side].renderer~=nil
 end
 
@@ -186,8 +196,8 @@ function Scene:ensureSubstitute(side)
     return nil
   end
   actor.renderer=renderer
-  actor.mon={hp=1,species=253}
-  actor.dex,actor.variant=253,"normal"
+  actor.mon={hp=1,species=252}
+  actor.dex,actor.variant=252,"normal"
   actor.callbackFrame=side=="enemy" and 4 or 0
   actor:play("idle",true)
   return actor
@@ -197,7 +207,6 @@ function Scene:visualState(side)
   local battle,b=self.battle,self:shownBattler(side)
   if not self:ownsSlot(side) then return "native" end
   if not b then return "empty" end
-  if b.substituteHP then return "substitute" end
 
   local actor=self.actors[side]
   if b.fainted then
@@ -212,6 +221,7 @@ function Scene:visualState(side)
   if side=="player" and battle.sendingOut and not grow then return "empty" end
   if self:hostHidden(side) then return "hidden" end
   if (battle.introSlide or 0)>0 and side=="player" then return "empty" end
+  if self:substituteVisible(side) then return "substitute" end
   return actor.renderer and "pokemon" or "native"
 end
 
@@ -224,7 +234,25 @@ end
 
 function Scene:picScale(side)
   local grow=self:hostGrow(side)
-  return grow and clamp(grow,0,1) or 1
+  if grow then return clamp(grow,0,1) end
+  local battler=self:shownBattler(side)
+  local fx=battler and self.battle.picFx and self.battle.picFx[battler]
+  return fx and fx.minimized and not self:substituteVisible(side) and .35 or 1
+end
+
+function Scene:picElevation(side)
+  local b=self:shownBattler(side)
+  local pf=b and self.battle.picFx and self.battle.picFx[b]
+  if not pf then return 0 end
+  local t=tonumber(pf.t) or 0
+  local charging=b.charging
+  local move=type(charging)=="table" and charging.id or charging
+  if move=="FLY" and pf.kind=="squish" then
+    return 3*clamp(t/24,0,1)
+  end
+  if pf.kind=="slideDown" then return -clamp(t/21,0,1) end
+  if pf.kind=="slideUp" then return -(1-clamp(t/14,0,1)) end
+  return 0
 end
 
 function Scene:syncPresentationState()
@@ -264,7 +292,9 @@ function Scene:syncPresentationState()
   -- Stadium move clip. Special host animations (ball toss, faint, send-out)
   -- have no move definition and therefore do not trigger an attack clip.
   local playing=battle.animPlaying and true or false
-  if playing and not self.animWasPlaying then
+  if playing and not self.moveStartHooked and (not self.animWasPlaying
+      or battle.animName~=self.lastAnimName
+      or battle.animAttackerIsPlayer~=self.lastAnimAttacker) then
     local name=battle.animName
     local def=battle.data and battle.data.moves and battle.data.moves[name]
     if def then
@@ -273,6 +303,8 @@ function Scene:syncPresentationState()
     end
   end
   self.animWasPlaying=playing
+  self.lastAnimName=battle.animName
+  self.lastAnimAttacker=battle.animAttackerIsPlayer
 end
 
 function Scene:update(dt)
@@ -521,6 +553,92 @@ local function installHooks()
   local BattleState=require("src.battle.BattleState")
   if BattleState.stadium2ImporterGen1 then return true end
   BattleState.stadium2ImporterGen1=true
+
+  -- Observe actual playback calls, not a sampled boolean: consecutive moves
+  -- can start between Stadium updates without an observable stopped frame.
+  local AnimPlayer=require("src.battle.AnimPlayer")
+  local start=AnimPlayer.start
+  function AnimPlayer:start(move,player,...)
+    local result=pack(start(self,move,player,...))
+    local scene=session
+    if scene and scene.battle.animPlayer==self then
+      scene.moveStartHooked=true
+      scene:sync()
+      local battler=scene.battle[player and "player" or "enemy"]
+      local charge=battler and battler.charging
+      local chargeId=type(charge)=="table" and charge.id or charge
+      local shownMove=move
+      if (chargeId=="FLY" and move=="TELEPORT")
+          or (chargeId=="DIG" and move=="SLIDE_DOWN_ANIM") then shownMove=chargeId end
+      local def=scene.battle.data and scene.battle.data.moves[shownMove]
+      if def then scene.actors[player and "player" or "enemy"]:attack(tonumber(def.index or def.number)) end
+    end
+    return unpack(result,1,result.n)
+  end
+
+  if BattleState.applyHitFx then
+    local applyHit=BattleState.applyHitFx
+    function BattleState:applyHitFx(hit,...)
+      local result=pack(applyHit(self,hit,...))
+      local scene=active(self)
+      if scene and hit and hit.blink then
+        local side=hit.blink==self.player and "player" or hit.blink==self.enemy and "enemy"
+        if side then
+          local actor
+          if scene:substituteVisible(side) then actor=scene:ensureSubstitute(side)
+          else actor=scene.actors[side] end
+          if actor then actor:hit() end
+        end
+      end
+      return unpack(result,1,result.n)
+    end
+  end
+
+  if BattleState.applyDamage and BattleState.startMessage then
+    local damage,startMessage=BattleState.applyDamage,BattleState.startMessage
+    function BattleState:applyDamage(target,...)
+      local scene=active(self)
+      local hadSub=scene and target.substituteHP
+      local result=pack(damage(self,target,...))
+      if hadSub and not target.substituteHP then
+        -- applyDamage queues its break message after the impact. Retain the
+        -- doll until that exact row is presented, irrespective of its text.
+        local row=self.queue and self.queue[self.nextInsert]
+        if row and row.text then
+          scene.heldSubstitutes=scene.heldSubstitutes or setmetatable({},{__mode="k"})
+          scene.substituteBreaks=scene.substituteBreaks or setmetatable({},{__mode="k"})
+          scene.heldSubstitutes[target]=true
+          scene.substituteBreaks[row]=target
+        end
+      end
+      return unpack(result,1,result.n)
+    end
+    function BattleState:startMessage(item,...)
+      local scene=active(self)
+      local target=scene and scene.substituteBreaks and scene.substituteBreaks[item]
+      if target then
+        scene.heldSubstitutes[target]=nil
+        scene.substituteBreaks[item]=nil
+      end
+      return startMessage(self,item,...)
+    end
+  end
+
+  -- Transform leaves Gen 1's mon.species unchanged. Follow the sprite that
+  -- the host commits at its animation/queued-action boundary instead of
+  -- mutating battle data or swapping models at move selection time.
+  if BattleState.speciesSprite then
+    local speciesSprite=BattleState.speciesSprite
+    function BattleState:speciesSprite(species,...)
+      local result=pack(speciesSprite(self,species,...))
+      local scene=active(self)
+      if scene and result[1] then
+        scene.transformSprites=scene.transformSprites or setmetatable({},{__mode="k"})
+        scene.transformSprites[result[1]]=dexOf(self.data,{species=species})
+      end
+      return unpack(result,1,result.n)
+    end
+  end
 
   originals.isWideBattleLayout=BattleState.isWideBattleLayout
   function BattleState:isWideBattleLayout()

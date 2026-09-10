@@ -36,8 +36,12 @@ actor.grow.time=actor.grow.duration*.5
 ok(math.abs(actor:scale()-.5)<.0001,"send-out uses a symmetric smoothstep")
 ok(not actor:play("idle",true),"idle cannot interrupt entrance")
 ok(actor:attack(1) and actor.context=="attack","attack can supersede entrance")
+ok(actor:hit() and actor.context=="hit" and calls[#calls]=="hit",
+  "damage plays the authored hit context, not only a flash")
+ok(actor:attack(57) and actor.context=="attack","next move supersedes hit recovery")
 actor.pendingFaint=true
 ok(not actor:attack(1),"pending faint cannot be overwritten by an attack")
+ok(not actor:hit(),"pending faint cannot be overwritten by a hit")
 actor:faint()
 ok(actor.context=="faint" and not actor:play("attack",false),"faint is final")
 rig.finished=true

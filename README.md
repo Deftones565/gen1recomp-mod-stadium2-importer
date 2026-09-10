@@ -100,6 +100,26 @@ image to `/tmp/stadium2-context-arenas`. Set
 
 ## Rendering and compatibility
 
+Battle motion follows the host's presentation boundaries: actual move-script
+starts select the species' Stadium move row, direct impacts select the hit
+context, and fainting cannot be interrupted by either. Repeated and called
+moves use the same playback path rather than menu-selection detection.
+
+The Pokédoll is ROM record 252; record 253 is the Egg. Cache format S2IMP54
+invalidates the previously misidentified asset, so existing installations must
+reimport their Stadium 2 ROM after updating.
+Substitute uses the imported doll model. Creation waits for the native swap;
+Gen 2's drop/raise commands temporarily expose the Pokemon for its move. Doll
+damage and break transitions follow queued presentation state, without parsing
+localized battle messages. Transform changes only the presented model, while
+Minimize and Fly/Dig respect the native visual state. Native move effects remain
+the host engine's responsibility; this does not create new move-effect assets.
+
+Regression coverage includes `stadium2_move_triggers_test.lua`,
+`stadium2_substitute_timeline_test.lua`, and `stadium2_model_motion_test.lua`.
+Live battle verification is still
+required before claiming exhaustive move/species compatibility.
+
 The same renderer is used by the normal and Watercolor Manga styles on desktop and mobile. It supports animated textures, per-model effects, normal and shiny palettes, alpha materials, additive effects, model and ground shadows, and adaptive graphics fallbacks for mobile GPUs.
 
 Battle animations advance from presentation time, so fast-forward does not alter their intended speed. Changing shader style or enabling models does not require rebuilding the imported packs.

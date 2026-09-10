@@ -106,6 +106,8 @@ function Scene.new(battle,context)
     player=Actor.new("player",actorOpts),enemy=Actor.new("enemy",actorOpts),
   }
   self.substituteActive={player=false,enemy=false}
+  self.eventVisuals=setmetatable({},{__mode="k"})
+  self.recordedSubstitute={player=0,enemy=0}
   self.vanish={player={active=false},enemy={active=false}}
   return self
 end
@@ -189,9 +191,10 @@ function Scene:visualState(side, screen)
   local actor=self.actors[side]
   if not (actor and actor.mon) then return "empty" end
   local volatile=self:volatileFor(side)
+  local presented=self.presentedVolatile and self.presentedVolatile[side]
+  if presented then volatile=presented end
   local substituted=self.substituteActive and self.substituteActive[side]
-  if substituted==nil then substituted=volatile and volatile.substitute end
-  if substituted then return "substitute" end
+  if substituted==nil then substituted=(tonumber(volatile and volatile.substitute) or 0)>0 end
   if (actor.mon.hp or 0)<=0 then
     if actor.context=="faint" and not actor.faintFinished then return "pokemon" end
     -- Gold resolves the whole turn before presenting its queue, so live HP
@@ -201,6 +204,8 @@ function Scene:visualState(side, screen)
     return "pokemon"
   end
   local state = screen.animPicState and screen:animPicState(side) or nil
+  -- false is an explicit dropsub command, not a missing override.
+  if state and state.pic~=nil then substituted=state.pic=="substitute" end
   -- A successful catch latches picHidden.enemy before ANIM_THROW_POKE_BALL
   -- starts.  That latch describes the state AFTER the ball animation; using it
   -- immediately makes the 3D foe disappear before the ball ever reaches it.
@@ -238,6 +243,7 @@ function Scene:visualState(side, screen)
   -- Gold's BG animation state exists only while the current script runs.
   -- `vanished` is the persistent truth between Fly/Dig's two turns.
   if volatile and volatile.vanished then return "hidden" end
+  if substituted then return "substitute" end
   if not actor.renderer then return "defect" end
   return "pokemon"
 end
@@ -254,8 +260,8 @@ function Scene:ensureSubstitute(side)
     return nil
   end
   actor.renderer=renderer
-  actor.mon={hp=1,species=253}
-  actor.dex,actor.variant=253,"normal"
+  actor.mon={hp=1,species=252}
+  actor.dex,actor.variant=252,"normal"
   actor.callbackFrame=side=="enemy" and 4 or 0
   actor:play("idle",true)
   return actor
@@ -283,68 +289,84 @@ function Scene:modelVisible(side, screen)
   return self:visualState(side,screen)=="pokemon"
 end
 
+-- Sample at emission, while the engine resolves the turn, then consume only
+-- when the screen reaches that event. Never infer identity from localized text
+-- or read end-of-turn Substitute HP while an earlier move is playing.
+function Scene:recordEvent(event)
+  if not self.eventVisuals then return end
+  local snapshot={}
+  for _,side in ipairs({"player","enemy"}) do
+    local mon=self.battle and self.battle[side]
+    local volatile=mon and self.battle:volatile(mon) or {}
+    local hp=tonumber(volatile.substitute) or 0
+    local previous=self.recordedSubstitute[side] or 0
+    snapshot[side]={substitute=hp>0,substituteHit=previous>hp and previous>0,
+      vanished=volatile.vanished,chargeMove=volatile.chargeMove}
+    self.recordedSubstitute[side]=hp
+  end
+  self.eventVisuals[event]=snapshot
+end
+
 function Scene:handleEvent(event)
   if not event or event._stadium2Gen2Handled then return end
   event._stadium2Gen2Handled = true
   self:sync()
+  local snapshot=self.eventVisuals and self.eventVisuals[event]
+  if snapshot then
+    self.presentedVolatile=self.presentedVolatile or {}
+    for _,which in ipairs({"player","enemy"}) do
+      local state=snapshot[which]
+      if state.substituteHit then
+        local doll=self:ensureSubstitute(which)
+        if doll then doll:hit() end
+      end
+      self.substituteActive[which]=state.substitute or state.substituteHit
+      self.presentedVolatile[which]=state
+    end
+  end
   local side = event.side
   if event.kind=="move" and side then
     local data=self.screen and self.screen.game and self.screen.game.data
     local def=data and data.moves and data.moves[event.move]
-    if def and def.effect=="EFFECT_SUBSTITUTE" and not event.missed then
-      self.substituteActive[side]=true
-    end
     if def and def.effect=="EFFECT_FLY" and not event.missed then
       local flight=self.vanish[side]
       local volatile=self:volatileFor(side)
-      if volatile and volatile.chargeMove==event.move then
+      if event.animParam==1 then
         flight.active,flight.mode,flight.sawHidden=false,"depart",nil
-      elseif flight.active or (volatile and volatile.vanished) then
+      elseif event.wasVanished or flight.active or (volatile and volatile.vanished) then
         flight.active,flight.mode,flight.sawHidden=true,"return",false
       end
     end
-  elseif event.kind=="message" and type(event.text)=="string"
-      and event.text:find("SUBSTITUTE broke!",1,true) then
-    for _,which in ipairs({"player","enemy"}) do
-      local mon=self.actors[which] and self.actors[which].mon
-      local name=mon and tostring(mon.nickname or mon.name or mon.species or "") or ""
-      local shown=name
-      if self.screen and self.screen.name then
-        local ok,value=pcall(self.screen.name,self.screen,mon)
-        if ok and value then shown=tostring(value) end
-      end
-      if shown~="" and event.text:find(shown,1,true) then
-        self.substituteActive[which]=false
-      end
-    end
   end
-  if event.kind == "move" and side then
+  if event.kind == "damage" and side then
     local actor = self.actors[side]
-    local data = self.screen and self.screen.game and self.screen.game.data
-    local def = data and data.moves and data.moves[event.move]
-    if actor then actor:attack(def and tonumber(def.index or def.number)) end
-  elseif event.kind == "damage" and side then
-    local actor = self.actors[side]
-    if actor then actor.flash = 0.12 end
+    -- Explicit anim fields describe residual effects or silent HP costs,
+    -- not a direct impact. Zero-damage bookkeeping must not flinch either.
+    if actor and event.anim==nil and (tonumber(event.amount) or 0)>0
+        and not self.substituteActive[side] then actor:hit() end
   elseif event.kind == "faint" and side then
     local actor = self.actors[side]
     -- Gold first chases the HP bar and begins its native sink.  Starting the
     -- Stadium clip at damage time makes it finish before the faint message.
     if actor then actor.pendingFaint=true end
   elseif (event.kind == "send" or event.kind == "sendout") and side then
+    if self.minimized then self.minimized[side]=nil end
     self.substituteActive[side]=false
     self.vanish[side]={active=false}
     self:sync()
     local actor = self.actors[side]
     if actor then actor:entrance() end
   elseif event.kind == "sendout" then
+    if self.minimized then self.minimized.player=nil end
     self.substituteActive.player=false
     self.vanish.player={active=false}
     self:sync()
     self.actors.player:entrance()
   elseif event.kind == "transform" and side and event.mon then
     local data = self.screen and self.screen.game and self.screen.game.data
-    self.actors[side]:load(data, event.mon, dexOf(data, event.mon))
+    local shown=self:shownMon(side) or event.mon
+    local species=shown==event.mon and event.species or shown.species
+    self.actors[side]:load(data, shown, dexOf(data, {species=species or shown.species}))
     self.actors[side]:play("entrance", false)
   end
 end
@@ -360,11 +382,15 @@ local PIC_SCALE = {
 
 function Scene:picScale(side, screen)
   screen=screen or self.screen
-  if not (screen and screen.anim and screen.ballThrow and screen.animPicState) then
-    return 1
-  end
-  local ok,state=pcall(screen.animPicState,screen,side)
-  if not ok or type(state)~="table" then return 1 end
+  local actor=self.actors[side]
+  self.minimized=self.minimized or {}
+  local state=screen and screen.animPicState and screen:animPicState(side)
+  if state and state.pic=="minimize" then self.minimized[side]=actor and actor.mon
+  elseif state and state.pic~=nil and state.pic~="substitute" then self.minimized[side]=nil end
+  if actor and self.minimized[side]==actor.mon and actor.mon
+      and not (state and state.pic=="substitute") and not self.substituteActive[side] then return .35 end
+  if not (screen and screen.anim and state) then return 1 end
+  if not screen.ballThrow then return 1 end
   local size=tonumber(state.size)
   return (PIC_SCALE[side] and PIC_SCALE[side][size]) or 1
 end
@@ -398,6 +424,15 @@ local function installScreenHooks()
   local BattleState = require("src.ui.gen2.BattleState")
   if BattleState.stadium2ImporterGen2 then return end
   BattleState.stadium2ImporterGen2 = true
+
+  local Battle=require("src.battle.gen2.Battle")
+  local emit=Battle.emit
+  if emit then
+    function Battle:emit(event,...)
+      if session and session.battle==self then session:recordEvent(event) end
+      return emit(self,event,...)
+    end
+  end
 
   local originalPic = BattleState.drawPic
 
@@ -619,11 +654,28 @@ local function installScreenHooks()
     return composed
   end
 
+  -- Called by the host only when the move script actually starts (including
+  -- deferred/called moves), not for announcements or misses.
+  if BattleState.animForMove then
+    local animForMove=BattleState.animForMove
+    function BattleState:animForMove(move,side,...)
+      local started=animForMove(self,move,side,...)
+      local scene=active(self)
+      if started and scene and scene.actors[side] then
+        local data=self.game and self.game.data
+        local def=data and data.moves and data.moves[move]
+        if def then scene.actors[side]:attack(tonumber(def.index or def.number)) end
+      end
+      return started
+    end
+  end
+
   local originalAdvance = BattleState.advanceQueue
   function BattleState:advanceQueue(...)
     local event = self.queue and self.queue[1] or nil
     local scene = active(self)
-    local after = event and (event.kind == "send" or event.kind == "sendout")
+    local after = event and (event.kind == "send" or event.kind == "sendout"
+      or event.kind == "transform")
     if scene and event and not after then
       scene.screen = self
       scene:handleEvent(event)
