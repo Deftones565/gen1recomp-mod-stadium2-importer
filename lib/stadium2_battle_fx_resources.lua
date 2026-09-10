@@ -162,6 +162,42 @@ function Resources.shapeFromResolved(resolved,shapeId)
   return shape,err
 end
 
+-- 8415FD8C / 841621A4 load RGBA16 pixels from exports 38/36 at
+-- DAT_8418CA20 + 0x98/0x90. These are textures, not shape descriptors.
+function Resources.waveGridTexture(resolved,family)
+  local symbol=(family==10 or family==11) and 36 or 38
+  local binding=resolved and resolved.shapes and resolved.shapes[symbol]
+  if not binding then return nil,"wave-grid texture export "..symbol.." was not loaded" end
+  local offset=localOffset(binding.module,binding.export.pointer,32*32*2)
+  if not offset then return nil,"wave-grid texture export is truncated" end
+  local pixels={}
+  local function expand(v)return v*8+math.floor(v/4)end
+  for i=0,1023 do
+    local value=u16(binding.module,offset+i*2)
+    pixels[#pixels+1]=string.char(expand(math.floor(value/2048)),
+      expand(math.floor(value/64)%32),expand(math.floor(value/2)%32),
+      value%2*255)
+  end
+  return {w=32,h=32,format=0,size=2,rgba=table.concat(pixels),
+    resourceId=binding.resourceId,symbol=symbol}
+end
+
+-- 84167D2C: beam texture indices select 32x32 I4 images from 8419CA20.
+function Resources.beamTexture(resolved,symbol)
+  local binding=resolved and resolved.shapes and resolved.shapes[symbol]
+  if not binding then return nil,"beam texture export "..tostring(symbol).." was not loaded" end
+  local offset=localOffset(binding.module,binding.export.pointer,512)
+  if not offset then return nil,"beam texture export is truncated" end
+  local pixels={}
+  for i=0,511 do
+    local byte=binding.module:byte(offset+i+1)
+    local hi,lo=math.floor(byte/16)*17,(byte%16)*17
+    pixels[#pixels+1]=string.char(hi,hi,hi,255,lo,lo,lo,255)
+  end
+  return {w=32,h=32,format=4,size=0,rgba=table.concat(pixels),
+    resourceId=binding.resourceId,symbol=symbol}
+end
+
 function Resources.modelFromShape(shape,name)
   if type(shape)~="table" or type(shape.entries)~="table"
       or type(shape.resourceId)~="number" then

@@ -15,4 +15,9 @@ local noShape=P.build({particles={{id=1,effectId=1,scale={1,1,1},event={}}}},{re
 ok(noShape.diagnostics[1].code=="draw-shape","missing shape is explicit")
 local exploded=P.build(source,{contextForParticle=function()error("boom")end})
 ok(exploded.diagnostics[1].code=="draw-context","context errors are diagnostics")
+particle.rotation={0,0,0x4000}
+local rotated=P.build(source,{resolvePlacement=function()return{resolved=true,position={10,20,30},scale=1}end}).packets[1]
+ok(math.abs(rotated.matrix[1])<1e-12 and rotated.matrix[2]==-3
+  and rotated.matrix[5]==2 and rotated.matrix[12]==30,
+  "native quarter-turn rotation reaches the draw matrix without rotating its anchor")
 print(("%d checks passed (Stadium 2 battle FX draw packets)"):format(n))

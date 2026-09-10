@@ -432,7 +432,21 @@ function Model:walk(o, depth, stageRenderProfile)
     elseif cmd == 0x22 then                           
       local layer = self.options.stageLayout and f:u8(o + 1) or nil
       self:runNodeDL(f:ptr(o + 4), self:curBone(), stageRenderProfile, layer)
-    elseif cmd == 0x1E then                           
+    elseif cmd == 0x18 then
+      -- 800404AC -> node type 0F -> 8003C390 registers label 100 at
+      -- the current matrix before testing whether shadows are enabled.
+      self.attachments=self.attachments or {}
+      local found=false
+      for _,marker in ipairs(self.attachments) do
+        if marker.label==100 then found=true;break end
+      end
+      if not found then
+        self.attachments[#self.attachments+1]={label=100,bone=self:curBone()}
+      end
+    elseif cmd == 0x24 then
+      self.attachments=self.attachments or {}
+      self.attachments[#self.attachments+1]={label=f:s16(o+2),bone=self:curBone()}
+    elseif cmd == 0x1E then
       local named = self.boneById[f:s16(o + 2)]
       self:runNodeDL(f:ptr(o + 4), named or self:curBone())
     elseif cmd == 0x20 or cmd == 0x21 then            
@@ -1722,6 +1736,7 @@ function StadiumFragment.extract(data, name, options)
     file = name,
     rootScale = m.rootScale,
     bones = m.bones,
+    attachments = m.attachments,
     textures = texOut,
     prims = prims,
     anims = anims,

@@ -74,7 +74,8 @@ for owned_path in ${LUNA_OWNED_PATHS:-}; do
         echo "ERROR: claimed Lua path not found: $owned_path" >&2
         exit 2
       }
-      "$lua_bin" -e 'assert(loadfile(arg[1]))' "$repo_root/$owned_path"
+      STADIUM2_SYNTAX_PATH="$repo_root/$owned_path" \
+        "$lua_bin" -e 'assert(loadfile(os.getenv("STADIUM2_SYNTAX_PATH")))'
       ;;
   esac
 done

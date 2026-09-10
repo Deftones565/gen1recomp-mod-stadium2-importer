@@ -268,6 +268,9 @@ function Scene:syncPresentationState()
       end
     end
   end
+  if self.animWasPlaying and not playing and self.battleFx and self.battleFx.finish then
+    self.battleFx:finish()
+  end
   self.animWasPlaying=playing
 end
 

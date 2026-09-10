@@ -1,10 +1,11 @@
--- Fragment-79 native lifecycle metadata and conservative callback kernel.
---
--- This module deliberately does not emulate the direct callees of the native
--- callbacks.  The phase resolver is the only authority for those behaviors;
--- this layer owns only table identity, proven counters/gates, termination, and
--- the display-list evidence common to the audited draw wrappers.
+-- Fragment-79 lifecycle metadata and persistent callback state.
+-- Families 23/26/27 use the shared ROM ribbon kernel. Other direct callees
+-- remain explicit resolver contracts with unsupported-phase diagnostics.
 local Lifecycle = {}
+local Ribbon = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_ribbon")
+local WaveGrid = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_wave_grid")
+local Beam = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_beam")
+local Random = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_random")
 
 local INIT_BASE = 0x84183700
 local UPDATE_BASE = 0x84183778
@@ -199,7 +200,80 @@ function Manager:_missing(instance, phase, address)
 end
 
 function Manager:_phase(instance, phase, address)
+  local signal=self.finishedEffects[instance.context.effectId] and 1 or self.nativeSignal
   if type(self.callback) ~= "function" then
+    if Beam.families[instance.familyId] and phase ~= "draw" then
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        if ok then inputs=value else
+          self:_emit(diagnostic("lifecycle-beam-input-error",nil,address,
+            tostring(value),"error"),instance)
+          return nil
+        end
+      end
+      local function valid(v)
+        if type(v)~="table" then return false end
+        for i=1,3 do
+          if type(v[i])~="number" or v[i]~=v[i] or math.abs(v[i])==math.huge then return false end
+        end
+        return true
+      end
+      if type(inputs)~="table" or not valid(inputs.endpointA)
+          or not valid(inputs.endpointB) or (not instance.beam
+          and (not valid(inputs.origin) or not valid(inputs.direction))) then
+        self:_emit(diagnostic("unresolved-beam-endpoints",nil,address,
+          "beam requires native setup origin/direction and live model endpoints"),instance)
+        return nil
+      end
+      if not instance.beam then
+        instance.beam=Beam.forFamily(instance.familyId,inputs.origin,inputs.direction)
+      end
+      instance.beam.cameraEye=copy(inputs.cameraEye)
+      if inputs.approximate then
+        self:_emit(diagnostic("approximate-beam-endpoints",nil,0x84109780,
+          (inputs.attachmentCount or 0)>0
+            and "beam uses posed ROM attachments; native battle profile unavailable (reimport models)"
+            or "beam uses host model centers; imported ROM attachments are unavailable"),instance)
+      end
+      if phase=="update" then
+        return Beam.step(instance.beam,inputs.endpointA,inputs.endpointB,signal)
+      end
+      return 0
+    end
+    if instance.beam and phase=="draw" then
+      if not instance.beam.cameraEye then
+        self:_emit(diagnostic("unresolved-beam-camera",nil,0x84163380,
+          "beam glow requires a camera eye in native endpoint coordinates"),instance)
+      end
+      return 0
+    end
+    if WaveGrid.families[instance.familyId] then
+      if phase == "init" then
+        instance.waveGrid = WaveGrid.new(instance.familyId, self.random)
+        return 0
+      elseif phase == "update" then
+        return WaveGrid.step(instance.waveGrid, signal)
+      elseif phase == "draw" then
+        return 0
+      end
+    end
+    if Ribbon.families[instance.familyId] then
+      if phase == "init" then
+        instance.ribbon = Ribbon.new(instance.familyId, instance.context)
+      elseif phase == "update" then
+        local anchor = instance.context.lifecycleAnchor
+        if self.resolveAnchor then
+          local ok, value = pcall(self.resolveAnchor, instance.context, instance)
+          if ok then anchor = value else
+            self:_emit(diagnostic("lifecycle-anchor-error", nil, address,
+              tostring(value), "error"), instance)
+          end
+        end
+        return Ribbon.step(instance.ribbon, anchor)
+      end
+      return 0
+    end
     self:_missing(instance, phase, address)
     return nil
   end
@@ -238,6 +312,11 @@ function Lifecycle.new(options)
   return setmetatable({
     clockHz = clockHz,
     callback = options.callback or options.phaseResolver,
+    resolveAnchor = options.resolveAnchor,
+    resolveBeam = options.resolveBeam,
+    nativeSignal = options.nativeSignal or 0,
+    finishedEffects = {},
+    random = options.random or Random.new(options.seed or 0),
     warn = options.warn,
     frame = 0,
     accumulator = 0,
@@ -310,6 +389,7 @@ function Manager:_update(instance)
   end
   instance.lastPhase = "update"
   instance.lastResult = self:_phase(instance, "update", family.update)
+  if instance.lastResult == -1 then instance.active = false end
 end
 
 function Manager:step(count)
@@ -330,6 +410,23 @@ function Manager:step(count)
   return self.frame
 end
 
+-- Presentation controller's 841901B8 value. Only 1 starts the native fade;
+-- callers must not infer it from a move's name or an invented timeout.
+function Manager:setNativeSignal(value)
+  value = integer(value)
+  if value == nil then error("lifecycle native signal must be an integer", 2) end
+  self.nativeSignal = value
+end
+
+-- Host animation completion applies to one move, including lifecycle objects
+-- whose scheduled init has not run yet. It must not leak to subsequent moves.
+function Manager:finishEffect(effectId)
+  effectId=integer(effectId)
+  if not effectId then return false end
+  self.finishedEffects[effectId]=true
+  return true
+end
+
 function Manager:update(dt)
   dt = tonumber(dt)
   if not dt or dt < 0 then error("lifecycle dt must be non-negative", 2) end
@@ -347,7 +444,7 @@ function Manager:_draw(invokeResolver)
     if instance and instance.active then
       local family = instance.family
       local drawAllowed = gateEligible(family.drawGate, instance.counter)
-      if drawAllowed then
+      if drawAllowed and (not instance.ribbon or instance.ribbon.count >= 2) then
         if invokeResolver then
           instance.lastPhase = "draw"
           self:_phase(instance, "draw", family.draw)
@@ -362,6 +459,9 @@ function Manager:_draw(invokeResolver)
           context = copy(instance.context),
           counter = instance.counter,
           frame = instance.frame,
+          geometry = instance.ribbon and Ribbon.geometry(instance.ribbon)
+            or instance.waveGrid and WaveGrid.geometry(instance.waveGrid)
+            or instance.beam and Beam.geometry(instance.beam) or nil,
         }
       end
     end
@@ -384,6 +484,8 @@ function Manager:snapshot()
         frame = instance.frame, born = instance.born,
         active = instance.active, gateEligible = instance.gateEligible,
         lastPhase = instance.lastPhase, lastResult = instance.lastResult,
+        nativeState = instance.waveGrid and WaveGrid.snapshot(instance.waveGrid)
+          or instance.beam and Beam.snapshot(instance.beam) or nil,
       }
     end
   end
@@ -393,6 +495,7 @@ end
 
 function Manager:release(id)
   if id == nil then
+    self.finishedEffects={}
     for key, instance in pairs(self.instances) do
       instance.active = false
       self.instances[key] = nil

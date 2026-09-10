@@ -1,5 +1,9 @@
 # Fragment-79 material and motion controller audit
 
+Correction: [common-motion-next.md](common-motion-next.md) supersedes this
+early audit's trig addresses, scale-entry +6 interpretation, and legacy
+geometry-vector names. Use its verified instruction ranges for those fields.
+
 This note is a ROM-backed disassembly report for the supported Stadium 2 US
 ROM (`1561c75d11cedf356a8ddb1a4a5f9d5d`).  The fragment-79 overlay is copied
 from ROM `0x36F890` to VRAM `0x84100000`; the instruction ranges below are
@@ -215,3 +219,25 @@ plain Lua value plus a structured diagnostic on an unresolved pointer or
 unknown mode.  Every diagnostic must use
 `code,severity,effectId,programId,address,kind,message`; no fallback formula
 should be hidden behind a default branch.
+
+## Implemented shared animated materials (2026-09-08)
+
+The US overlay at `84102368..84102494` supplies the particle color update
+owner missing from the earlier audit above. Material+8 selects a controller
+whose header contains mode, period and key count; +4/+8 select primary and
+secondary RGBA arrays. Mode 0 samples per frame; mode 1 interpolates signed
+halfword age keys with binary32 arithmetic and truncation. Both clamp to
+period-1. These tracks occur in 112 primary/alternate move routes. This is
+controller coverage, not a claim that those moves have complete parity.
+
+The persistent material runtime now evaluates these tracks before alpha
+ramps. The scene renderer receives primary/environment colors directly and
+applies particle alpha once. Direct resource primitives now consume the
+existing phase-5 controller evaluator for texture periods, terminal clamps,
+both texture units, material colors and tile scrolling, cached per draw age.
+The shared Player used by the Koffing/Croconaw viewer uses this path.
+
+`stadium2_battle_fx_animated_material_test.lua` exercises renderer controller
+state and particle tracks; the common ROM test verifies the 112-route count
+and Pound's actual age-keyed alpha samples. Native callbacks, external alpha
+gates and other unresolved controller modes still require separate work.

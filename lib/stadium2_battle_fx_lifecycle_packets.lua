@@ -1,10 +1,9 @@
 -- Renderer-neutral packets for native lifecycle snapshots.
 --
 -- The lifecycle callback audit proves the command words emitted by the draw
--- wrappers, but it does not identify the model/resource behind the shared
--- pointer.  Keep that evidence separate from renderable packets.  A caller
--- may inject a resolver once it has independently proven the model/geometry;
--- this module never substitutes a shape or procedural stand-in.
+-- wrappers. The shared pointer is a matrix, not a model resource. Builtin
+-- ribbon snapshots carry geometry from the ROM's draw routine; other families
+-- require a resolver proving their model/geometry.
 local Packets = {}
 
 local function copy(value, seen)
@@ -58,6 +57,7 @@ local function evidenceFrom(packet, instance)
     counter = packet.counter,
     frame = packet.frame,
     context = copy(context),
+    geometry = copy(packet.geometry),
   }
 end
 
@@ -142,6 +142,13 @@ function Packets.build(snapshot, options)
         base.code = "lifecycle-command-unproven"
         base.message = "lifecycle draw evidence does not match the audited command words"
         appendDiagnostic(out, diagnostic(base), seenDiagnostics)
+      elseif type(resolver) ~= "function" and evidence.geometry
+          and (evidence.geometry.kind == "rom-ribbon" or evidence.geometry.kind == "rom-wave-grid"
+            or evidence.geometry.kind == "rom-beam") then
+        local packet = copy(evidence)
+        packet.kind, packet.renderable = "lifecycle", true
+        packet.modelResolution = {proven=true, geometry=copy(evidence.geometry)}
+        out.packets[#out.packets + 1] = packet
       elseif type(resolver) ~= "function" then
         base.code = "lifecycle-model-unresolved"
         base.message = "lifecycle model/geometry requires an injected proof resolver"

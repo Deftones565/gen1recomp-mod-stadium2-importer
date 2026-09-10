@@ -11,7 +11,7 @@ end
 -- construction to the adapter boundary and remain compatible with older
 -- importer mocks.
 local importer={}
-local adapterNew,adapterTrigger,adapterUpdates=0,{},{}
+local adapterNew,adapterTrigger,adapterUpdates,finishes=0,{},{},0
 local adapter={
   new=function(received,options)
     adapterNew=adapterNew+1
@@ -21,6 +21,7 @@ local adapter={
         adapterTrigger[#adapterTrigger+1]={moveId,source,alternate}
       end,
       update=function(_,dt) adapterUpdates[#adapterUpdates+1]=dt end,
+      finish=function() finishes=finishes+1 end,
     }
   end,
 }
@@ -67,5 +68,9 @@ ok(#adapterTrigger==1,"held move animation does not retrigger battle FX")
 scene:update(.025)
 ok(#adapterUpdates==1 and adapterUpdates[1]==.025,
   "battle FX advances from the presentation delta")
+ok(finishes==0,"active animation keeps lifecycle effects alive")
+battle.animPlaying=false
+scene:syncPresentationState();scene:syncPresentationState()
+ok(finishes==1,"animation falling edge finishes lifecycle effects once")
 
 print(("%d checks passed (Stadium 2 Gen 1 battle FX integration)"):format(checks))

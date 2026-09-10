@@ -1,5 +1,9 @@
 # Fragment 79 native-object rendering ABI
 
+Historical audit: constructor flags were mistaken for allocations and the
+update dispatcher for rendering. See [verified implementation](native-callbacks-implemented.md)
+for the corrected ROM-backed behavior and implemented paths.
+
 ## Scope and evidence
 
 This report is a rendering handoff for the supported Pokemon Stadium 2 US

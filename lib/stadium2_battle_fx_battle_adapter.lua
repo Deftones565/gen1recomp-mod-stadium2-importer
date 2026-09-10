@@ -3,6 +3,8 @@
 -- final renderer boundary; battle mechanics and battle RNG remain untouched.
 local Attachment = require(
   "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_attachment")
+local Dispatch = require("mods.STADIUM2_IMPORTER.lib.animation_dispatch")
+local Endpoints = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_endpoints")
 
 local Adapter = {}
 Adapter.__index = Adapter
@@ -93,6 +95,96 @@ function Adapter.resolvePlacement(contract, context)
   return resolved
 end
 
+-- Map posed markers and ROM endpoint rules into the host battle frame.
+function Adapter.beamInputs(context,sceneContext)
+  local slots=sceneContext and sceneContext.world and sceneContext.world.actorSlots
+  local source=context.sourceSide or "player"
+  local target=context.targetSide or (source=="player" and "enemy" or "player")
+  if not slots or not slots[source] or not slots[target] then return nil end
+  local units=Adapter.worldUnits(sceneContext,source)
+  local origin=scaled(slots[source],1/units)
+  local a,b={0,0,0},{}
+  for i=1,3 do b[i]=slots[target][i]/units-origin[i] end
+  local actors=sceneContext.scene and sceneContext.scene.actors
+  local host=sceneContext.scene and sceneContext.scene.host
+  local usedMarkers,profiles=0,0
+  for _,pair in ipairs({{source,a},{target,b}}) do
+    local actor=host and host.visualActor and host:visualActor(pair[1])
+      or actors and actors[pair[1]]
+    local renderer=actor and actor.renderer
+    local model=renderer and renderer.model
+    local profile=Dispatch.battleProfile(model and model.fxBattleProfile)
+    local position=scaled(slots[pair[1]],1/units)
+    local height=0
+    if not profile and renderer and renderer.worldMetrics then
+      local ok,metrics=pcall(renderer.worldMetrics,renderer)
+      if ok and metrics then height=metrics.height*.5 end
+    end
+    local bytes=model and model.fxDispatch
+    local isTarget=pair[1]==target
+    -- Target marker always comes from context 254, but its offset comes from
+    -- the currently selected animation (84114730), including idle/hit.
+    local current=renderer and renderer.fxDispatchRow
+      or Dispatch.CONTEXT_ENTRY[actor and actor.context or "idle"] or 251
+    local row=isTarget and 254 or (renderer and renderer.fxDispatchRow)
+      or (tonumber(context.moveId) or 0)-1
+    local offsetRow=isTarget and current or row
+    local point,rotation,center
+    local offset={0,0,0}
+    local matrix
+    if host and host.modelMatrix and actor then
+      local ok,value=pcall(host.modelMatrix,host,pair[1],actor)
+      if ok and type(value)=="table" then matrix=value end
+    end
+    if matrix then
+      local scale=math.sqrt(matrix[1]^2+matrix[5]^2+matrix[9]^2)
+      local function transform(p)
+        local result={}
+        for k=1,3 do
+          local at=(k-1)*4
+          result[k]=(matrix[at+1]*p[1]+matrix[at+2]*p[2]
+            +matrix[at+3]*p[3]+matrix[at+4])/units
+        end
+        return result
+      end
+      if profile then
+        height=profile.targetHeight*scale/units
+        center=transform({0,profile.centerY,0})[2]
+        if bytes and row>=0 and #bytes>=(row+1)*20
+            and offsetRow>=0 and #bytes>=(offsetRow+1)*20 then profiles=profiles+1 end
+      end
+      rotation={}
+      for k=1,3 do for j=1,3 do
+        rotation[(k-1)*3+j]=scale>0 and matrix[(k-1)*4+j]/scale
+          or (k==j and 1 or 0)
+      end end
+      if bytes and row>=0 and #bytes>=(row+1)*20 and renderer.attachmentPosition then
+        local localPoint=renderer:attachmentPosition(bytes:byte(row*20+3))
+        if localPoint then point=transform(localPoint);usedMarkers=usedMarkers+1 end
+      end
+      if bytes and offsetRow>=0 and #bytes>=(offsetRow+1)*20 then
+        for k=1,3 do
+          local value=bytes:byte(offsetRow*20+12+k)
+          offset[k]=value>=128 and value-256 or value
+        end
+      end
+    end
+    local resolved=Endpoints.resolve({position=position,marker=point,
+      centerY=center or position[2]+height,targetHeight=height,
+      flags=actor and actor.nativeFxFlags or 0,offset=offset,rotation=rotation},isTarget)
+    for k=1,3 do pair[2][k]=resolved[k]-origin[k] end
+  end
+  local direction={b[1]-a[1],b[2]-a[2],b[3]-a[3]}
+  local length=math.sqrt(direction[1]^2+direction[2]^2+direction[3]^2)
+  if length==0 then return nil end
+  for i=1,3 do direction[i]=direction[i]/length end
+  local eye=sceneContext.camera and sceneContext.camera.eye
+  local camera
+  if eye then camera={eye[1]/units-origin[1],eye[2]/units-origin[2],eye[3]/units-origin[3]} end
+  return {origin=a,direction=direction,endpointA=a,endpointB=b,cameraEye=camera,
+    approximate=profiles<2,attachmentCount=usedMarkers}
+end
+
 local function diagnosticText(value)
   if type(value) ~= "table" then return tostring(value) end
   return ("%s (move FX effect=%s program=%s address=%s)"):format(
@@ -113,6 +205,7 @@ function Adapter.new(importer, options)
 
   local self = setmetatable({warn = options.warn, warningKeys = {}}, Adapter)
   local player, err = importer.newBattleFxPlayer({
+    resolveBeam = Adapter.beamInputs,
     contextForParticle = Adapter.placementContext,
     resolvePlacement = Adapter.resolvePlacement,
     warn = function(value) self:_warn(value) end,
@@ -138,7 +231,18 @@ function Adapter:trigger(moveId, source, alternate)
     alternate = alternate == true, condition = 0,
   })
   if not effect and err then self:_warn(err) end
+  if effect then
+    self:finish()
+    self.activeEffect=effect
+  end
   return effect, err
+end
+
+function Adapter:finish()
+  if not self.player or not self.activeEffect then return false end
+  local effect=self.activeEffect
+  self.activeEffect=nil
+  return self.player:finish(effect)
 end
 
 function Adapter:update(dt)
@@ -150,6 +254,10 @@ function Adapter:draw(sceneContext)
   local ok, result = pcall(self.player.draw, self.player, sceneContext)
   if not ok then self:_warn(result); return nil end
   return result
+end
+
+function Adapter:backgroundColor(base)
+  return self.player and self.player:backgroundColor(base) or base
 end
 
 function Adapter:release()

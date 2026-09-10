@@ -323,6 +323,7 @@ function Scene:handleEvent(event)
     if self.battleFx and event.missed~=true and moveId then
       local ok,err=pcall(self.battleFx.trigger,self.battleFx,moveId,side,
         event.alternate==true)
+      if ok then self.battleFxMovePending=true;self.battleFxAnimation=nil end
       if not ok and not self.battleFxTriggerError then
         self.battleFxTriggerError=true
         warn("Gen 2 battle FX trigger failed: "..tostring(err))
@@ -406,8 +407,26 @@ function Scene:picScale(side, screen)
   return (PIC_SCALE[side] and PIC_SCALE[side][size]) or 1
 end
 
+function Scene:syncBattleFxAnimation(started)
+  if self.battleFxMovePending then
+    local runner=self.screen and self.screen.anim
+    local ended=(self.battleFxAnimation and runner~=self.battleFxAnimation)
+      or (started and not runner)
+    if runner and not self.battleFxAnimation then self.battleFxAnimation=runner end
+    if runner and type(runner.done)=="function" then
+      local ok,done=pcall(runner.done,runner)
+      ended=ok and done or ended
+    end
+    if ended then
+      if self.battleFx and self.battleFx.finish then self.battleFx:finish() end
+      self.battleFxMovePending=false;self.battleFxAnimation=nil
+    end
+  end
+end
+
 function Scene:update(dt)
   self:sync()
+  self:syncBattleFxAnimation()
   for _,side in ipairs({"player","enemy"}) do
     local actor=self.actors[side]
     if actor.pendingFaint then
@@ -660,6 +679,7 @@ local function installScreenHooks()
       scene:handleEvent(event)
     end
     local result = originalAdvance(self, ...)
+    if scene and event and event.kind=="move" then scene:syncBattleFxAnimation(true) end
     if scene and event and after then
       scene.screen = self
       scene:handleEvent(event)

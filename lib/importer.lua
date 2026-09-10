@@ -321,7 +321,7 @@ function Importer.battleFxCatalog()
   if not overlay then
     return nil,"Stadium 2 battle FX cache unavailable; reimport the ROM"
   end
-  local catalog,err=BattleFxRom.catalog(overlay)
+  local catalog,err=BattleFxRom.catalog(overlay,Cache.readSpecial("battle_fx_trig"))
   if not catalog then return nil,err end
   battleFxCatalog=catalog
   return catalog
@@ -378,6 +378,19 @@ function Importer.newBattleFxPlayer(options)
   local playerOptions={}
   for key,value in pairs(options) do playerOptions[key]=value end
   playerOptions.catalog=catalog
+  playerOptions.loadBeamTexture=playerOptions.loadBeamTexture or function(moveId,symbol)
+    local resources,err=Importer.battleFxResources(moveId)
+    if not resources then return nil,err end
+    return BattleFxResources.beamTexture(resources,symbol)
+  end
+  playerOptions.loadWaveGridTexture=playerOptions.loadWaveGridTexture or function(moveId,family)
+    local resources,err=Importer.battleFxResources(moveId)
+    if not resources then return nil,err end
+    return BattleFxResources.waveGridTexture(resources,family)
+  end
+  playerOptions.createGeometryRenderer=playerOptions.createGeometryRenderer or function(model)
+    return Importer.newRendererFromModel(model,{textureFilter="nearest",flipY=false})
+  end
   if not playerOptions.loadRenderer then
     playerOptions.loadRenderer=function(moveId,shapeId)
       local model,modelError=Importer.battleFxShapeModel(moveId,shapeId)

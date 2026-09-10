@@ -88,4 +88,20 @@ for _, field in ipairs({"code", "severity", "effectId", "programId", "address", 
     "diagnostic schema includes " .. field)
 end
 
+local fading=Material.init({nativeAlphaRamp={target=0,step=32,startAge=8}},
+  {flags=0x40000004})
+for age=1,7 do fading=Material.step(fading,{age=age}) end
+ok(fading.nativeAlpha==255,"native fade waits until its ROM start age")
+fading=Material.step(fading,{age=8})
+ok(fading.nativeAlpha==223,"native fade subtracts one authored byte step")
+for age=9,15 do fading=Material.step(fading,{age=age}) end
+ok(fading.nativeAlpha==0 and fading.nativeAlphaFinished,
+  "native fade saturates and retires particles with the ROM termination flag")
+local rising=Material.init({nativeAlphaInitial=10,nativeAlphaRamp={target=100,step=70,startAge=1}},{})
+rising=Material.step(rising,{age=1});rising=Material.step(rising,{age=2})
+ok(rising.nativeAlpha==100 and not rising.nativeAlphaFinished,"upward alpha ramp clamps without inventing termination")
+local gated=Material.init({nativeAlphaRamp={target=0,step=255,startAge=0}},{flags=0x10})
+gated=Material.step(gated,{age=1})
+ok(gated.nativeAlpha==255 and hasDiagnostic(gated,"unsupported-alpha-gate"),
+  "battle-gated fades remain explicitly unresolved")
 print(("%d checks passed (Stadium 2 battle FX material)"):format(checks))

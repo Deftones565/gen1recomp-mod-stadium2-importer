@@ -4,6 +4,7 @@
 -- RGBA bytes only.  Color updates, secondary-shape selection, and drawing are
 -- intentionally external resolver decisions rather than guessed formulas.
 local Material = {}
+local NativeObjects=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native_objects")
 
 local function copy(value, seen)
   if type(value) ~= "table" then return value end
@@ -98,10 +99,27 @@ function Material.init(material, context)
   state.primaryColor = validatePreload(state, "primaryColor", material.primaryColor)
   state.secondaryColor = validatePreload(state, "secondaryColor", material.secondaryColor)
   state.constantColor = validatePreload(state, "constantColor", material.constantColor)
+  state.nativeMaterialColors=material.nativeMaterialColors
+  state.nativePrimaryTrack=copy(material.nativePrimaryTrack)
+  state.nativeSecondaryTrack=copy(material.nativeSecondaryTrack)
+  state.nativeAlphaRamp=copy(material.nativeAlphaRamp)
+  if state.nativeMaterialColors or state.nativeAlphaRamp or material.nativeAlphaInitial~=nil then
+    state.nativeAlpha=material.nativeAlphaInitial
+      or (state.primaryColor and state.primaryColor[4]) or context.attribute or 255
+    state.nativeAlpha=state.nativeAlpha%256
+    state.nativeFlags=tonumber(context.flags) or 0
+    state.nativeFlags2=tonumber(context.flags2) or 0
+    if math.floor(state.nativeFlags/0x10)%2==1 or math.floor(state.nativeFlags2/4)%2==1 then
+      state.nativeAlphaGateUnresolved=true
+      addDiagnostic(state,"unsupported-alpha-gate",
+        "native alpha ramp requires battle-counter/global gate state",{kind="material"})
+    end
+  end
 
   local colorResolver = resolver(context,
     {"colorController", "resolveColorController", "colorResolver"})
-  if present(state.colorController) and not colorResolver then
+  if present(state.colorController) and not colorResolver
+      and not state.nativePrimaryTrack and not state.nativeSecondaryTrack then
     addDiagnostic(state, "unsupported-color-controller",
       "fragment-79 color-controller update requires an explicit resolver", {
         kind = "color-controller",
@@ -189,6 +207,40 @@ function Material.step(state, options)
     end
   end
   out.age = out.age + delta
+  -- 84102380 clamps at period-1; particle color tracks hold their last
+  -- sample, unlike mode-2 background controllers which terminate.
+  for _,entry in ipairs({{"nativePrimaryTrack","primaryColor"},
+      {"nativeSecondaryTrack","secondaryColor"}}) do
+    local track=out[entry[1]]
+    if track and not colorResolver then
+      local age=math.min(tonumber(options.age) or out.age,track.period-1)
+      local rgba=NativeObjects.colorAt(track,age)
+      if rgba then
+        out[entry[2]]=rgba
+        if entry[2]=="primaryColor" then out.nativeAlpha=rgba[4] end
+      end
+    end
+  end
+  -- 84102534/84102598: post-increment age enables a byte alpha ramp.
+  -- The target is approached by an unsigned byte step with saturation.
+  local ramp=out.nativeAlphaRamp
+  if ramp and not out.nativeAlphaGateUnresolved then
+    if delta==1 then
+      local age=tonumber(options.age) or out.age
+      if age>=ramp.startAge then
+        local alpha=out.nativeAlpha
+        if alpha<ramp.target then alpha=math.min(ramp.target,alpha+ramp.step)
+        elseif alpha>ramp.target then alpha=math.max(ramp.target,alpha-ramp.step) end
+        out.nativeAlpha=alpha
+        -- 841025F8: descriptor bit 30 kills the particle at the target.
+        if alpha==ramp.target and math.floor(out.nativeFlags/0x40000000)%2==1 then
+          out.nativeAlphaFinished=true
+        end
+      end
+    else
+      addDiagnostic(out,"unsupported-alpha-step","native alpha requires individual 30 Hz ticks")
+    end
+  end
   return out
 end
 

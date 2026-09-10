@@ -6,6 +6,9 @@
 -- records) and reports opaque controller pointers as diagnostics.  It never
 -- calls the host RNG and never mutates its input tables.
 local Motion = {}
+local single = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
+local SCALE_UNIT = single(0.001)
+local SPEED_UNIT = single(0.01)
 
 local function number(value, fallback)
   value = tonumber(value)
@@ -26,6 +29,9 @@ local function add(a, b, factor)
   return {a[1] + b[1] * factor, a[2] + b[2] * factor,
     a[3] + b[3] * factor}
 end
+
+local function fadd(a, b) return single(a + b) end
+local function fmul(a, b) return single(a * b) end
 
 local function copy(value, seen)
   if type(value) ~= "table" then return value end
@@ -67,8 +73,8 @@ local function randomContext(state, rng, channel, component, bound)
     component = component, bound = bound,
     normalizedBound = bound == -1 and 0x10000 or bound,
     rng = rng,
-    angle = copy(state.angleContext or {}),
-    angleContext = copy(state.angleContext or {}),
+    angle = copy(state.angleContext or state.rotation),
+    angleContext = copy(state.angleContext or state.rotation),
   }
   return context
 end
@@ -264,10 +270,15 @@ function Motion.init(particle, options)
       or (particle.event and particle.event.address),
     particle = copy(particle),
     angleContext = copy(particle.angleContext or particle.angles
-      or particle.angle or particle.angleFields or {}),
+      or particle.angle or particle.angleFields),
   }
   local scale, scaleEntry = initialScale(particle)
   state.scale = scale
+  state.nativeScaleUpdate = copy(scaleEntry and scaleEntry.nativeScaleUpdate)
+  if state.nativeScaleUpdate then
+    state.nativeScalar=single(state.nativeScaleUpdate.initial*SCALE_UNIT)
+    state.scale={state.nativeScalar,state.nativeScalar,state.nativeScalar}
+  end
   state.lifetime = initialLifetime(particle, scaleEntry)
   state.authoredLifetime = scaleEntry and tonumber(scaleEntry.lifetime) or nil
   if state.lifetime == nil then
@@ -285,12 +296,53 @@ function Motion.init(particle, options)
     state.rotation = add(state.rotation, rotationOffset)
     local directional = randomVector(transform.directionalVelocity, state, rng,
       "directional-velocity")
-    state.velocity = add(state.velocity, directional)
+    if not particle.nativeGeometry and not transform.nativeGeometry then
+      state.velocity = add(state.velocity, directional)
+    else
+      -- func_84106C78 adds the directional sample to the initial offset.
+      state.position = {fadd(state.position[1],directional[1]),
+        fadd(state.position[2],directional[2]),fadd(state.position[3],directional[3])}
+    end
     state.frameRule = copy(transform.frameRule)
     state._scaleController = transform.scaleController
     state._motionController = transform.motionController
     state._motionAxes = transform.motionAxes
+    state._nativeMotion = copy(particle.nativeMotion or transform.nativeMotion)
     applyFrameRule(state, state.frameRule, options)
+  end
+
+  if particle.nativeMotion ~= nil and state._nativeMotion == nil then
+    state._nativeMotion = copy(particle.nativeMotion)
+  end
+  local nativeSpeed = state._nativeMotion and state._nativeMotion.direction
+    and state._nativeMotion.direction.speed
+  if type(nativeSpeed) == "table" and tonumber(nativeSpeed.random) ~= nil then
+    state._nativeMotionRandomBound = number(nativeSpeed.random)
+  end
+  -- func_84106D50: modes 1/2 initialize speed at construction. Mode 2
+  -- distributes the authored increment by particle index without RNG.
+  state.nativeMotionSpeed=0
+  if nativeSpeed and (nativeSpeed.mode==1 or nativeSpeed.mode==2) then
+    state.nativeMotionSpeed=fmul(number(nativeSpeed.initial),SPEED_UNIT)
+    local extra=0
+    if nativeSpeed.mode==1 then
+      extra=fmul(randomScalar(state,0,number(nativeSpeed.random),options.rng,
+        "native-motion-speed",nil),SPEED_UNIT)
+    else
+      extra=fmul(fmul(number(nativeSpeed.random),SPEED_UNIT),number(particle.particleIndex))
+    end
+    state.nativeMotionSpeed=fadd(state.nativeMotionSpeed,extra)
+  end
+  state.nativeMotionOffset = {0, 0, 0}
+  state.nativeMotionBase = vector(state.position)
+  local vertical=state._nativeMotion and state._nativeMotion.verticalRamp
+  if vertical then
+    state.nativeVerticalSpeed=0
+    state.nativeVerticalPercent=100
+    if number(vertical.random)~=0 then
+      state.nativeVerticalPercent=(randomScalar(state,1,vertical.random,options.rng,
+        "native-vertical-percent",nil)+number(vertical.base))%256
+    end
   end
 
   -- Direct fixture fields are useful for evaluators fed by a future runtime
@@ -327,10 +379,31 @@ local function tick(state, delta, options)
     out.age = out.age + delta
   end
 
+  -- 0x84101DF8..0x84101EB0: +6 is the START age of the size ramp,
+  -- not a lifetime. Each native tick approaches +2 by signed +4 * .001f.
+  -- Keep the persistent unscaled scalar (+0x1c); battle placement performs
+  -- the final source-model/world conversion at the renderer boundary.
+  local ramp=out.nativeScaleUpdate
+  if ramp and delta==1 and ramp.step~=0 and out.age>=ramp.startAge then
+    local current=out.nativeScalar
+    local target=single(ramp.target*SCALE_UNIT)
+    local increment=single(ramp.step*SCALE_UNIT)
+    if current<target then current=math.min(target,single(current+increment))
+    elseif target<current then current=math.max(target,single(current-increment)) end
+    out.nativeScalar=current
+    out.scale={current,current,current}
+  elseif ramp and delta~=1 then
+    addDiagnostic(out,"unsupported-scale-step",delta,{
+      kind="motion",message="native scale controller requires individual 30 Hz ticks"})
+  end
+
   local transform = out.particle and out.particle.transform
   transform = type(transform) == "table" and transform or {}
-  local motionController = resolveController(
-    out._motionController or transform.motionController, "motion", out, options)
+  local motionController
+  if not out._nativeMotion then
+    motionController=resolveController(out._motionController or transform.motionController,
+      "motion",out,options)
+  end
   local axes = resolveController(
     out._motionAxes or transform.motionAxes, "motion-axes", out, options)
   local acceleration = vector(out.acceleration)
@@ -341,6 +414,141 @@ local function tick(state, delta, options)
     local mask = axes.mask or axes
     for i = 1, 3 do
       if mask[i] == false or mask[i] == 0 then acceleration[i] = 0 end
+    end
+  end
+
+  -- Common native direction controllers write a persistent motion offset
+  -- consumed by the final position assembly.  The tables are supplied by
+  -- the ROM catalog as options.trigTables={tableA,tableB}.
+  local function trig(tables, key, angle)
+    if type(tables) ~= "table" then return nil end
+    local values = tables[key == "TA" and "tableA" or "tableB"]
+      or tables[key] or tables[key == "TA" and 1 or 2]
+    local index = math.floor(angle) % 4096 + 1
+    if type(values) == "function" then
+      local ok, value = pcall(values, index)
+      return ok and tonumber(value) or nil
+    end
+    if type(values) ~= "table" or #values == 0 then return nil end
+    return number(values[index])
+  end
+  local function nativeSpeed(spec)
+    if tonumber(spec.mode) ~= nil and (tonumber(spec.mode)<0 or tonumber(spec.mode)>2) then
+      addDiagnostic(out, "unsupported-native-motion-speed-mode", spec.mode, {
+        kind = "motion", message = "native speed mode is not disassembled",
+      })
+      return 0
+    end
+    local start = number(spec.startAge)
+    if out.age < start then return out.nativeMotionSpeed or 0 end
+    local target = fmul(number(spec.target), SPEED_UNIT)
+    local value
+    if out.age == start and (spec.mode==nil or spec.mode==0) then
+      value = fmul(number(spec.initial), SPEED_UNIT)
+    elseif out.age>start then
+      local previous = out.nativeMotionSpeed or 0
+      local step = fmul(number(spec.step), SPEED_UNIT)
+      if previous < target then value = fadd(previous, step)
+      elseif target < previous then value = fadd(previous, -step)
+      else value = previous end
+      if previous < target and value > target then value = target end
+      if target < previous and value < target then value = target end
+    else
+      value=out.nativeMotionSpeed or 0
+    end
+    if out.age == start and (spec.mode==nil or spec.mode==0)
+        and out._nativeMotionRandomBound ~= nil then
+      if not out._nativeMotionRandomResolved then
+        local resolved = randomScalar(out, 0, out._nativeMotionRandomBound, out._rng,
+          "native-motion-speed", nil)
+        out._nativeMotionRandom = fmul(resolved, SPEED_UNIT)
+        out._nativeMotionRandomResolved = true
+      end
+      value = fadd(value, out._nativeMotionRandom)
+    end
+    return value
+  end
+  local function applyNativeMotion()
+    local native = out._nativeMotion
+    if type(native) ~= "table" then return end
+    local direction = native.direction
+    local function applyVertical(offset)
+      local ramp=native.verticalRamp
+      if ramp and out.age>=number(ramp.startAge) then
+        local step=number(ramp.step)
+        local value=out.nativeVerticalSpeed or 0
+        if out.age==ramp.startAge and step==0 then value=number(ramp.target) end
+        if step~=0 then
+          value=(value+step+32768)%65536-32768
+          if step>0 then value=math.min(value,number(ramp.target))
+          else value=math.max(value,number(ramp.target)) end
+        end
+        out.nativeVerticalSpeed=value
+        local percent=out.nativeVerticalPercent or 100
+        local delta=percent==100 and fmul(SPEED_UNIT,value)
+          or fmul(fmul(single(percent/100),SPEED_UNIT),value)
+        offset[2]=fadd(offset[2],delta)
+      end
+      local subtract=native.verticalSubtract
+      if subtract and out.age>=number(subtract.startAge) then
+        offset[2]=fadd(offset[2],-fmul(number(subtract.value),SPEED_UNIT))
+      end
+    end
+    local spec = type(direction) == "table" and direction.speed
+    if type(direction) == "table" and type(spec) == "table" then
+      local mode = tonumber(direction.mode)
+      local speed = nativeSpeed(spec)
+      out.nativeMotionSpeed = speed
+      local motion
+      if mode == 4 or mode == 5 then
+        motion = {0, fmul(speed, mode == 4 and 1 or -1), 0}
+      elseif mode == 7 or mode == 8 then
+        local angles = direction.angles or native.angles or out.rotation or {0, 0, 0}
+        local x, y = number(angles[1] or angles.x) / 16,
+          number(angles[2] or angles.y) / 16
+        local taX, taY, tbX, tbY = trig(options.trigTables, "TA", x),
+          trig(options.trigTables, "TA", y), trig(options.trigTables, "TB", x),
+          trig(options.trigTables, "TB", y)
+        if not (taX and taY and tbX and tbY) then
+          addDiagnostic(out, "unsupported-native-motion-trig", mode, {
+            kind = "motion", message = "native direction mode requires TA/TB tables",
+          })
+          motion = {0, 0, 0}
+        else
+          local product = fmul(speed, tbX)
+          motion = {fmul(taY, product), fmul(taX, -speed), fmul(tbY, product)}
+        end
+      else
+        addDiagnostic(out, "unsupported-native-motion-mode", mode, {
+          kind = "motion", message = "native direction mode is not disassembled",
+        })
+        motion = {0, 0, 0}
+      end
+      local prior = out.nativeMotionOffset or {0, 0, 0}
+      local next = mode == 8 and motion or {
+        fadd(prior[1], motion[1]), fadd(prior[2], motion[2]),
+        fadd(prior[3], motion[3]),
+      }
+      out.nativeMotionOffset = next
+      applyVertical(next)
+      local base = out.nativeMotionBase or {0, 0, 0}
+      out.position = {fadd(base[1], next[1]), fadd(base[2], next[2]),
+        fadd(base[3], next[3])}
+    end
+    if type(spec) ~= "table" then
+      local base=out.nativeMotionBase or out.position
+      applyVertical(out.nativeMotionOffset)
+      out.position[2]=fadd(base[2],out.nativeMotionOffset[2])
+    end
+    if native.curve ~= nil or (type(direction) == "table" and direction.curve ~= nil) then
+      addDiagnostic(out, "unsupported-native-motion-curve", native.curve, {
+        kind = "motion", message = "native curve controller requires an explicit resolver",
+      })
+    end
+    if native.verticalController ~= nil and not native.verticalRamp then
+      addDiagnostic(out, "unsupported-native-motion-vertical-controller",
+        native.verticalController, {kind = "motion", message =
+          "native vertical controller requires an explicit resolver"})
     end
   end
 
@@ -375,6 +583,8 @@ local function tick(state, delta, options)
       message = "native motion integration order requires disassembly evidence",
     })
   end
+
+  applyNativeMotion()
 
   -- 0x8410009C observes age == 0xff after the category update.  It is an
   -- exact byte equality, not a >= comparison.  The unresolved

@@ -82,6 +82,8 @@ function Native.execute(program,context)
         event.encodedObjectRaw = copy(emitter.encodedObjectRaw)
         event.delayOffset = emitter.delayOffset
         event.encodedDelay = emitter.encodedDelay
+        event.nativeColorTrack = copy(emitter.nativeColorTrack)
+        event.nativeModelColor = copy(emitter.nativeModelColor)
         event.resolvedObject = copy(emitter.resolvedObject)
         event.resolution = copy(emitter.resolution)
       else
@@ -163,16 +165,27 @@ function Native.particles(execution,previousFrame,frame)
       local geometry=event.geometry or {}
       local selectors=geometry.selectors or {}
       for particle=0,count-1 do
+        local angles=selected(geometry.positionEntries,selectors.position,
+          birth.repeatIndex,particle,count)
+        if geometry.nativeGeometry and (selectors.position==4 or selectors.position==5) then
+          local first=geometry.positionEntries and geometry.positionEntries[1]
+          local index=Native.selectorIndex(selectors.position,birth.repeatIndex,particle,count)
+          if first then angles={first[1]*index,first[2]*index,first[3]*index} end
+        end
+        local offset=selected(geometry.velocityEntries,selectors.velocity,
+          birth.repeatIndex,particle,count)
+        local position,velocity=angles,offset
+        if geometry.nativeGeometry then position,velocity=offset,nil end
         out[#out+1]={
           schedulerIndex=birth.schedulerIndex,event=event,
           generation=birth.repeatIndex,particleIndex=particle,
           born=birth.born,age=birth.age,
           scale=selected(geometry.scaleEntries,selectors.scale,
             birth.repeatIndex,particle,count),
-          position=selected(geometry.positionEntries,selectors.position,
-            birth.repeatIndex,particle,count),
-          velocity=selected(geometry.velocityEntries,selectors.velocity,
-            birth.repeatIndex,particle,count),
+          nativeGeometry=geometry.nativeGeometry,
+          rotation=geometry.nativeGeometry and angles or nil,
+          position=position,
+          velocity=velocity,
           attribute=selected(geometry.attributeEntries,selectors.attribute,
             birth.repeatIndex,particle,count),
           transform=event.transform,material=event.material,

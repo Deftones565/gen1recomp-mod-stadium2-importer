@@ -1,5 +1,9 @@
 # Fragment 79 native-object scheduler modes
 
+Historical audit: several body mappings, flag calls and float values below
+were incorrect. See [verified implementation](native-callbacks-implemented.md)
+before using these notes as evidence.
+
 ## Scope and provenance
 
 This is a ROM-only pass over the supported `Pokemon Stadium 2 (USA).z64`.

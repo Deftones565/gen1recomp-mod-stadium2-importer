@@ -7,6 +7,7 @@ local Layout = require("mods.STADIUM2_IMPORTER.lib.layout")
 local AnimationRouting = require("mods.STADIUM2_IMPORTER.lib.animation_routing")
 local AnimationDispatch = require("mods.STADIUM2_IMPORTER.lib.animation_dispatch")
 local AnimationSemantics = require("mods.STADIUM2_IMPORTER.lib.animation_semantics")
+local BattleFxRom = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_rom")
 
 local Extract = {}
 Extract.BASE_COUNT = 151
@@ -301,6 +302,10 @@ local function genericAnimationTable(data, Build, rom, species)
 
   local dispatchRows, dispatchErr = AnimationDispatch.forSpecies(rom, species)
   if not dispatchRows then return nil, nil, dispatchErr end
+  local raw={}
+  for i=0,dispatchRows.n-1 do raw[#raw+1]=dispatchRows[i].raw end
+  data.fxDispatch=table.concat(raw)
+  data.fxBattleProfile=AnimationDispatch.battleProfileBytes(rom,species)
   return AnimationSemantics.apply(animations, data.auxAnims, Build,
     AnimationRouting, dispatchRows)
 end
@@ -948,6 +953,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
       if not includeSpecials then return finish() end
       if not self.specialQueue then
         self.specialQueue={{kind="battle_fx_rom",name="battle_fx_rom"},
+          {kind="battle_fx_trig",name="battle_fx_trig"},
           {kind="battle_fx_resources",name="battle_fx_resources"},
           {kind="substitute",record=SUBSTITUTE_RECORD,
           name="substitute",source=self.specialModelSource,
@@ -963,7 +969,8 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
       local special=self.specialQueue[self.specialIndex]
       if not special then return finish() end
       self.specialIndex=self.specialIndex+1
-      if special.kind=="battle_fx_rom" or special.kind=="battle_fx_resources" then
+      if special.kind=="battle_fx_rom" or special.kind=="battle_fx_resources"
+          or special.kind=="battle_fx_trig" then
         self.specialWorker=coroutine.create(function()
           -- Fragment 79 is the complete Stadium 2 battle actor/effect overlay.
           -- Cache the user's own ROM bytes verbatim for the native FX decoder;
@@ -973,6 +980,8 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
             -- Main archive group 5. Move rows in fragment 79 name these
             -- members, whose kind-2 exports provide the referenced shapes.
             first,last=0x267D000+1,0x27ED000
+          elseif special.kind=="battle_fx_trig" then
+            first,last=BattleFxRom.TRIG_ROM_START+1,BattleFxRom.TRIG_ROM_END
           else
             first,last=0x36F890+1,0x419480
           end

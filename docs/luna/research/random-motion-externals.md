@@ -113,7 +113,7 @@ segment float tables:
 
 ```
 TA(i) = *(float *)(0x80087E50 + (i * 4))
-TB(i) = *(float *)(0x80098E50 + (i * 4))
+TB(i) = *(float *)(0x80088E50 + (i * 4))
 i     = (uint16(angle) >> 4)       // 0..4095 for a halfword angle
 ```
 
@@ -128,10 +128,9 @@ out.z = -x * TA(i) + z * TB(i)
 
 The first table's ROM samples are `0.0`, `0.0015339801`, and
 `0.0030679568`, consistent with `sin(pi*i/2048)`.  That identifies `TA` as
-the sine-like table.  `TB` is the paired table consumed at the exact address
-above, but its backing/runtime initialization was not proven by the decoded
-ROM bytes; its cosine interpretation is therefore an inference, not a
-replacement for the table.
+the sine-like table. TB is the ROM-backed window 1024 entries after TA.
+The signed addiu address was corrected in the subsequent
+[common motion audit](common-motion-next.md); use its byte ranges and evidence.
 
 ## Modes 0, 1, 2, 3, and 5
 
@@ -145,7 +144,7 @@ FP = float(MIPS_unsigned_to_float(u32(random + offset)))
 ```
 
 For `FP`, the code executes `mtc1`, `cvt.s.w`, then, when the integer's sign
-bit is set, adds the single-precision constant `2147483648.0`.  This is the
+bit is set, adds the single-precision constant `4294967296.0`.  This is the
 MIPS idiom for converting an unsigned 32-bit integer to a float.  All table
 arithmetic below is single precision, and the listed operation grouping
 preserves the instruction order.
@@ -208,8 +207,8 @@ out.z = 0.0
   `0x800A1430` and `0x80138C00` are not established by these routines.
   Exact parity needs those values supplied by the runtime or an injected
   state object; substituting host RNG is incorrect.
-* `TB`'s data source/initialization is unresolved.  The address and indexing
-  are exact; treating it as cosine is a useful numerical hypothesis only.
+* TA and TB are decoded from the ROM; older overlay-only caches require the
+  new battle_fx_trig special block to supply them.
 * Exact IEEE-754 single-precision behavior matters for large unsigned values
   and for every multiply/add/subtract.  A parity implementation should keep
   the MIPS operation order rather than algebraically reassociate the formulas.

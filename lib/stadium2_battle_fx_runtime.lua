@@ -10,6 +10,7 @@ local Lifecycle = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_lifecyc
 local Material = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_material")
 local Router = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_router")
 local Motion = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_motion")
+local Random = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_random")
 
 local Runtime = {}
 Runtime.__index = Runtime
@@ -126,8 +127,54 @@ function Runtime.new(options)
     if catchUpLimit == 0 then error("battle FX catchUpLimit must be positive", 2) end
   end
   local motionOptions = copy(options.motionOptions or {})
+  if motionOptions.trigTables == nil then
+    local tables=options.catalog and options.catalog.trigTables
+    if tables then
+      -- Immutable ROM data stays outside per-particle snapshot copies.
+      motionOptions.trigTables={
+        tableA=function(index) return tables.tableA[index] end,
+        tableB=function(index) return tables.tableB[index] end,
+      }
+    end
+  end
   -- A motion-specific RNG wins, so evaluating FX cannot perturb the battle RNG.
   if motionOptions.rng == nil then motionOptions.rng = options.rng end
+  -- Fragment-79's random helpers own a separate stream.  Connect the
+  -- ROM-backed implementation by default, while leaving explicit resolver
+  -- functions authoritative for fixtures and future native integrations.
+  local random = options.randomMotion or options.battleFxRandom
+  local defaultRandom = random == nil
+  if defaultRandom then
+    local randomOptions=copy(options.randomOptions or {})
+    local tables=options.catalog and options.catalog.trigTables
+    if tables then
+      local supplied=randomOptions.tables or {}
+      if randomOptions.tableA==nil and supplied.a==nil and supplied.A==nil
+          and supplied.TA==nil and supplied[1]==nil then randomOptions.tableA=tables.tableA end
+      if randomOptions.tableB==nil and supplied.b==nil and supplied.B==nil
+          and supplied.TB==nil and supplied[2]==nil then randomOptions.tableB=tables.tableB end
+    end
+    random = Random.new(randomOptions)
+  end
+  if random ~= nil then
+    if motionOptions.randomScalar == nil and type(random.scalar) == "function" then
+      motionOptions.randomScalar = function(variant, bound)
+        -- Motion exposes the -1 sentinel as normalizedBound=0x10000 in
+        -- resolver context; Random:scalar expects the original signed value.
+        if defaultRandom and bound == 0x10000 then bound = -1 end
+        return random:scalar(variant, bound)
+      end
+    end
+    local hasTrigTables = random.tableA ~= nil and random.tableB ~= nil
+    if motionOptions.randomVector == nil and type(random.vector) == "function"
+        and (not defaultRandom or hasTrigTables) then
+      motionOptions.randomVector = function(mode, values, context)
+        values = type(values) == "table" and values or {}
+        local angles = context and (context.angleContext or context.angle) or nil
+        return random:vector(mode, values[1], values[2], angles)
+      end
+    end
+  end
   local nativeObjects = options.nativeObjects
   if nativeObjects == nil then
     nativeObjects = NativeObjects.new(options.nativeObjectOptions or {})
@@ -333,6 +380,7 @@ function Runtime:_initMaterial(effect, particle, source)
   context.programId = particle.event and particle.event.programId
   context.address = particle.event and particle.event.address
   context.age = particle.age
+  context.attribute=source.attribute
   local ok, value = pcall(init, source.material or {}, context)
   if not ok or type(value) ~= "table" then
     self:_emitUnsupported(effect, "material-initialization", {
@@ -373,6 +421,7 @@ function Runtime:_stepMaterial(effect, particle)
   particle._materialState = value
   particle.material = self:_materialSnapshot(value)
   self:_appendMaterialDiagnostics(effect, particle, value)
+  if value.nativeAlphaFinished then particle.active=false;particle.alive=false end
 end
 
 function Runtime:_mergeManagerDiagnostics(manager)

@@ -24,6 +24,37 @@ FxRom.LIFECYCLE_COUNT = 30
 FxRom.LIFECYCLE_INIT = 0x84183700
 FxRom.LIFECYCLE_UPDATE = 0x84183778
 FxRom.LIFECYCLE_DRAW = 0x841837F0
+-- Main-segment sine table plus its overlapping quarter-turn window. The
+-- second address uses SIGNED addiu 0x8e50 after lui 0x8009 (0x841060D4).
+FxRom.TRIG_ROM_START = 0x88A50
+FxRom.TRIG_ROM_END = 0x8DA50
+FxRom.TRIG_COUNT = 4096
+
+function FxRom.trigTables(data)
+  if type(data)~="string" then return nil,"battle FX trig bytes unavailable" end
+  if #data>=FxRom.ROM_BASE then
+    data=data:sub(FxRom.TRIG_ROM_START+1,FxRom.TRIG_ROM_END)
+  end
+  if #data~=FxRom.TRIG_ROM_END-FxRom.TRIG_ROM_START then
+    return nil,"battle FX trig block has invalid length"
+  end
+  local values={}
+  for offset=0,#data-4,4 do
+    local a,b,c,d=data:byte(offset+1,offset+4)
+    local bits=((a*256+b)*256+c)*256+d
+    local exponent=math.floor(bits/0x800000)%256
+    local fraction=bits%0x800000
+    if exponent==255 then return nil,"battle FX trig table has non-finite value" end
+    local value=exponent==0 and fraction*2^-149
+      or (1+fraction/0x800000)*2^(exponent-127)
+    values[#values+1]=bits>=0x80000000 and -value or value
+  end
+  local out={tableA={},tableB={}}
+  for i=1,FxRom.TRIG_COUNT do
+    out.tableA[i],out.tableB[i]=values[i],values[i+1024]
+  end
+  return out
+end
 
 -- Native event modes written by the corresponding opcode handlers. These
 -- values select the exact attachment/emission routines in func_84107B68.
@@ -147,6 +178,10 @@ local function decodeGeometry(rom,address,repeats,particles)
     for index=0,selectorEntryCount(selectors.scale,repeats,particles)-1 do
       scales[#scales+1]={
         scale=readSigned16(rom,scaleTable+index*8)*0.001,
+        nativeScaleUpdate={initial=readSigned16(rom,scaleTable+index*8),
+          target=readSigned16(rom,scaleTable+index*8+2),
+          step=readSigned16(rom,scaleTable+index*8+4),
+          startAge=readSigned16(rom,scaleTable+index*8+6)},
         value1=readSigned16(rom,scaleTable+index*8+2),
         value2=readSigned16(rom,scaleTable+index*8+4),
         lifetime=readSigned16(rom,scaleTable+index*8+6),
@@ -169,7 +204,7 @@ local function decodeGeometry(rom,address,repeats,particles)
     end
   end
   return {
-    address=address,selector=selector,
+    address=address,selector=selector,nativeGeometry=true,
     selectors=selectors,
     scaleTable=scaleTable,positionTable=positionTable,
     velocityTable=velocityTable,attributeTable=attributeTable,
@@ -182,6 +217,34 @@ local function decodeGeometry(rom,address,repeats,particles)
     velocityEntry=velocityTable and signedVector(rom,velocityTable) or nil,
     attributeEntry=attributeTable and readSigned16(rom,attributeTable) or nil,
   }
+end
+
+-- func_8410119C/841013F4 and the vertical branch of func_84101D54.
+local function decodeNativeMotion(rom,address)
+  if not addressInOverlay(address) then return nil end
+  local direction=pointerAt(rom,address,0)
+  local vertical=pointerAt(rom,address,8)
+  local out={address=address}
+  if direction then
+    local speed=pointerAt(rom,direction,4)
+    out.direction={mode=readSigned16(rom,direction),
+      curve=pointerAt(rom,direction,8)}
+    if speed then
+      out.direction.speed={mode=readSigned16(rom,speed),
+        startAge=readSigned16(rom,speed+2),initial=readSigned16(rom,speed+4),
+        target=readSigned16(rom,speed+6),step=readSigned16(rom,speed+8),
+        random=readSigned16(rom,speed+10)}
+    end
+  end
+  if vertical then out.verticalSubtract={startAge=readSigned16(rom,vertical),
+    value=readSigned16(rom,vertical+2)} end
+  out.verticalController=pointerAt(rom,address,4)
+  if out.verticalController then
+    local values=rgbaAt(rom,out.verticalController)
+    out.verticalRamp={startAge=values[1],step=values[2]>=128 and values[2]-256 or values[2],
+      random=values[3],base=values[4],target=readSigned16(rom,out.verticalController+4)}
+  end
+  return out
 end
 
 local function decodeTransform(rom,address)
@@ -203,8 +266,33 @@ local function decodeTransform(rom,address)
     directionalVelocity=randomVectorSpec(rom,directionalVelocity),
     scaleController=scaleController,
     motionController=motionController,
+    nativeMotion=decodeNativeMotion(rom,motionController),
     motionAxes=motionAxes,
   }
+end
+
+local function decodeParticleColorTrack(rom,controller,field)
+  local header=controller and pointerAt(rom,controller,0)
+  local values=controller and pointerAt(rom,controller,field)
+  if not header or not values then return nil end
+  local bytes=rgbaAt(rom,header)
+  if not bytes then return nil end
+  local mode,period,count=bytes[1],bytes[3],bytes[4]
+  if period==0 or (mode~=0 and mode~=1) then return nil end
+  local times=mode==1 and pointerAt(rom,header,4)
+  if mode==1 and (not times or count==0) then return nil end
+  local track={mode=mode,period=period,colors={}}
+  for index=0,(mode==0 and period or count)-1 do
+    local rgba=rgbaAt(rom,values+index*4)
+    if not rgba then return nil end
+    if mode==0 then track.colors[#track.colors+1]=rgba
+    else
+      local age=readSigned16(rom,times+index*2)
+      if age<0 or (index>0 and age<track.colors[index].age) then return nil end
+      track.colors[#track.colors+1]={age=age,rgba=rgba}
+    end
+  end
+  return track
 end
 
 local function decodeMaterial(rom,address)
@@ -214,14 +302,53 @@ local function decodeMaterial(rom,address)
   local primary=colorController and pointerAt(rom,colorController,4)
   local secondary=colorController and pointerAt(rom,colorController,8)
   local constant=colors and pointerAt(rom,colors,0)
+  local fade=colors and pointerAt(rom,colors,4)
+  local fadeBytes=fade and rgbaAt(rom,fade)
   return {
     address=address,shapeId=readSigned16(rom,address),
     secondaryShapeId=readSigned16(rom,address+2),
     colorController=colorController,colors=colors,
+    nativeMaterialColors=true,
+    nativePrimaryTrack=decodeParticleColorTrack(rom,colorController,4),
+    nativeSecondaryTrack=decodeParticleColorTrack(rom,colorController,8),
     primaryColor=primary and rgbaAt(rom,primary) or nil,
     secondaryColor=secondary and rgbaAt(rom,secondary) or nil,
     constantColor=constant and rgbaAt(rom,constant) or nil,
+    nativeAlphaInitial=constant and rgbaAt(rom,constant)[1] or nil,
+    nativeAlphaRamp=fadeBytes and {address=fade,target=fadeBytes[1],
+      step=fadeBytes[2],startAge=readSigned16(rom,fade+2)} or nil,
   }
+end
+
+-- Mode 2 is a global RGBA controller, not a sprite descriptor:
+-- 841077E8 constructs it; 84100B3C samples it through 84100710.
+local function decodeNativeColorTrack(rom,address)
+  local controller=pointerAt(rom,address,4)
+  if not controller then return nil end
+  local header=pointerAt(rom,controller,0)
+  local colors=pointerAt(rom,controller,4)
+  if not header or not colors then return nil end
+  local bytes=rgbaAt(rom,header)
+  local mode,period,count=bytes[1],bytes[3],bytes[4]
+  if period==0 or (mode~=0 and mode~=1) then return nil end
+  local out={address=controller,mode=mode,period=period,colors={}}
+  if mode==0 then
+    for index=0,period-1 do
+      local rgba=rgbaAt(rom,colors+index*4)
+      if not rgba then return nil end
+      out.colors[#out.colors+1]=rgba
+    end
+  else
+    local times=pointerAt(rom,header,4)
+    if not times or count==0 then return nil end
+    for index=0,count-1 do
+      local age=readSigned16(rom,times+index*2)
+      local rgba=rgbaAt(rom,colors+index*4)
+      if not rgba or age<0 or (index>0 and age<out.colors[index].age) then return nil end
+      out.colors[#out.colors+1]={age=age,rgba=rgba}
+    end
+  end
+  return out
 end
 
 local function particleComponents(rom,geometryPointer,transformPointer,materialPointer,
@@ -340,6 +467,13 @@ function FxRom.program(rom, programId)
           encodedObjectRaw=encodedObjectRaw,
           delayOffset=delayOffset,
           encodedDelay=byte(encodedObjectRaw,delayOffset + 1),
+          nativeColorTrack=(mode==2 or mode==4 or mode==8)
+            and decodeNativeColorTrack(rom,record.argument) or nil,
+          nativeModelColor=mode==5 and {
+            primary=decodeParticleColorTrack(rom,pointerAt(rom,record.argument,4),4),
+            secondary=decodeParticleColorTrack(rom,pointerAt(rom,record.argument,4),8),
+            hideAge=read16(rom,record.argument+2),
+          } or nil,
           resolvedObject=nil,
           resolution={status="unresolved", resolver=0x80003240},
         }
@@ -495,7 +629,21 @@ function FxRom.lifecycle(rom)
   return out
 end
 
-function FxRom.catalog(rom)
+function FxRom.ribbonAsset(rom)
+  local pixels = {}
+  for i = 0, 127, 4 do
+    local packed = rgbaAt(rom, 0x84187418 + i)
+    for _, value in ipairs(packed) do
+      local intensity, alpha = math.floor(value / 16) * 17, value % 16 * 17
+      pixels[#pixels + 1] = string.char(intensity, intensity, intensity, alpha)
+    end
+  end
+  return {rgba=table.concat(pixels), address=0x84187418,
+    combiner={cycles=1, color0={3,5,1,5}, alpha0={1,7,3,7},
+      color1={3,5,1,5}, alpha1={1,7,3,7}}}
+end
+
+function FxRom.catalog(rom,trigBytes)
   local programs, moves = {}, {}
   for id = 0, FxRom.PROGRAM_COUNT - 1 do
     local program, err = FxRom.program(rom, id)
@@ -512,6 +660,15 @@ function FxRom.catalog(rom)
     programs = programs,
     moves = moves,
     lifecycle = FxRom.lifecycle(rom),
+    lifecycleAssets = {ribbon=FxRom.ribbonAsset(rom),beamGlow=(function()
+      local pixels={}
+      for i=0,1023,4 do for _,v in ipairs(rgbaAt(rom,0x84188738+i)) do
+        local intensity=math.floor(v/16)*17
+        pixels[#pixels+1]=string.char(intensity,intensity,intensity,v%16*17)
+      end end
+      return {w=32,h=32,format=3,size=1,rgba=table.concat(pixels)}
+    end)()},
+    trigTables = FxRom.trigTables(trigBytes or rom),
   }
 end
 

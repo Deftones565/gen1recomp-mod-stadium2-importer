@@ -81,6 +81,7 @@ uniform float alphaCutoff;
 uniform vec2 primarySize;
 uniform vec2 secondarySize;
 uniform vec4 sceneTint;
+uniform vec4 nativeModelColor;
 uniform float flashAmount;
 uniform Image sunMap;
 uniform float sunEnabled;
@@ -348,6 +349,7 @@ void effect() {
     shaded=mix(shaded,watercolor,mangaAmount);
   }
   shaded=mix(shaded,vec3(1.0),flashAmount);
+  shaded=mix(shaded,nativeModelColor.rgb,nativeModelColor.a);
   love_PixelColor=vec4(shaded,
     texel.a * mix(1.0, environmentColor.a, environmentMix) * sceneTint.a);
 }
@@ -399,6 +401,7 @@ uniform float secondaryMix;
 uniform vec4 textureScroll;
 uniform float alphaCutoff;
 uniform vec4 sceneTint;
+uniform vec4 nativeModelColor;
 uniform float flashAmount;
 uniform float effectIntensityMode;
 uniform float lightingEnabled;
@@ -503,6 +506,7 @@ void effect() {
   vec3 lighting=mix(vec3(1.0),authoredLighting,lightingEnabled);
   vec3 shaded=combined*lighting*sceneTint.rgb;
   shaded=mix(shaded,vec3(1.0),flashAmount);
+  shaded=mix(shaded,nativeModelColor.rgb,nativeModelColor.a);
   love_PixelColor=vec4(shaded,
     texel.a*mix(1.0,environmentColor.a,environmentMix)*sceneTint.a);
 }
@@ -1608,6 +1612,7 @@ function Renderer:setAnimation(value, loop, auxIndex)
   end
   if not (index and self.model.anims[index]) then return false end
   self.animIndex = index
+  self.fxDispatchRow = nil
   self.loop = loop ~= false
   self.auxIndex = auxIndex
   self.time = 0
@@ -1622,13 +1627,19 @@ function Renderer:setMove(move, loop)
   if not index then return false end
   local aux=self.model.moveAux and self.model.moveAux[move]
   if aux and aux>=0 then aux=aux+1 else aux=nil end
-  return self:setAnimation(index, loop, aux)
+  local ok=self:setAnimation(index, loop, aux)
+  if ok then self.fxDispatchRow=move-1 end
+  return ok
 end
 
 function Renderer:setContext(name, loop)
   local index = Pack.contextIndex(self.model, name)
   if not index then return false end
-  return self:setAnimation(index, loop)
+  local ok=self:setAnimation(index, loop)
+  if ok then
+    self.fxDispatchRow=require("mods.STADIUM2_IMPORTER.lib.animation_dispatch").CONTEXT_ENTRY[name]
+  end
+  return ok
 end
 
 function Renderer:setHandlerRuntime(runtime, defer)
@@ -1734,6 +1745,17 @@ function Renderer:updatePose(force)
     end
   end
   local root = (self.model.rootScale or 1) * stageScale
+  self.attachmentPositions={}
+  for i,marker in ipairs(self.model.attachments or {}) do
+    if i>12 then break end -- native registration capacity
+    local matrix=mats[marker.bone+1]
+    if matrix and not self.attachmentPositions[marker.label] then
+      self.attachmentPositions[marker.label]={matrix[1][4]*root,
+        matrix[2][4]*root,matrix[3][4]*root}
+    elseif marker.bone==-1 and not self.attachmentPositions[marker.label] then
+      self.attachmentPositions[marker.label]={0,0,0}
+    end
+  end
   self.handlerBoneAnchors = {}
   for key, item in pairs(self.handlerState and self.handlerState.operations or {}) do
     if item.result and item.result.operation == "dynamic-object-renderer" then
@@ -1935,7 +1957,41 @@ function Renderer:callbackUsesMaterialFx(prim)
   return false
 end
 
+-- Resource-owned battle FX use the same decoded phase-5 controllers as
+-- model callbacks, but have no model handler site. Evaluate once per tick.
+function Renderer:battleFxMaterialState(prim)
+  if prim and prim.battleFxTextures then
+    return {material=prim.material,textures=prim.battleFxTextures}
+  end
+  if not (prim and prim.battleFxController) then return nil end
+  local frame=self.handlerRuntime and self.handlerRuntime.callbackFrame or 0
+  self.battleFxMaterialCache=self.battleFxMaterialCache or {}
+  local cached=self.battleFxMaterialCache[prim]
+  if cached and cached.frame==frame then return cached end
+  local evaluator=require("mods.STADIUM2_IMPORTER.lib.render_callbacks.phase5_geometry")
+  local material,pointers,scroll=evaluator.evaluateController(prim.battleFxController,prim.material,frame)
+  local byPointer=self.battleFxTexturePointers
+  if not byPointer then
+    byPointer={}
+    for index,texture in ipairs(self.model.textures or {}) do
+      if texture.sourcePointer then byPointer[texture.sourcePointer]=index end
+    end
+    self.battleFxTexturePointers=byPointer
+  end
+  local set={phase5=true,scroll=scroll,samplers={}}
+  for _,item in ipairs(prim.battleFxController.items or {}) do
+    local unit=item.textureUnit+1
+    set[unit]=byPointer[pointers[unit]]
+    set.samplers[unit]=item.sampler
+  end
+  cached={frame=frame,material=material,textures=set}
+  self.battleFxMaterialCache[prim]=cached
+  return cached
+end
+
 function Renderer:currentMaterial(prim)
+  local battle=self:battleFxMaterialState(prim)
+  if battle then return battle.material end
   local site = prim and prim.callbackOffset
   local dynamic = self.handlerState and self.handlerState.materialBySite
   local material = site and dynamic and dynamic[site] or nil
@@ -1959,6 +2015,8 @@ function Renderer.callbackTextureScroll(set, primaryOwned)
 end
 
 function Renderer:currentTexture(prim)
+  local battle=self:battleFxMaterialState(prim)
+  if battle and battle.textures[1] then return battle.textures[1] end
   local dynamic = self.handlerState and self.handlerState.textureBySite
   local site = prim and prim.callbackOffset
   if dynamic and site and dynamic[site]
@@ -2002,6 +2060,11 @@ function Renderer:worldMetrics()
     rootScale = tonumber(model.rootScale) or 1,
     bounds = bounds,
   }
+end
+
+function Renderer:attachmentPosition(label)
+  local p=self.attachmentPositions and self.attachmentPositions[label]
+  return p and {p[1],p[2],p[3]} or nil
 end
 
 -- Draw into the caller's currently-bound color/depth target. The battle scene
@@ -2266,6 +2329,9 @@ function Renderer:drawScene(pass, model, options)
     end
     pcall(self.shader.send, self.shader, "sceneTint", tint)
     pcall(self.shader.send, self.shader, "flashAmount", options.flashAmount or 0)
+    local modelColor=options.nativeModelColor or {0,0,0,0}
+    pcall(self.shader.send,self.shader,"nativeModelColor",
+      {modelColor[1]/255,modelColor[2]/255,modelColor[3]/255,modelColor[4]/255})
     pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
     pcall(self.shader.send, self.shader, "n64CoveragePassthrough", 0)
     pcall(self.shader.send, self.shader, "primaryIntensityAlpha", 0)
@@ -2332,6 +2398,13 @@ function Renderer:drawScene(pass, model, options)
         local attribute = site and attributes and attributes[site]
         local color = attribute and attribute.color or
           (material and material.primitiveColor) or {1,1,1,1}
+        local fxColors=options.battleFxColors
+        if fxColors and fxColors.primaryColor then
+          local c=fxColors.primaryColor
+          color={c[1]/255,c[2]/255,c[3]/255,1}
+        elseif fxColors then
+          color={color[1],color[2],color[3],1}
+        end
         pcall(self.shader.send, self.shader, "effectIntensityMode",
           part.prim.effect == "fire" and 2
             or (material and material.intensity and 1 or 0))
@@ -2340,6 +2413,7 @@ function Renderer:drawScene(pass, model, options)
           renderState.lightingEnabled and 1 or 0)
         if g.setDepthMode then
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
+          if options.screenSpace or part.prim.battleFxNoDepth then compare,write="always",false end
           g.setDepthMode(compare, write)
         end
         local decalBias = self.decalDepthBias
@@ -2353,7 +2427,10 @@ function Renderer:drawScene(pass, model, options)
         pcall(self.shader.send,self.shader,"decalDepthBias",
           (part.prim.decal or part.prim.coplanarLayer) and decalBias or 0)
         pcall(self.shader.send, self.shader, "environmentColor",
-          material and material.environmentColor or {1,1,1,1})
+          fxColors and fxColors.secondaryColor and {
+            fxColors.secondaryColor[1]/255,fxColors.secondaryColor[2]/255,
+            fxColors.secondaryColor[3]/255,fxColors.secondaryColor[4]/255}
+            or (material and material.environmentColor or {1,1,1,1}))
         local n64Combiner = sendN64Combiner(self.shader, material)
         pcall(self.shader.send, self.shader, "n64CoveragePassthrough",
           Renderer.arenaCombinerCoveragePassthrough(
@@ -2364,6 +2441,8 @@ function Renderer:drawScene(pass, model, options)
         local sets = self.handlerState and self.handlerState.textureSetBySite
         local set = self:callbackUsesMaterialFx(part.prim)
           and site and sets and sets[site] or nil
+        local battleState=self:battleFxMaterialState(part.prim)
+        if battleState then set=battleState.textures end
         local textureIndex = self:currentTexture(part.prim)
         local primaryIntensity, secondaryIntensity =
           Renderer.phase5IntensityAlpha(material, set, self.model, textureIndex)
@@ -2371,7 +2450,7 @@ function Renderer:drawScene(pass, model, options)
           primaryIntensity and 1 or 0)
         pcall(self.shader.send, self.shader, "secondaryIntensityAlpha",
           secondaryIntensity and 1 or 0)
-        local primaryOwned = set and self:callbackOwnsTexture(part.prim) or false
+        local primaryOwned = battleState~=nil or (set and self:callbackOwnsTexture(part.prim) or false)
         local wrapS, wrapT = Renderer.callbackPrimaryWrap(part.prim, material,
           set, primaryOwned)
         sendTextureWrapMode(self.shader, "primaryWrapMode", wrapS, wrapT)
@@ -2415,7 +2494,9 @@ function Renderer:drawScene(pass, model, options)
         else
           pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
           sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
-          pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
+          local scroll=set and set.scroll and set.scroll[1]
+          local s,t=foldedTextureScroll(scroll,wrapS,wrapT,self.boundedTextureUV)
+          pcall(self.shader.send, self.shader, "textureScroll", {s,t,0,0})
         end
         local arenaAlphaMode = part.prim.arenaAlphaMode
         pcall(self.shader.send, self.shader, "alphaCutoff",
@@ -2539,6 +2620,7 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
       pcall(self.shader.send, self.shader, "sceneTint", {1,1,1,1})
       pcall(self.shader.send, self.shader, "flashAmount", 0)
+      pcall(self.shader.send, self.shader, "nativeModelColor", {0,0,0,0})
       pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
       pcall(self.shader.send, self.shader, "n64CoveragePassthrough", 0)
       pcall(self.shader.send, self.shader, "primaryIntensityAlpha", 0)

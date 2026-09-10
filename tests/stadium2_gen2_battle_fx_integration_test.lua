@@ -2,7 +2,7 @@ package.path="./?.lua;./?/init.lua;"..package.path
 
 -- Keep this test presentation-only.  The adapter seam is stubbed so the test
 -- proves Gen 2's event/tick contract without requiring a GPU or ROM cache.
-local calls={construct=0,trigger={},updates={}}
+local calls={construct=0,trigger={},updates={},finishes=0}
 local adapterName="mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter"
 package.preload[adapterName]=function()
   return {
@@ -17,6 +17,7 @@ package.preload[adapterName]=function()
             alternate=alternate}
         end,
         update=function(_,dt) calls.updates[#calls.updates+1]=dt end,
+        finish=function() calls.finishes=calls.finishes+1 end,
       }
     end,
   }
@@ -57,6 +58,21 @@ ok(#calls.trigger==1,"a presented missed move does not trigger battle FX")
 scene:update(1/30)
 ok(#calls.updates==1 and math.abs(calls.updates[1]-1/30)<1e-9,
   "battle FX advances with the presentation delta")
+ok(calls.finishes==0,"event waits for the host to start its animation")
+local done=false
+scene.screen.anim={done=function() return done end}
+scene:syncBattleFxAnimation(true)
+ok(calls.finishes==0,"running host animation holds its lifecycle")
+done=true
+scene:syncBattleFxAnimation();scene:syncBattleFxAnimation()
+ok(calls.finishes==1,"retained done runner signals completion exactly once")
+scene:handleEvent({kind="move",side="player",move=42})
+scene.screen.anim={};scene:syncBattleFxAnimation(true)
+scene.screen.anim=nil;scene:syncBattleFxAnimation()
+ok(calls.finishes==2,"skipped/removed runner finishes the effect")
+scene:handleEvent({kind="move",side="player",move=42})
+scene:syncBattleFxAnimation(true)
+ok(calls.finishes==3,"move without a host animation finishes after queue dispatch")
 
 -- This file does not release the adapter: Presentation owns shared scene
 -- teardown, which is deliberately tested by the common scene integration.

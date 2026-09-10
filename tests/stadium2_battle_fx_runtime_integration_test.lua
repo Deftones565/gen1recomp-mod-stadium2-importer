@@ -54,4 +54,42 @@ ok(detached.nativeObjects.slots[1].object.pointer==0x8416A3E0,"native snapshot i
 ok(detached.lifecycles.instances[1].context.sourceSide=="player","lifecycle snapshot is detached")
 local before=#runtime:snapshot().particles;runtime:snapshot();ok(#runtime:snapshot().particles==before,"snapshot is pure")
 ok(runtime:release() and #runtime:snapshot().particles==0,"release clears integrated state")
+
+-- The default runtime owns a separate ROM random stream.  Exercise the
+-- decoded mode 0/1 transform path and prove it does not consume host RNG.
+local hostRngCalls=0
+local randomCommon={mode=0,descriptor=0x84174000,descriptorKind="particle",
+  start=0,interval=0,repeats=1,particleCount=1,flags=0x80,flags2=0,
+  geometry={selectors={scale=1,position=1,velocity=1,attribute=1},
+    scaleEntries={{scale=1,lifetime=99}},positionEntries={{0,0,0}},
+    velocityEntries={{0,0,0}},attributeEntries={0}},
+  transform={rotationOffset={mode=0,values={2,0,-1}},
+    directionalVelocity={mode=1,values={3,5,7}}},
+  material={address=0x84175000,shapeId=47,secondaryShapeId=0},
+  attachment={flags=0x80,flags2=0}}
+local randomProgram={id=99,records={{opcode=4,address=0x84176000,
+  emitter=randomCommon},{opcode=0,address=0x84176018}}}
+local randomRuntime=Runtime.new({catalog={programs={[99]=randomProgram},
+  moves={[61]={primaryDispatch={{kind="program",programId=99}},alternateDispatch={}}}},
+  rng=function() hostRngCalls=hostRngCalls+1;return 0 end,
+  randomOptions={seed=1}})
+assert(randomRuntime:trigger({moveId=61}))
+local randomParticle=randomRuntime:snapshot().particles[1]
+ok(randomParticle.rotation[1]~=0 and randomParticle.rotation[2]==0
+  and randomParticle.velocity[1]~=0,
+  "default ROM random helpers evaluate decoded mode 0/1 vectors")
+ok(hostRngCalls==0,"battle RNG is isolated from battle FX random motion")
+local overrideRuntime=Runtime.new({catalog={programs={[99]=randomProgram},
+  moves={[61]={primaryDispatch={{kind="program",programId=99}},alternateDispatch={}}}},
+  motionOptions={randomScalar=function(variant,bound)
+    return variant==0 and 17 or 19
+  end}})
+assert(overrideRuntime:trigger({moveId=61}))
+local overrideParticle=overrideRuntime:snapshot().particles[1]
+ok(overrideParticle.rotation[1]==17 and overrideParticle.velocity[1]==19,
+  "explicit motion random resolver overrides the default ROM stream")
+local sentinelRandom=Runtime.new({randomOptions={seed=1}})
+local sentinel=sentinelRandom.motion.init({transform={rotationOffset={mode=0,
+  values={-1,0,0}}}},sentinelRandom.motionOptions)
+ok(sentinel.rotation[1]~=0,"ROM -1 random bound reaches the scalar sentinel path")
 print(("%d checks passed (Stadium 2 battle FX runtime integration)"):format(checks))

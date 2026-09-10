@@ -3,8 +3,7 @@
 -- The ROM owns this state at main addresses 0x800A1430 and 0x80138C00.  A
 -- caller supplies their initial values explicitly here; this module never
 -- reads or mutates host globals and never calls math.random().  The optional
--- trig tables are also caller-owned because the paired TB table is populated
--- by the game at runtime.
+-- trig tables are caller-owned and decoded from the main ROM segment.
 local Random = {}
 Random.__index = Random
 
@@ -60,14 +59,7 @@ local function mul32(a, b)
   return (a0 * b0 + cross * U16) % U32
 end
 
-local function single(value)
-  -- The bundled Lua is 5.3+, but retain a scalar fallback for LuaJIT hosts.
-  if string.pack and string.unpack then
-    local packed = string.pack("<f", value)
-    return string.unpack("<f", packed)
-  end
-  return value
-end
+local single = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
 
 local function number(value)
   value = tonumber(value)
@@ -80,11 +72,11 @@ local function fsub(a, b) return single(single(a) - single(b)) end
 local function fneg(a) return single(-single(a)) end
 
 -- MIPS `cvt.s.w` treats the register as signed, then the fragment adds
--- 2147483648.0 when its sign bit is set to obtain an unsigned float.
+-- 4294967296.0 when its sign bit is set to obtain an unsigned float.
 local function unsignedFloat(value)
   value = u32(value)
   if value < U31 then return single(value) end
-  return single(single(value - U32) + single(2147483648.0))
+  return single(single(value - U32) + single(4294967296.0))
 end
 
 local function optionTables(options)
@@ -243,7 +235,7 @@ function Random:trigAt(index)
     return self:_diagnostic("invalid-trig-index", "trig index must be in 0..4095")
   end
   local a = tableValue(self.tableA, index, 0x80087E50 + index * 4)
-  local b = tableValue(self.tableB, index, 0x80098E50 + index * 4)
+  local b = tableValue(self.tableB, index, 0x80088E50 + index * 4)
   if a == nil or b == nil then
     return self:_diagnostic("unresolved-trig-tables",
       "fragment-79 trig tables TA/TB require explicit runtime data")
@@ -328,7 +320,7 @@ function Random:vector(mode, bound, offset, angles)
   local x = fadd(fmul(aq, bp), fmul(fmul(ap, bq), ar))
   local y = fmul(fmul(fneg(magnitude), ap), br)
   local z = fsub(fmul(bp, bq), fmul(fmul(ar, ap), aq))
-  return {fmul(magnitude, x), fmul(magnitude, y), fmul(magnitude, z)}
+  return {fmul(magnitude, x), y, fmul(magnitude, z)}
 end
 
 Random.randomVector = Random.vector

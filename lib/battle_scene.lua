@@ -433,6 +433,9 @@ function Scene:render(requestedWidth,requestedHeight)
 
     local bands=self.environment and self.environment.bands
     local clear=bands and bands[1] or {0,0,0}
+    if self.battleFx and type(self.battleFx.backgroundColor)=="function" then
+      clear=self.battleFx:backgroundColor(clear)
+    end
     g.setShader()
     if g.setDepthMode then g.setDepthMode("always",false) end
     g.clear(clear[1] or 0,clear[2] or 0,clear[3] or 0,1,true,true)
@@ -545,6 +548,7 @@ function Scene:render(requestedWidth,requestedHeight)
         if resolvedModes[side]=="host" and not modelFailed[side]
             and entry and actor.renderer then
           local base=self.environment.modelTint or {1,1,1}
+          local nativeColor=ext.nativeModelColors and ext.nativeModelColors[side]
           local drawn,drawErr=actor.renderer:drawScene(pass,entry[1],{
             viewProjection=vp,viewMatrix=frame.view,
             normalMatrix=Renderer.normalMatrix(entry[2],0,false),
@@ -552,7 +556,9 @@ function Scene:render(requestedWidth,requestedHeight)
             diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
             modernLighting=self.sceneMode==Scene.MODE_ARENA,
             flipWinding=true,disableCulling=true,
-            tint={base[1],base[2],base[3],1},
+            tint={base[1],base[2],base[3],nativeColor and nativeColor.opacity
+              and nativeColor.opacity/255 or 1},
+            nativeModelColor=nativeColor and nativeColor.color,
             flashAmount=actor.flash>0 and .5 or 0,
             sunMap=shadow and shadow.map,sunVP=shadow and shadow.sunVP,
             sunDark=shadow and shadow.sunDark,sunBias=shadow and shadow.sunBias,
@@ -574,6 +580,7 @@ function Scene:render(requestedWidth,requestedHeight)
     end
 
     restoreWorldTarget(self,g)
+    if ext.nativeOverlayDraw then ext.nativeOverlayDraw();restoreWorldTarget(self,g) end
     Extensions.overlay(ext)
     restoreWorldTarget(self,g)
     g.setColor(1,1,1,1)

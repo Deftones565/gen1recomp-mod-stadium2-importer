@@ -1,8 +1,8 @@
 -- Persistent scheduler kernel for fragment-79 native-object emitters.
 --
 -- The ROM command pointer is deliberately kept separate from the resolved
--- object.  The retail resolver and linked update/draw code are not available
--- in this layer; callers must inject them and unsupported work is reported.
+-- object. Retail modes 2, 5 and 8 have decoded built-in callbacks; injected
+-- callbacks remain authoritative. Other modes retain explicit diagnostics.
 
 local NativeObjects = {}
 
@@ -146,6 +146,81 @@ local function callbackResult(value)
     value.diagnostics
 end
 
+local single=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
+local function clampByte(value)
+  value = tonumber(value) or 0
+  if value < 0 then return 0 end
+  if value > 255 then return 255 end
+  -- MIPS `trunc.w.s` used by the interpolation helper truncates toward zero.
+  return value < 0 and math.ceil(value) or math.floor(value)
+end
+
+-- Evaluates the mode-2 draw path's colour controller (0x84100B3C).  The
+-- resolver/ROM decoder supplies `mode`, `period`, and `colors`; mode 0 is a
+-- four-byte RGBA sample per age, while mode 1 uses explicit age-keyed RGBA
+-- keys corresponding to local interpolation helper 0x84100710/0x841005E0.
+-- `alive` is false at age >= period, matching the draw body's termination.
+function NativeObjects.colorAt(track, age)
+  if type(track) ~= "table" then return nil, false, "colour track is missing" end
+  local period = tonumber(track.period)
+  age = tonumber(age)
+  if not period or period ~= math.floor(period) or period <= 0
+      or age == nil or age ~= math.floor(age) or age < 0 then
+    return nil, false, "colour track period/age is invalid"
+  end
+  if age >= period then return nil, false end
+  local mode = tonumber(track.mode)
+  local colors = track.colors
+  if mode == 0 then
+    if type(colors) ~= "table" then return nil, false, "mode-0 colour samples are missing" end
+    local sample = colors[age + 1]
+    if type(sample) ~= "table" or #sample < 4 then
+      return nil, false, "mode-0 colour sample is incomplete"
+    end
+    return {clampByte(sample[1]), clampByte(sample[2]), clampByte(sample[3]),
+      clampByte(sample[4])}, true
+  end
+  if mode ~= 1 or type(colors) ~= "table" or #colors == 0 then
+    return nil, false, "unsupported colour controller mode"
+  end
+  local previous, following = colors[1], nil
+  for index = 1, #colors do
+    local key = colors[index]
+    if type(key) ~= "table" or tonumber(key.age) == nil or type(key.rgba) ~= "table"
+        or #key.rgba < 4 then
+      return nil, false, "mode-1 colour key is incomplete"
+    end
+    -- 84100688 selects [key,nextKey), skipping duplicate ages. The last
+    -- key at an age wins, so abrupt ROM color transitions remain exact.
+    if age < key.age then following = key; break end
+    previous = key
+  end
+  if not following then following = previous end
+  local span = tonumber(following.age) - tonumber(previous.age)
+  local rgba = {}
+  for channel = 1, 4 do
+    local slope=span>0 and single((following.rgba[channel]-previous.rgba[channel])/span) or 0
+    rgba[channel]=clampByte(single(single(slope*(age-previous.age))+previous.rgba[channel]))
+  end
+  return rgba, true
+end
+
+-- func_8410A2C8 transforms the RGBA5551 background fill color before
+-- func_8410A444 submits it to func_80007820. It does not tint Pokemon.
+function NativeObjects.backgroundColor(base, color)
+  if type(color)~="table" or (color[4] or 0)==0 then return clone(base) end
+  local out={}
+  local alpha=color[4]
+  for channel=1,3 do
+    local five=math.floor(math.max(0,math.min(1,base[channel] or 0))*31+0.5)
+    local expanded=five*8+math.floor(five/4)
+    local mixed=math.floor((expanded*(255-alpha)+color[channel]*alpha)/255)
+    local value=math.floor(mixed/8)
+    out[channel]=(value*8+math.floor(value/4))/255
+  end
+  return out
+end
+
 local function retain(list, value)
   if type(value) == "table" and #value > 0 then
     for _, item in ipairs(value) do list[#list + 1] = clone(item) end
@@ -164,6 +239,11 @@ function NativeObjects.new(options)
     slots={},
     diagnostics={},
     tickCount=0,
+    colorInstances={},
+    modelColorInstances={},
+    modelColors={},
+    screenInstances={},
+    nativeColor=nil,
   }
   integer(self.capacity, "capacity")
   if self.capacity < 1 then error("capacity must be positive") end
@@ -271,6 +351,11 @@ function NativeObjects:release(index)
     for slotIndex = 0, self.capacity - 1 do
       if self.slots[slotIndex].active then self:_releaseSlot(self.slots[slotIndex]) end
     end
+    self.colorInstances = {}
+    self.modelColorInstances = {}
+    self.modelColors = {}
+    self.screenInstances = {}
+    self.nativeColor = nil
     return true
   end
   integer(index, "scheduler index")
@@ -281,7 +366,56 @@ function NativeObjects:release(index)
 end
 
 function NativeObjects:_invoke(slot)
+  local track = slot.event and slot.event.nativeColorTrack
   local callback = self.callbacks[slot.mode]
+  if slot.mode==8 and track and type(callback)~="function" then
+    local rgba,alive=NativeObjects.colorAt(track,0)
+    if rgba then
+      self.screenInstances[#self.screenInstances+1]={age=0,active=alive,
+        track=clone(track),rgba=rgba,shapeId=90,position={160,120,0},
+        effectId=slot.event.effectId,programId=slot.event.programId}
+    else
+      self:_unsupported(slot,"unsupported-native-color","screen color track evaluation failed")
+    end
+    return tonumber(slot.state) or 1
+  end
+  local modelColor=slot.event and slot.event.nativeModelColor
+  if slot.mode==5 and modelColor and type(callback)~="function" then
+    local track=modelColor.primary or modelColor.secondary
+    if not track then
+      self:_unsupported(slot,"unsupported-native-model-color","model color controller has no decoded tracks")
+    else
+      local context=slot.event.context or {}
+      local instance={age=0,active=true,track=clone(modelColor),
+        side=context.nativeModelSide or (context.alternate and context.targetSide)
+          or context.sourceSide,
+        effectId=slot.event.effectId,programId=slot.event.programId}
+      if instance.side then
+        self.modelColorInstances[#self.modelColorInstances+1]=instance
+        self:_updateModelColor(instance)
+      else
+        self:_unsupported(slot,"unsupported-native-model-target","model color callback needs the active battler side")
+      end
+    end
+    return tonumber(slot.state) or 1
+  end
+  if slot.mode == 2 and type(track) == "table" and type(callback) ~= "function" then
+    local rgba, alive, errorMessage = NativeObjects.colorAt(track, 0)
+    if not rgba then
+      self:_unsupported(slot, "unsupported-native-color",
+        errorMessage or "native color track evaluation failed")
+    else
+      local instance = {schedulerIndex=slot.index, generation=slot.generation,
+        age=0, period=track.period, active=alive, rgba=rgba,
+        track=clone(track), effectId=slot.event.effectId,
+        programId=slot.event.programId}
+      self.colorInstances[#self.colorInstances + 1] = instance
+      self.nativeColor = clone(rgba)
+    end
+    -- The mode-2 wrapper returns the scheduler state byte after its local
+    -- constructor; the color visual remains persistent independently.
+    return tonumber(slot.state) or 1
+  end
   if type(callback) ~= "function" then
     self:_unsupported(slot, "unsupported-native-update",
       ("native-object update callback for mode %d is not installed"):format(slot.mode),
@@ -319,11 +453,49 @@ function NativeObjects:_invoke(slot)
   return value
 end
 
+-- 84100C68 updates model fog/blend RGBA (8003F454) and opacity
+-- (8003F4DC). The visual expires at its controller period; model writes hold.
+function NativeObjects:_updateModelColor(instance)
+  local spec=instance.track
+  if spec.hideAge~=0 and instance.age==spec.hideAge then instance.flags=0x280 end
+  local period=(spec.primary or spec.secondary).period
+  if instance.age>=period then instance.active=false;return end
+  local state=self.modelColors[instance.side] or {}
+  if spec.primary then state.color=NativeObjects.colorAt(spec.primary,instance.age) end
+  if spec.secondary then
+    local rgba=NativeObjects.colorAt(spec.secondary,instance.age)
+    if rgba then state.opacity=rgba[4] end
+  end
+  self.modelColors[instance.side]=state
+end
+
 function NativeObjects:tick(count)
   count = count == nil and 1 or integer(count, "tick count")
   if count < 0 then error("tick count must be non-negative") end
   for _ = 1, count do
     self.tickCount = self.tickCount + 1
+    for _,instance in ipairs(self.screenInstances) do
+      if instance.active then
+        instance.age=instance.age+1
+        local rgba,alive=NativeObjects.colorAt(instance.track,instance.age)
+        if rgba then instance.rgba=rgba end
+        instance.active=alive
+      end
+    end
+    for _,instance in ipairs(self.modelColorInstances) do
+      if instance.active then
+        instance.age=instance.age+1
+        self:_updateModelColor(instance)
+      end
+    end
+    for _, instance in ipairs(self.colorInstances) do
+      if instance.active then
+        instance.age = instance.age + 1
+        local rgba, alive = NativeObjects.colorAt(instance.track, instance.age)
+        if rgba then self.nativeColor = clone(rgba); instance.rgba = rgba end
+        if not alive then instance.active = false end
+      end
+    end
     for index = 0, self.capacity - 1 do
       local slot = self.slots[index]
       if slot.active then
@@ -392,6 +564,11 @@ function NativeObjects:snapshot()
     tickCount=self.tickCount,
     slots=slots,
     diagnostics=clone(self.diagnostics),
+    nativeColor=clone(self.nativeColor),
+    colorInstances=clone(self.colorInstances),
+    modelColorInstances=clone(self.modelColorInstances),
+    modelColors=clone(self.modelColors),
+    screenInstances=clone(self.screenInstances),
   }
 end
 

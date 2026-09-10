@@ -8,10 +8,23 @@ local player=Player.new({runtime=runtime,loadRenderer=function(move,shape)calls.
 ok(player:trigger({moveId=7})==1 and runtime.triggerCalls==1,"trigger delegated")
 player:update(1/30);ok(runtime.updateCalls==1,"update delegated")
 local result=assert(player:draw({camera={vp={}},environment={}}));ok(result.drawn==1 and calls.draw==2,"opaque and additive render once")
+snapshots.particles[1].material.nativeAlpha=64
+local originalDraw=renderer.drawScene
+renderer.drawScene=function(self,pass,matrix,options)
+  ok(options.tint[4]==64/255,"persistent native alpha reaches the renderer exactly once")
+  return originalDraw(self,pass,matrix,options)
+end
 ok(calls.load==1 and renderer.frame==2,"renderer cached and callback frame set")
 player:draw({});ok(calls.load==1,"shape renderer cache reused")
+renderer.drawScene=originalDraw
 ok(#player.diagnostics==0,"successful repeated draws do not add diagnostics")
 ok(player:release() and runtime.released and calls.release==1,"release owns runtime and renderer")
+local invalidRendererPlayer=Player.new({runtime=runtime,
+  loadRenderer=function()return{}end,
+  resolvePlacement=function()return{resolved=true,position={0,0,0},scale=1}end})
+local rejected=invalidRendererPlayer:draw({})
+ok(rejected.drawn==0 and rejected.diagnostics[1].code=="draw-renderer",
+  "common packet without drawScene is rejected, not counted as rendered")
 
 -- Native-object and lifecycle packet sets stay renderer-neutral and are
 -- sourced from the same persistent runtime snapshot as common particles.
@@ -27,8 +40,18 @@ local packetSnapshot={frame=8,effects={{id=3,moveId=11}},particles={},
     diagnostics={}},diagnostics={{code="runtime-warning",severity="warning",
       effectId=3,kind="runtime",message="retained runtime diagnostic"}}}
 local runtime2={snapshot=function()return packetSnapshot end,release=function(self)self.released=true end}
-local proofCalls={placement=0,geometry=0,model=0}
+local proofCalls={placement=0,geometry=0,model=0,nativeDraw=0,lifecycleDraw=0}
+local provenRenderer={drawScene=function(_,pass,matrix)
+  ok(type(matrix)=="table" and #matrix==16 and (pass=="opaque" or pass=="additive"),
+    "proven native/lifecycle packet reaches renderer")
+  proofCalls.nativeDraw=proofCalls.nativeDraw+1
+  return true
+end}
 local player2=Player.new({runtime=runtime2,
+  loadRenderer=function(move,shape)
+    ok(move==11 and (shape==23 or shape==24),"proven packet loader receives move and shape")
+    return provenRenderer
+  end,
   resolveNativePlacement=function(slot,context)
     proofCalls.placement=proofCalls.placement+1
     ok(slot.index==2 and context.sceneToken=="scene","native placement receives scene context")
@@ -36,13 +59,14 @@ local player2=Player.new({runtime=runtime2,
   end,
   resolveNativeGeometry=function(slot)
     proofCalls.geometry=proofCalls.geometry+1
-    return {resolved=true,resource=0x1234}
+    return {resolved=true,resource=0x1234,shapeId=23}
   end,
   resolveLifecycleModel=function(instance,evidence,context)
     proofCalls.model=proofCalls.model+1
     ok(instance.id==4 and evidence.familyId==7 and context.sceneToken=="scene"
       and context.sourceSide=="enemy","lifecycle model resolver receives merged context")
-    return {proven=true,modelId="family-7-model"}
+    return {proven=true,modelId="family-7-model",shapeId=24,
+      matrix={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}}
   end})
 local sets=player2:packets({sceneToken="scene"})
 ok(#sets.nativeObjects.packets==1 and sets.nativeObjects.packets[1].geometry.resource==0x1234
@@ -54,6 +78,26 @@ ok(#sets.nativeObjectPackets==1 and #sets.lifecyclePackets==1
   "player exposes packet aliases and lifecycle command evidence")
 ok(#sets.diagnostics==1 and sets.diagnostics[1].code=="runtime-warning",
   "player merges runtime diagnostics into the common packet result")
+local provenDraw=assert(player2:draw({sceneToken="scene",camera={vp={}},environment={}}))
+ok(provenDraw.drawn==2 and proofCalls.nativeDraw==4,
+  "draw renders proven native-object and lifecycle packets")
+
+local noTransform=Player.new({runtime=runtime2,
+  loadRenderer=function() return provenRenderer end,
+  resolveNativePlacement=function() return {resolved=true} end,
+  resolveNativeGeometry=function() return {resolved=true,shapeId=23} end,
+  resolveLifecycleModel=function() return {proven=true,shapeId=24} end})
+local noTransformDraw=assert(noTransform:draw({sceneToken="scene"}))
+ok(noTransformDraw.drawn==0 and #noTransform.diagnostics>0,
+  "proven geometry without explicit placement remains diagnostic-only")
+local noMethod=Player.new({runtime=runtime2,
+  loadRenderer=function() return {} end,
+  resolveNativePlacement=function() return {resolved=true,position={1,2,3}} end,
+  resolveNativeGeometry=function() return {resolved=true,shapeId=23} end})
+local noMethodDraw=assert(noMethod:draw({sceneToken="scene"}))
+ok(noMethodDraw.drawn==0 and #noMethod.diagnostics>0,
+  "renderer without drawScene is rejected")
+noTransform:release();noMethod:release()
 
 local unresolvedPlayer=Player.new({runtime=runtime2})
 local unresolvedDraw=assert(unresolvedPlayer:draw({}))
@@ -66,4 +110,27 @@ assert(unresolvedPlayer:draw({}))
 ok(firstDiagnosticCount>0 and #unresolvedPlayer.diagnostics==firstDiagnosticCount,
   "native/lifecycle diagnostics are deduplicated across draws")
 ok(unresolvedPlayer:release() and runtime2.released==true,"packet player releases runtime")
+local overlayState={effects={{id=1,moveId=5}},particles={},nativeObjects={slots={},
+  modelColors={enemy={color={255,0,0,128},opacity=64}},
+  screenInstances={{active=true,effectId=1,shapeId=90,age=4,rgba={1,2,3,128}}}}}
+local overlayDraws=0
+local overlay=Player.new({runtime={snapshot=function()return overlayState end},
+  loadRenderer=function(move,shape)
+    ok(move==5 and shape==90,"screen rendering requests actual ROM export90")
+    return {drawScene=function(_,pass,matrix,options)
+      overlayDraws=overlayDraws+1
+      ok(options.screenSpace and matrix[4]==160 and matrix[8]==120,
+        "screen draw uses native origin and bypasses world depth")
+      ok(options.battleFxColors.secondaryColor[4]==128
+        and options.viewProjection[1]==1/160,"screen color and orthographic projection reach renderer")
+      return true
+    end}
+  end})
+local scene={}
+overlay:draw(scene)
+ok(overlayDraws==0 and scene.nativeModelColors.enemy.opacity==64,
+  "world pass publishes model writes and defers screen drawing")
+ok(scene.nativeOverlayDraw()==1 and overlayDraws==2,"overlay stage submits both screen passes")
+overlayState.nativeObjects.screenInstances[1].active=false
+ok(scene.nativeOverlayDraw()==0 and overlayDraws==2,"expired screens no longer render")
 print(("%d checks passed (Stadium 2 battle FX player)"):format(n))

@@ -7,6 +7,35 @@ local Layout = require("mods.STADIUM2_IMPORTER.lib.layout")
 -- are the 251 Gen II moves; entries 251..270 are non-move battle contexts.
 local Dispatch = {}
 
+-- func_84113014 DMA-loads 0x30 bytes per species from this US ROM table;
+-- func_84112704 copies +14/+08 to battler+648/+650 respectively.
+Dispatch.BATTLE_PROFILE_START = 0x49DA60
+function Dispatch.battleProfileBytes(rom, species)
+  species = tonumber(species)
+  if type(rom) ~= "string" or not species or species%1~=0
+      or species<1 or species>Dispatch.ARCHIVE_RECORDS then return nil end
+  local offset=Dispatch.BATTLE_PROFILE_START+(species-1)*0x30
+  if #rom<offset+0x30 then return nil end
+  return rom:sub(offset+1,offset+0x30)
+end
+
+function Dispatch.battleProfile(bytes)
+  if type(bytes)~="string" or #bytes~=0x30 then return nil end
+  local function float(offset)
+    local a,b,c,d=bytes:byte(offset+1,offset+4)
+    local exponent=(a%128)*2+math.floor(b/128)
+    local mantissa=(b%128)*65536+c*256+d
+    if exponent==255 then return nil end
+    return (a>=128 and -1 or 1)*math.ldexp(
+      exponent==0 and mantissa/8388608 or 1+mantissa/8388608,
+      exponent==0 and -126 or exponent-127)
+  end
+  local center,ground=float(0x14),float(8)
+  if not center or not ground then return nil end
+  local f32=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
+  return {centerY=center,groundY=ground,targetHeight=f32(center-ground)}
+end
+
 Dispatch.ARCHIVE_START = Layout.ANIMATION_DISPATCH_TABLE_START
 Dispatch.ARCHIVE_RECORDS = Layout.ANIMATION_DISPATCH_TABLE_RECORDS
 Dispatch.RECORD_SIZE = Layout.ANIMATION_DISPATCH_RECORD_SIZE
@@ -49,6 +78,10 @@ function Dispatch.decodeRecord(payload)
     rows[sourceIndex] = {
       payload:byte(offset + 1),
       signed8(payload:byte(offset + 2)),
+      -- 84114730 copies byte2 into battler+61C for 84109780's joint
+      -- query. 8411E22C uses this same byte from context254 for the target.
+      fxJoint=payload:byte(offset+3),
+      raw=payload:sub(offset+1,offset+Dispatch.ENTRY_SIZE),
     }
   end
   return rows
