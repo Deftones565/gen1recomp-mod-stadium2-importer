@@ -586,14 +586,17 @@ function Cache.inspect(count)
       message = "missing " .. specials, marker = marker, context = context,
     }
   end
-  -- Special archives are part of the importer contract.  In particular,
-  -- record 253 (Egg) must be present alongside the Pokédoll; otherwise a
-  -- cache built before Egg extraction would appear complete to the viewer.
-  local eggKey = storageKey(Cache.specialPath("egg"))
-  if not keys[eggKey] then
+  -- Special archives are packed inside `specials.dsm`; they are not
+  -- individually enumerable storage keys.  Read the logical Egg entry from
+  -- that shard instead of checking for a nonexistent `cache/battle/egg` key.
+  -- The old check made every otherwise-valid S2IMP54 cache look incomplete,
+  -- preventing both Gen 1 and Gen 2 from entering Battle.ensure.
+  local eggBytes, eggCode, eggMessage = Cache.readSpecial("egg")
+  if not eggBytes then
     return {
       state = "incomplete", code = "missing_blob",
-      message = "missing " .. eggKey, marker = marker, context = context,
+      message = eggMessage or ("missing " .. storageKey(Cache.specialPath("egg"))),
+      marker = marker, context = context,
     }
   end
 

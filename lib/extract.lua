@@ -1088,7 +1088,15 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
             if rare.specialTexture then
               local applied, rareErr = applyDedicatedRareTextures(
                 data, species, model, StadiumRom)
-              if not applied then return nil, rareErr end
+              if not applied then
+                -- A handful of Stadium records contain an authored rare
+                -- texture stream whose byte count does not match the
+                -- deduplicated render metadata (Wigglytuff/record 40 is the
+                -- known case).  Do not abort the entire 251-model import:
+                -- retain the normal texture for that rare variant and let
+                -- every other model continue into the battle presentation.
+                model.stadium2RareTextureWarning = rareErr
+              end
             else
               for _, texture in ipairs(model.textures) do
                 texture.rgba = Palette.applyRare(texture.rgba, rare)
