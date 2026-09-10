@@ -214,6 +214,6 @@ while job:step() do
 end
 assert(job.success, job.error)
 assert(ordinary == 502, ("ordinary pack count %d, expected 502"):format(ordinary))
-assert(special == 51, ("special pack count %d, expected 51"):format(special))
+assert(special == 52, ("special pack count %d, expected 52"):format(special))
 print(("DSM5 roundtrip audit: ordinary=%d special=%d steps=%d failures=0")
   :format(ordinary, special, steps))

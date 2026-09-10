@@ -8,7 +8,7 @@ local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 local Actor = {}
 Actor.__index = Actor
 
-local STATE_RANK = { idle=0, entrance=1, attack=2, attack_default=2, faint=3 }
+local STATE_RANK = { idle=0, entrance=1, attack=2, attack_default=2, hit=2, faint=3 }
 local SHINY_ATTACK = {
   [2]=true,[3]=true,[6]=true,[7]=true,[10]=true,[11]=true,[14]=true,[15]=true,
 }
@@ -80,6 +80,10 @@ function Actor:play(context, loop)
   local nowRank=STATE_RANK[self.context] or 0
   local wantRank=STATE_RANK[wanted] or 0
   if self.context=="faint" or wantRank<nowRank then return false end
+  if wanted~="attack" and self.renderer.lockTravel then
+    self.renderer.lockTravel=false
+    self.renderer.anchorX,self.renderer.anchorY,self.renderer.anchorZ=0,0,0
+  end
   local actual=wanted
   local ok=self.renderer.setContext
     and self.renderer:setContext(actual,loop and true or false) or false
@@ -153,6 +157,12 @@ function Actor:entrance()
   self.faintFinished=false
   self.pendingFaint=false
   return self:play("entrance",false)
+end
+
+function Actor:hit()
+  if not self.renderer or self.pendingFaint or self.context=="faint" then return false end
+  self.flash=.12
+  return self:play("hit",false)
 end
 
 function Actor:faint()

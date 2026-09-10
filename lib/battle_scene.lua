@@ -322,9 +322,14 @@ function Scene:picScale()
   return 1
 end
 
+-- Vertical displacement in model-height units, supplied by the host's
+-- animation timeline. Apply in world space so scaling cannot cancel it.
+function Scene:picElevation() return 0 end
+
 function Scene:modelMatrix(side,actor)
   actor=actor or self.actors[side]
   local metrics=actor.renderer:worldMetrics()
+  local elevation=self:picElevation(side)
   if self.arenaMode then
     local k=self.arenaScale*actor:scale()*self:picScale(side)
     local slot,yaw=StadiumBattleLayout.slot(side,actor.dex)
@@ -332,7 +337,8 @@ function Scene:modelMatrix(side,actor)
     -- Fragment 79 authors X/Z and facing globally for every field. Ground the
     -- extracted model's real floor to reproduce its model-derived Y offset.
     return mul(translate(slot[1]*self.arenaScale,
-        self.arenaGroundY-metrics.floor*k,slot[3]*self.arenaScale),
+        self.arenaGroundY-metrics.floor*k+elevation*metrics.height*self.arenaScale,
+        slot[3]*self.arenaScale),
       mul(rotateY(yaw),scale(k))),yaw
   end
   local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
@@ -340,7 +346,7 @@ function Scene:modelMatrix(side,actor)
   local p=Stage.positions[side]
   local yaw=side=="player" and math.pi or 0
   local hover=math.min(math.max(metrics.floor,0),metrics.height*.5)
-  return mul(translate(p[1],p[2],p[3]),
+  return mul(translate(p[1],p[2]+elevation*worldHeight,p[3]),
     mul(rotateY(yaw),mul(scale(k),translate(0,-(metrics.floor-hover),0)))),yaw
 end
 

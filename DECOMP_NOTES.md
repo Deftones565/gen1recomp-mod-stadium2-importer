@@ -35,7 +35,9 @@ The same notes identify `0x3FD5000..0x3FED000` as another table and describe the
 
 A US-ROM audit on the exact supported MD5 confirmed that the model root is a 282-record archive and that records 1, 25, 151, 152, 201, and 251 decode to FRAGMENT species IDs 1, 25, 151, 152, 201, and 251 respectively. Model species indexing is therefore treated as record `N` = species `N`; record 0 is not Bulbasaur. The pose root and post-pose root are also 282-record archives, but pose record identity and internal animation semantics still require independent decoding.
 
-The same exact-ROM audit confirms record 253 is Substitute and model records
+Rendered US-ROM records confirm record 252 is the Rhydon-shaped Substitute
+doll (24 bones, 15 primitives), while 253 is the Egg (2 bones, 2 primitives).
+The earlier identification of 253 as Substitute was incorrect. Model records
 254 through 278 carry matching internal IDs 254 through 278. Their parallel
 pose records each contain a four-record nested archive. Stadium 2 uses these
 25 records for Unown B through Z; the ordinary species-201 record is Unown A.

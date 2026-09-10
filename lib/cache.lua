@@ -4,7 +4,7 @@
 -- does not rewrite and verify hundreds of separate records during import.
 local Cache = {}
 
-Cache.FORMAT = "S2IMP52"
+Cache.FORMAT = "S2IMP54"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"
@@ -399,6 +399,8 @@ function Cache.clear(count)
   if not ok then return false, err end
   ok, err = removeKnown(Cache.specialPath("substitute"))
   if not ok then return false, err end
+  ok, err = removeKnown(Cache.specialPath("egg"))
+  if not ok then return false, err end
   for i = 2, #Cache.UNOWN_FORMS do
     local letter = Cache.UNOWN_FORMS:sub(i, i)
     ok, err = removeKnown(Cache.unownPath(letter, "normal"))
@@ -582,6 +584,16 @@ function Cache.inspect(count)
     return {
       state = "incomplete", code = "missing_blob",
       message = "missing " .. specials, marker = marker, context = context,
+    }
+  end
+  -- Special archives are part of the importer contract.  In particular,
+  -- record 253 (Egg) must be present alongside the Pokédoll; otherwise a
+  -- cache built before Egg extraction would appear complete to the viewer.
+  local eggKey = storageKey(Cache.specialPath("egg"))
+  if not keys[eggKey] then
+    return {
+      state = "incomplete", code = "missing_blob",
+      message = "missing " .. eggKey, marker = marker, context = context,
     }
   end
 
