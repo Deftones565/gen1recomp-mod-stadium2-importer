@@ -6,7 +6,10 @@ local shadowVertices
 local mesh,shader,grassTexture,shadowShader,skyTexture,watercolorTexture,skyShader
 local skyMesh
 local modRef
-function Nature.bind(mod) modRef=mod end
+function Nature.bind(mod)
+ if modRef and modRef~=mod then Nature.release() end
+ modRef=mod
+end
 local function imageAsset(g,name)
   local path="assets/kenney_nature/"..name
   local source="mods/STADIUM2_IMPORTER/"..path
@@ -458,8 +461,17 @@ end
 Nature.bindTorchLighting=TorchShadows.bindModel
 function Nature.updateTorchShadows(g,actors,matrices,modes,environment)
  TorchShadows.night=environment.daytime=="NITE"
- if not shadowVertices then Nature.vertices() end
- return TorchShadows.update(g,shadowVertices,FORMAT,actors,matrices,modes)
+ -- The render mesh and small local caster meshes live on the GPU. Once the
+ -- caster caches exist, release the large temporary Lua vertex array.
+ local result=TorchShadows.update(g,shadowVertices or {},FORMAT,actors,matrices,modes)
+ if result then shadowVertices=nil end
+ return result
+end
+
+-- Ending a battle does not unload the forest. No actors or camera state are
+-- retained here; force the next shadow update to erase old battler silhouettes.
+function Nature.endBattle()
+ TorchShadows.resetDynamic()
 end
 
 function Nature.release()

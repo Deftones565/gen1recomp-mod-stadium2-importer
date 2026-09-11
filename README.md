@@ -443,11 +443,10 @@ The clearing includes watercolor leaf, bark, stone and petal materials, painted
 grass/clover, layered foliage, tree shadows in the
 existing sun map, a painted cloud sky with time-of-day tint, and a lower camera
 angle. Camera providers can still override the shot. Environment providers can
-still replace the ground. The scene is currently 482,866 triangles batched into
+still replace the ground. The scene is currently 348,850 triangles batched into
 one static mesh, with a second draw for scenery shadows and a separate sky dome, three mipmapped images,
 plus one RGBA8 watercolor target. This version prioritizes appearance; mobile
-performance has not been benchmarked. Assets load lazily and release with the
-scene. See `assets/kenney_nature/README.md` for sources, license, and rebuild steps.
+performance has not been benchmarked. Assets load lazily and remain cached between Nature battles. See `assets/kenney_nature/README.md` for sources, license, and rebuild steps.
 
 From the game root, run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_nature_test.lua`
 for routing, deterministic layout, options and camera checks. The live Crystal
@@ -498,3 +497,20 @@ game root for cube projection, static-cache reuse, resize and failure checks.
 `tests/drivers/torch_cube_visual.lua` exports an isolated LOVE GPU test (call its
 returned function after initializing graphics); it needs no model/ROM data and
 checks occluder depth and lit/shadowed receivers in all six directions.
+
+Quick forest optimizations keep nearby trees at full detail and use rounded,
+lower-detail variants beyond 150 world units. The scene drops from 482,866 to
+348,850 triangles (28% fewer). Flat surfaces skip unused triplanar projections,
+and pixels beyond torch range skip shadow filtering. Torch shadow faces outside
+the current posed Pokémon bounds are culled conservatively; empty atlas faces
+stay cached, including correct cleanup when an actor leaves a face.
+
+The forest mesh, textures, sky, flames and local static shadow caster meshes now
+remain in memory between battles. Only dynamic battler shadow state resets.
+The large temporary Lua scene-vertex array is discarded after GPU upload; resizing
+rebuilds static depth from the retained local caster meshes. Assets are loaded on
+the first Nature battle, so later battles avoid that construction cost. Switching
+to Classic and ending its scene frees the cache; rebinding the mod or calling the
+`releaseEnvironment()` export also frees it. The next Nature battle rebuilds it.
+A two-battle renderer check verified zero scenery rebuilds or asset reads on the
+second battle, alongside six-direction shadow and resize regression checks.

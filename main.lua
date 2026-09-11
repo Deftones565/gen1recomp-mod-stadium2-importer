@@ -162,6 +162,10 @@ return function(mod)
   mod.exports.newRenderer = Importer.newRenderer
   mod.exports.newRendererFromModel = Importer.newRendererFromModel
   mod.exports.releaseModels = Importer.releaseModels
+  -- Explicit cache eviction for tools/reloads; the next Nature battle rebuilds it.
+  mod.exports.releaseEnvironment = function()
+    require("mods.STADIUM2_IMPORTER.lib.battle_nature").release()
+  end
   mod.exports.readHandlers = Importer.readHandlers
   mod.exports.handlerInfo = Importer.handlerInfo
   mod.exports.evaluateHandler = Importer.evaluateHandler

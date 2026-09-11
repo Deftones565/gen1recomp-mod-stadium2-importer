@@ -46,7 +46,15 @@ assert(S.update(g,vertices,{}, {},{},{}))
 assert(draws==18 and allocations==15 and pushes==0)
 now=.01;S.update(g,vertices,{}, {},{},{});assert(draws==18,'shadow refresh exceeded 20Hz')
 now=.06;S.update(g,vertices,{}, {},{},{});assert(draws==18 and allocations==15,'shadow targets not reused')
-width=720;now=.07;S.update(g,vertices,{}, {},{},{});assert(draws==36,'resize must rebuild cleared static maps')
+width=720;now=.07;S.update(g,{}, {}, {},{},{});assert(draws==36,'resize must rebuild cleared static maps')
+local actorPasses=0
+local actor={renderer={drawShadowMap=function() actorPasses=actorPasses+1;return true end}}
+now=.13;S.update(g,{}, {},{player=actor},{player={Mat.identity()}},{player='host'})
+assert(actorPasses==12)
+local prior=draws
+S.resetDynamic()
+now=.131;S.update(g,{}, {},{},{},{})
+assert(draws==prior+12 and allocations==15,'next battle must erase old actors without reallocating the forest')
 S.release()
 g.newCanvas=function() error('allocation failed') end
 assert(S.update(g,vertices,{}, {},{},{})==nil and S.error and pushes==0,'failure leaked graphics state')

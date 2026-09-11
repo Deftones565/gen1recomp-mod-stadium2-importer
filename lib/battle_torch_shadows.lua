@@ -86,6 +86,7 @@ function S.update(g,vertices,format,actors,matrices,modes)
    if not maps[i] then maps[i]={map=canvas(g,P.size*3,P.size*2),faces={}} end
    local entry=maps[i]
    if not entry.ready then
+    if not entry.castersReady then
     local selected={}
     for j=1,#vertices,3 do
      local near=false
@@ -94,7 +95,9 @@ function S.update(g,vertices,format,actors,matrices,modes)
      end
      if near then for k=j,j+2 do selected[#selected+1]=vertices[k] end end
     end
-    if #selected>0 then entry.mesh=entry.mesh or g.newMesh(format,selected,'triangles','static') end
+    if #selected>0 then entry.mesh=g.newMesh(format,selected,'triangles','static') end
+    entry.castersReady=true
+    end
     for face=1,6 do
      local v=entry.faces[face]
      if not v then v={map=canvas(g,P.size,P.size),vp=S.frame(p,face)};entry.faces[face]=v end
@@ -102,7 +105,7 @@ function S.update(g,vertices,format,actors,matrices,modes)
      beginFace(g,v.map,p,v.vp);shader:send('staticDepth',scratch);shader:send('useStaticDepth',0);if entry.mesh then g.draw(entry.mesh) end
 
     end
-    if entry.mesh then entry.mesh:release();entry.mesh=nil end;entry.ready=true
+    entry.ready=true
    end
    for face,v in ipairs(entry.faces) do
     local visible={}
@@ -149,6 +152,11 @@ function S.bindModel(shader)
   shader:send('localTorch'..i,{p[1],p[2]+1,p[3]})
   if maps[i] then shader:send('localTorchMap'..i,maps[i].map) end
  end
+end
+function S.resetDynamic()
+ last=nil;S.power=0
+ -- Preserve hadActors until the next update, so formerly occupied faces get
+ -- their clean cached scenery restored before the new battle is drawn.
 end
 function S.release()
  for _,v in ipairs(maps) do

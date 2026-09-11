@@ -119,7 +119,7 @@ function Scene:release()
   self.arena,self.arenaRenderer=nil,nil
   self.providerBattlerModes=nil
   Watercolor.release()
-  Nature.release()
+  if Importer.environmentStyle()=="kenney" then Nature.endBattle() else Nature.release() end
   Stage.invalidate()
   Shadow.release()
   Hud.invalidate()
