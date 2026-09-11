@@ -158,6 +158,32 @@ function Importer.environmentStyle()
   return "classic"
 end
 
+function Importer.visitorMode()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,'stadium2_visitors')
+    if ok and (value=='off' or value=='preview') then return value end
+  end
+  return 'natural'
+end
+
+function Importer.arenaTest()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,'stadium2_arena_test')
+    if ok and type(value)=='number' and value%1==0 and value>=0
+      and value<require('mods.STADIUM2_IMPORTER.lib.layout').STADIUM_MODEL_TABLE_RECORDS then return value end
+  end
+  return nil
+end
+
+function Importer.environmentTest()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_environment_test")
+    if ok and type(value)=='string' and value~='unknown'
+      and require('mods.STADIUM2_IMPORTER.lib.battle_environment').catalog[value] then return value end
+  end
+  return 'automatic'
+end
+
 function Importer.rapidashCutEffectEnabled()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_rapidash_cut_fx")

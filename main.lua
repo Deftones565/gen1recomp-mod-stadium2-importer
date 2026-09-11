@@ -11,6 +11,9 @@ local BattleUIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownershi
 return function(mod)
   Importer.bind(mod)
   require("mods.STADIUM2_IMPORTER.lib.battle_nature").bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_cave").bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_freshwater").bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_town").bind(mod)
   Fx.bind(mod)
   Battle.bind(mod)
   BattleAA.bind(mod)
@@ -69,6 +72,15 @@ return function(mod)
     return true
   end
 
+  local arenaChoices={{'AUTOMATIC',-1}}
+  local arenaNames={'FALKNER','BUGSY','WHITNEY','MORTY','JASMINE','CHUCK','PRYCE','CLAIR',
+    'TEAM ROCKET','WILL','KOGA','BRUNO','KAREN','CHAMPION','BROCK','MISTY','LT. SURGE',
+    'ERIKA','JANINE','SABRINA','BLAINE','BLUE','RED'}
+  arenaNames[27]='BATTLE TOWER';arenaNames[28]='INDOOR';arenaNames[29]='FREE BATTLE PARK';arenaNames[30]='RIVAL'
+  for index=0,require('mods.STADIUM2_IMPORTER.lib.layout').STADIUM_MODEL_TABLE_RECORDS-1 do
+    arenaChoices[#arenaChoices+1]={('ARENA %02d%s'):format(index,arenaNames[index+1] and (' - '..arenaNames[index+1]) or ''),index}
+  end
+
   mod.options:define({
     { key="stadium2_models", label="STADIUM 2 MODELS", type="toggle", default=true },
     { key="stadium2_battle", label="STADIUM 2 BATTLE", type="toggle", default=true },
@@ -80,14 +92,29 @@ return function(mod)
       help="Choose authentic Stadium lighting or an inked watercolor-manga treatment for imported Pokemon models." },
     { key="stadium2_environment", label="BATTLE ENVIRONMENT", type="choice", default="classic",
       choices={{"CLASSIC","classic"},{"KENNEY NATURE","kenney"}},
-      help="Lightweight Nature Kit grass clearings and outdoor trainer battles. Other environments keep their normal presentation." },
+      help="Watercolor woodland, cave, freshwater and town scenes for matching wild and trainer encounters. Unbuilt environments use Classic, or a contextual Stadium arena when arenas are enabled." },
+    { key="stadium2_environment_test", label="TEST ENVIRONMENT", type="choice", default="automatic",
+      choices={{"AUTOMATIC","automatic"},{"GRASS / WOODLAND","grass"},{"CAVE","cave"},
+        {"FRESHWATER","freshwater"},{"TOWN","town"},{"OCEAN (FALLBACK)","ocean"},
+        {"MOUNTAIN (FALLBACK)","mountain"},{"ICE CAVE (FALLBACK)","ice_cave"},
+        {"INTERIOR (FALLBACK)","interior"},{"INDUSTRIAL (FALLBACK)","industrial"},
+        {"RUINS / TOWER (FALLBACK)","ruins"},{"SHIP (FALLBACK)","ship"},
+        {"GYM (FALLBACK)","gym"},{"LEAGUE (FALLBACK)","league"},
+        {"CAVE WATER (FALLBACK)","cave_water"},{"INDOOR WATER (FALLBACK)","indoor_water"}},
+      help="Force an environment on your next encounter, regardless of location or the Battle Environment option. Unbuilt scenes test the Classic/arena fallback. Automatic restores normal selection." },
+    { key="stadium2_visitors", label="AMBIENT POKEMON", type="choice", default="natural",
+      choices={{"OFF","off"},{"NATURAL","natural"},{"PREVIEW CAMEOS","preview"}},
+      help="Cosmetic visitors in custom environments. Natural includes rare Mew/Ho-Oh cameos; Preview cycles them regularly. Visitors cannot battle or be caught." },
+    { key="stadium2_arena_test", label="TEST ARENA", type="choice", default=-1,
+      choices=arenaChoices,
+      help="Force any Stadium arena on your next encounter, even with context arenas off. Takes priority over Test Environment. Set both tests to Automatic to restore normal routing." },
     { key="stadium2_battle_aa", label="BATTLE AA", type="choice", default=0,
       choices={{"OFF",0},{"2X",2},{"4X",4}},
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
     { key="stadium2_beta_arena_test", label="BETA CONTEXT ARENAS", type="toggle", default=false,
-      help="Experimental, Gen 2 trainer battles only: select Stadium 2 fields from the current gym, story battle, or indoor/outdoor location. All wild battles keep the classic scene." },
+      help="Select contextual Stadium fields for Gen 2 trainers. With Kenney environments enabled, also provides arena fallback for unbuilt environments in either game." },
     { key="stadium2_beta_arena_tod", label="BETA PARK TIME OF DAY", type="toggle", default=false,
       help="Experimental: when context arenas are enabled, tint Free Battle Park for Gen 2 morning, day, or night. Turn OFF for the arena's normal lighting." },
   })
@@ -165,6 +192,9 @@ return function(mod)
   -- Explicit cache eviction for tools/reloads; the next Nature battle rebuilds it.
   mod.exports.releaseEnvironment = function()
     require("mods.STADIUM2_IMPORTER.lib.battle_nature").release()
+    require("mods.STADIUM2_IMPORTER.lib.battle_cave").release()
+    require("mods.STADIUM2_IMPORTER.lib.battle_freshwater").release()
+    require("mods.STADIUM2_IMPORTER.lib.battle_town").release()
   end
   mod.exports.readHandlers = Importer.readHandlers
   mod.exports.handlerInfo = Importer.handlerInfo
@@ -278,10 +308,10 @@ return function(mod)
     local environment=def and def.environment
     local outside
     if environment~=nil then
-      outside=environment=="TOWN" or environment=="ROUTE"
+      outside=environment=="TOWN" or environment=="ROUTE" or environment=="FOREST"
     end
     mapContext={mapId=ev and ev.mapId or map and map.id,
-      environment=environment,outside=outside}
+      environment=environment,outside=outside,waterType=def and def.waterType}
     pendingEncounter=nil
   end)
 
@@ -292,7 +322,7 @@ return function(mod)
     local out=next(enc,ctx)
     if out~=nil then
       pendingEncounter={mapId=ctx and ctx.mapId,terrain=ctx and ctx.terrain,
-        environment=ctx and ctx.environment,timeOfDay=ctx and ctx.daytime}
+        environment=ctx and ctx.environment,waterType=ctx and ctx.waterType,timeOfDay=ctx and ctx.daytime}
     end
     return out
   end,95)
@@ -311,6 +341,17 @@ return function(mod)
     local current=mod.world and mod.world.current and mod.world:current() or nil
     local mapId=current and current.mapId or mapContext and mapContext.mapId
     local mapped=mapContext and mapContext.mapId==mapId and mapContext or nil
+    -- Capture the live header as well: a mod enabled after map.entered must
+    -- make the same selection at battle construction as at render time.
+    if not mapped and mod.world and mod.world.overworld then
+      local world=mod.world:overworld()
+      local map=world and world.map
+      local def=map and map.def
+      if map and map.id==mapId and def and def.environment then
+        local e=def.environment
+        mapped={environment=e,outside=e=='TOWN' or e=='ROUTE' or e=='FOREST',waterType=def.waterType}
+      end
+    end
     local encounter=pendingEncounter and pendingEncounter.mapId==mapId
       and pendingEncounter or nil
     local battle=ev and ev.battle
@@ -320,6 +361,7 @@ return function(mod)
       -- Preserve false: indoor is a meaningful classification, not absence.
       outside=mapped and mapped.outside,
       terrain=encounter and encounter.terrain or nil,
+      waterType=(encounter and encounter.waterType) or (mapped and mapped.waterType),
       timeOfDay=lastTimeOfDay or (encounter and encounter.timeOfDay),
       kind=ev and ev.kind,trainerId=ev and ev.trainerId,
       battleType=ev and ev.battleType,

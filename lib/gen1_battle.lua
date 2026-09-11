@@ -92,11 +92,21 @@ end
 function Scene.new(battle,context)
   local opts=actorOptions()
   local self=setmetatable({},Scene)
+  local selection=require('mods.STADIUM2_IMPORTER.lib.battle_environment').select(
+    context,Importer.environmentStyle(),Importer.betaArenaEnabled(),nil,
+    Importer.environmentTest and Importer.environmentTest(),
+    Importer.arenaTest and Importer.arenaTest())
+  local arena,err
+  if selection.mode=='arena' then
+    arena,err=ArenaRuntime.load(selection.arena,Importer)
+    if not arena then warn('Environment arena fallback failed; using classic: '..tostring(err)) end
+  end
   Presentation.init(self,{
     actors={player=Actor.new("player",opts),enemy=Actor.new("enemy",opts)},
-    warn=warn,label="Gen 1 battle",
+    warn=warn,label="Gen 1 battle",arena=arena,arenaMode=arena~=nil,
   })
   self.battle=battle
+  self.environmentSelection=selection
   self.battleContext=context
   self.game=battle and battle.game
   self.substituteActors={player=Actor.new("player",opts),enemy=Actor.new("enemy",opts)}

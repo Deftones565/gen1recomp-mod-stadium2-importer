@@ -514,3 +514,100 @@ to Classic and ending its scene frees the cache; rebinding the mod or calling th
 `releaseEnvironment()` export also frees it. The next Nature battle rebuilds it.
 A two-battle renderer check verified zero scenery rebuilds or asset reads on the
 second battle, alongside six-direction shadow and resize regression checks.
+
+### Cave presentation
+
+KENNEY NATURE now selects a Modular Cave Kit cavern for dry cave wild and trainer
+battles. The scene includes enclosed rock walls, a vaulted ceiling, formations,
+rubble, a framed passage and textured stone under the shared watercolor manga
+finish. Cool fill and two warm omnidirectional torches keep battlers readable.
+Cave geometry is 60,640 triangles and stays cached between battles. Cave and
+forest own separate torch-shadow caches, preventing scenery from one leaking
+into the other's lighting. Cave-water encounters remain on the existing fallback.
+
+The isolated renderer checks cover portrait, four orbit directions, a raised
+camera, a second cached battle and GLES shader validation. Full gameplay and
+physical mobile performance still need playtesting. Run
+`luajit mods/STADIUM2_IMPORTER/tests/stadium2_cave_test.lua` from the game root
+for routing, geometry and cache-state isolation checks.
+
+### Freshwater presentation
+
+Outdoor water/surf/fishing encounters now select a wooded freshwater lake under
+KENNEY NATURE. The cached scene uses Nature Kit trees and stones, procedural
+cattails, irregular shallows and two low sandbars to support terrestrial battlers.
+Its animated watercolor water uses directional ripples and a sky-colored grazing
+reflection approximation; there is no additional reflection render target.
+Geometry is 57,768 land triangles plus 128 water triangles. The complete scene
+receives the existing watercolor finish and day/night tint. Lake scenes do not
+render the forest's torches or use its local-light shadow cache.
+
+This is the initial lake composition, shared by surfing and fishing. Dedicated
+river layouts, bank-based fishing staging and ocean scenes are future variants.
+Indoor/cave water and explicitly classified ocean/sea water retain the existing
+fallback. Where no water-body classification is supplied, outdoor water uses the
+lake as the initial generic presentation.
+
+Verified with portrait, four orbit views, a raised camera, day/night renders,
+GLES validation and a second battle with zero scenery rebuilds or asset reads.
+Run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_freshwater_test.lua` from the
+game root for routing and geometry checks. Physical mobile performance and full
+gameplay still need playtesting.
+
+### Town presentation
+
+KENNEY NATURE selects a suburban town square for dry town encounters outside
+explicit grass terrain. Eight City Kit - Suburban homes surround a paved battle
+space, with fences, garden planters, flowers, trees and connecting streets. House
+palette colors are baked from the source OBJ UVs; shared watercolor textures and
+the whole-scene finish unify them with the battlers. The 59,384-triangle mesh is
+cached between battles. It uses day/night lighting; street lamps and interiors
+are not part of this initial town version. Water and grass encounters in town
+retain their lake and woodland selections.
+
+The isolated renderer passed day/night, portrait, four orbit views, raised camera,
+GLES shaders and second-battle cache reuse. Full-game and physical mobile testing
+remain outstanding. Run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_town_test.lua`
+from the game root for routing and geometry checks. Asset sources and conversion
+steps are in `assets/kenney_town/README.md`.
+
+Town materials now use a dedicated generated watercolor atlas for plaster,
+roof shingles, wood and foliage. Explicit per-triangle classes keep these
+materials separate from window/door trim; the original palette still controls
+roof colors. The additional atlas is mipmapped and retained with the town cache.
+
+### Testing battle presentations
+
+Use **TEST ENVIRONMENT** to force grass/woodland, cave, freshwater or town on
+the next encounter in either game, regardless of the real location or the
+BATTLE ENVIRONMENT setting. Entries marked **FALLBACK** are unbuilt and exercise
+the Classic/context-arena fallback instead.
+
+**TEST ARENA** selects any of the 30 Stadium arena slots on the next encounter,
+including wild encounters, even when context arenas are off. Arena tests take
+priority over environment tests. Set both to **AUTOMATIC** to restore normal
+selection. Changes take effect on the next encounter; they do not change battle
+rules or encounter data. If an arena cannot be loaded, the battle uses Classic.
+
+### Ambient Pokémon visitors
+
+**AMBIENT POKEMON** controls cosmetic visitors in the custom environments:
+**NATURAL** (default), **OFF**, or **PREVIEW CAMEOS** for quick testing.
+Woodland has a resident Caterpie on an authored tree and passing Pidgey;
+town has a Meowth that pauses to play before departing, plus passing Pidgey;
+caves have Zubat. Outdoor freshwater also gets bird flyovers.
+
+Natural mode rolls once per encounter for a 0.5% Mew cameo and, outdoors,
+a separate 0.5% Ho-Oh flyover outcome. Preview cycles the environment's visitors
+about every 23 seconds, including rare cameos without the rarity roll. Common
+visitors otherwise arrive every 24–44 seconds and are ready to depart after
+18–22 seconds. They are removed only once their entire posed model is outside
+the final camera view, with an extra edge margin. Watched visitors stay visible
+at full size; flyovers continue their flight until out of view.
+At most two visitors are active; Caterpie can stay for the encounter.
+
+Visitors use the imported Stadium models and animations, shared watercolor
+finish, and scene lighting/shadows. Missing model packs are skipped. They own
+no battle state, cannot be caught or targeted, and use an independent RNG.
+Their renderers are released when they depart or the battle ends. Test options
+can force an environment to preview its visitors on any encounter.

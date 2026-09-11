@@ -39,17 +39,18 @@ local function rocketTrainer(trainerId)
     or trainerId:find("ROCKET",1,true)
 end
 
-function Selector.resolve(context)
+function Selector.resolve(context,options)
   local ctx=type(context)=="table" and context or {}
-  if tonumber(ctx.generation)~=2 then return nil,"not-gen2" end
+  local fallback=options and options.environmentFallback
+  if tonumber(ctx.generation)~=2 and not (fallback and tonumber(ctx.generation)==1) then return nil,"not-gen2" end
 
   -- battle.started.kind is the engine's authoritative distinction. Stadium
   -- fields are presentation for trainer encounters only: every wild path
   -- (grass, cave, surf, fishing, roaming and scripted wild Pokémon) retains
   -- the established classic battle scene, regardless of its current map.
   local battleKind=key(ctx.kind)
-  if battleKind=="WILD" then return nil,"wild:classic" end
-  if battleKind~="TRAINER" then return nil,"unsupported-kind:classic" end
+  if battleKind=="WILD" and not fallback then return nil,"wild:classic" end
+  if battleKind~="TRAINER" and not (fallback and battleKind=="WILD") then return nil,"unsupported-kind:classic" end
 
   local mapId=key(ctx.mapId)
   local trainerId=key(ctx.trainerId)
@@ -67,8 +68,14 @@ function Selector.resolve(context)
   mapped=TRAINER_ARENAS[trainerId]
   if mapped~=nil then return mapped,"trainer:"..trainerId end
 
+  if fallback and ctx.outside==nil then
+    local env=key(ctx.environment)
+    if env=='TOWN' or env=='ROUTE' or env=='FOREST' then return 28,'outdoor-fallback' end
+    if env~='' then return 27,'indoor-fallback' end
+  end
   if ctx.outside==true then return 28,"outdoor" end
   if ctx.outside==false then return 27,"indoor" end
+  if fallback then return 27,"unknown:arena-fallback" end
   return nil,"unknown:classic"
 end
 

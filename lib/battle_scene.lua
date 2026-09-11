@@ -17,6 +17,9 @@ local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 
 local Watercolor = require("mods.STADIUM2_IMPORTER.lib.battle_watercolor")
 local Nature = require("mods.STADIUM2_IMPORTER.lib.battle_nature")
+local Cave = require("mods.STADIUM2_IMPORTER.lib.battle_cave")
+local Lake = require("mods.STADIUM2_IMPORTER.lib.battle_freshwater")
+local Town = require("mods.STADIUM2_IMPORTER.lib.battle_town")
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 
 local Scene = {}
@@ -106,6 +109,7 @@ function Scene.new(opts)
 end
 
 function Scene:release()
+  if self.visitors then self.visitors:release();self.visitors=nil end
   if self.statusOverlay and self.statusOverlay.release then self.statusOverlay:release() end
   self.statusOverlay,self.statusOverlayReady=nil,nil
   for _,actor in pairs(self.actors or {}) do
@@ -119,7 +123,7 @@ function Scene:release()
   self.arena,self.arenaRenderer=nil,nil
   self.providerBattlerModes=nil
   Watercolor.release()
-  if Importer.environmentStyle()=="kenney" then Nature.endBattle() else Nature.release() end
+  if Importer.environmentStyle()=="kenney" or (Importer.environmentTest and Importer.environmentTest()~="automatic") then Nature.endBattle();Cave.endBattle();Lake.endBattle();Town.endBattle() else Nature.release();Cave.release();Lake.release();Town.release() end
   Stage.invalidate()
   Shadow.release()
   Hud.invalidate()
@@ -399,10 +403,23 @@ function Scene:render(requestedWidth,requestedHeight)
   local ok,err=pcall(function()
     g.setCanvas(sceneTarget(self))
     self.environment=self:resolveEnvironment()
-    local natureActive=self.sceneMode==Scene.MODE_CLASSIC
-      and Importer.environmentStyle()=="kenney" and Nature.matches(self.battleContext,self.environment)
+    local selection=self.environmentSelection or require('mods.STADIUM2_IMPORTER.lib.battle_environment').select(
+      self.battleContext,Importer.environmentStyle(),false,nil,
+      Importer.environmentTest and Importer.environmentTest(),
+    Importer.arenaTest and Importer.arenaTest())
+    local environmentScene=selection.scene
+    local natureActive=self.sceneMode==Scene.MODE_CLASSIC and selection.mode=='environment'
+    self.environmentId=selection.id
+    local visitorMode=Importer.visitorMode and Importer.visitorMode() or 'off'
+    local now=love.timer and love.timer.getTime and love.timer.getTime() or 0
+    if natureActive and visitorMode~='off' then
+      if self.visitors and (self.visitors.environment~=selection.id or self.visitors.mode~=visitorMode) then self.visitors:release();self.visitors=nil end
+      if not self.visitors then self.visitors=require('mods.STADIUM2_IMPORTER.lib.battle_visitors').new(selection.id,visitorMode) end
+      self.visitors:update(self.visitorTime and now-self.visitorTime or 0)
+    elseif self.visitors then self.visitors:release();self.visitors=nil end
+    self.visitorTime=now
     self.natureActive=natureActive
-    if natureActive then self.environment=Nature.lighting(self.environment) end
+    if natureActive then self.environment=environmentScene.lighting(self.environment) end
     local defaultFrame
     if self.arenaMode then
       defaultFrame=Camera.sceneFrame(width,height,{
@@ -412,12 +429,13 @@ function Scene:render(requestedWidth,requestedHeight)
     else
       defaultFrame=Camera.sceneFrame(width,height)
     end
-    if natureActive then defaultFrame=Nature.frame(defaultFrame) end
+    if natureActive then defaultFrame=environmentScene.frame(defaultFrame) end
     local initialMarks=projectedMarks(self,defaultFrame,width,height)
     local cameraCtx=extensionContext(self,g,defaultFrame,width,height,renderWidth,renderHeight,initialMarks)
     cameraCtx.cameraPhase="select"
     local selectedFrame=Extensions.camera(cameraCtx,function() return defaultFrame end)
     local frame=normalizeFrame(selectedFrame,defaultFrame)
+    if self.visitors then self.visitors:prune(frame) end
     local marks=projectedMarks(self,frame,width,height)
     local ext=extensionContext(self,g,frame,width,height,renderWidth,renderHeight,marks)
     ext.cameraPhase=nil
@@ -441,7 +459,7 @@ function Scene:render(requestedWidth,requestedHeight)
       -- only an explicitly attached arena backdrop. Enclosed arenas retain
       -- their authored clear colour and never inherit the Gen 1/2 world sky.
       if natureActive then
-        Nature.sky(g,renderWidth,renderHeight,self.environment,frame)
+        environmentScene.sky(g,renderWidth,renderHeight,self.environment,frame)
       elseif self.sceneMode==Scene.MODE_CLASSIC then
         Sky.paint(g,renderWidth,renderHeight,self.environment,frame)
       elseif self.environment.backdrop==true then
@@ -472,7 +490,8 @@ function Scene:render(requestedWidth,requestedHeight)
 
     local lightVP=Shadow.begin(self.environment.light,self.environment.shadowStrength)
     if lightVP then
-      if natureActive then Nature.castShadow(g,lightVP) end
+      if natureActive then environmentScene.castShadow(g,lightVP) end
+      if self.visitors then self.visitors:castShadow(lightVP) end
       ext.shadowPhase="cast"
       ext.shadow={viewProjection=lightVP}
       Extensions.shadow(ext)
@@ -488,14 +507,18 @@ function Scene:render(requestedWidth,requestedHeight)
       end
     end
     local shadow=lightVP and Shadow.finish() or nil
-    if natureActive then Nature.updateTorchShadows(g,candidateActors,matrices,battlerModes,self.environment) end
+    if natureActive then
+      local a,m,b=candidateActors,matrices,battlerModes
+      if self.visitors then a,m,b=self.visitors:shadowActors(a,m,b) end
+      environmentScene.updateTorchShadows(g,a,m,b,self.environment)
+    end
     ext.shadow=shadow
     g.setCanvas(sceneTarget(self))
 
     local providerMarks,stageErr=Extensions.environment(ext,function()
       if self.sceneMode==Scene.MODE_ARENA then return self:drawArena(ext,marks) end
       if natureActive then
-        Nature.draw(g,frame,self.environment,shadow)
+        environmentScene.draw(g,frame,self.environment,shadow)
         return marks
       end
       return Stage.draw(g,width,height,frame,self.actors,shadow,self.environment)
@@ -545,7 +568,7 @@ function Scene:render(requestedWidth,requestedHeight)
           local drawn,drawErr=actor.renderer:drawScene(pass,entry[1],{
             viewProjection=vp,viewMatrix=frame.view,
             normalMatrix=Renderer.normalMatrix(entry[2],0,false),
-            bindTorchLighting=natureActive and Nature.bindTorchLighting or nil,
+            bindTorchLighting=natureActive and environmentScene.bindTorchLighting or nil,
             sceneWatercolor=natureActive,
             lightDir=self.environment.light,ambient=self.environment.ambient,
             diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
@@ -573,7 +596,11 @@ function Scene:render(requestedWidth,requestedHeight)
     end
 
     restoreWorldTarget(self,g)
-    if natureActive then require("mods.STADIUM2_IMPORTER.lib.battle_torches").draw(g,frame) end
+    if natureActive then
+      if self.visitors then self.visitors:draw(g,frame,self.environment,environmentScene,shadow) end
+      if environmentScene.drawEffects then environmentScene.drawEffects(g,frame)
+      else require("mods.STADIUM2_IMPORTER.lib.battle_torches").draw(g,frame) end
+    end
     restoreWorldTarget(self,g)
     Extensions.overlay(ext)
     restoreWorldTarget(self,g)

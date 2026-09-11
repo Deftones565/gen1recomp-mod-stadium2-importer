@@ -3,6 +3,9 @@
 local Mat=require('mods.STADIUM2_IMPORTER.lib.renderer')
 local Torches=require('mods.STADIUM2_IMPORTER.lib.battle_torches')
 local P=require('mods.STADIUM2_IMPORTER.lib.torch_projection')
+local function new(options)
+options=options or {}
+local positions=options.positions or Torches.positions
 local S={resolution=P.size,interval=1/20}
 local maps,shader,scratch,last={},nil,nil,nil
 local windowW,windowH
@@ -72,7 +75,7 @@ function S.update(g,vertices,format,actors,matrices,modes)
   last=nil;windowW,windowH=w,h
  end
  local now=Torches.time()
- S.power=(S.night and 1.8 or .22)*Torches.flicker(now)
+ S.power=options.power and options.power(S.night,now) or (S.night and 1.8 or .22)*Torches.flicker(now)
  if last and now-last<S.interval then return maps end
  if not pcall(g.push,'all') then return nil end
  local ok,err=pcall(function()
@@ -82,7 +85,7 @@ function S.update(g,vertices,format,actors,matrices,modes)
   end
   shader=shader or g.newShader(SOURCE)
   scratch=scratch or canvas(g,P.size,P.size)
-  for i,p in ipairs(Torches.positions) do
+  for i,p in ipairs(positions) do
    if not maps[i] then maps[i]={map=canvas(g,P.size*3,P.size*2),faces={}} end
    local entry=maps[i]
    if not entry.ready then
@@ -91,7 +94,7 @@ function S.update(g,vertices,format,actors,matrices,modes)
     for j=1,#vertices,3 do
      local near=false
      for k=j,j+2 do local v=vertices[k]
-      if v[10]~=0 and (v[1]-p[1])^2+(v[3]-p[3])^2<105^2 then near=true end
+      if v[10]~=0 and v[10]~=7 and (v[1]-p[1])^2+(v[3]-p[3])^2<105^2 then near=true end
      end
      if near then for k=j,j+2 do selected[#selected+1]=vertices[k] end end
     end
@@ -109,7 +112,7 @@ function S.update(g,vertices,format,actors,matrices,modes)
    end
    for face,v in ipairs(entry.faces) do
     local visible={}
-    for _,side in ipairs({'player','enemy'}) do
+    for side in pairs(actors) do
      local actor,matrix=actors[side],matrices[side]
      if actor and actor.renderer and matrix and modes[side]=='host'
        and S.visibleInFace(v.vp,matrix[1],actorBounds[side]) then visible[#visible+1]=side end
@@ -148,7 +151,7 @@ function S.bindModel(shader)
  if not shader:hasUniform('localTorchEnabled') then return end
  shader:send('localTorchShadows',#maps==2 and not S.error and 1 or 0)
  shader:send('localTorchEnabled',1);shader:send('localTorchPower',S.power or 0)
- for i,p in ipairs(Torches.positions) do
+ for i,p in ipairs(positions) do
   shader:send('localTorch'..i,{p[1],p[2]+1,p[3]})
   if maps[i] then shader:send('localTorchMap'..i,maps[i].map) end
  end
@@ -168,3 +171,7 @@ function S.release()
  maps,shader,scratch,last={},nil,nil,nil;windowW,windowH=nil,nil;S.error=nil
 end
 return S
+end
+local default=new()
+default.new=new
+return default
