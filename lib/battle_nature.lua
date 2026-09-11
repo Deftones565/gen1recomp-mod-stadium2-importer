@@ -2,6 +2,7 @@
 local Torches=require("mods.STADIUM2_IMPORTER.lib.battle_torches")
 local TorchShadows=require("mods.STADIUM2_IMPORTER.lib.battle_torch_shadows")
 local Nature={}
+local Perch=require('mods.STADIUM2_IMPORTER.lib.woodland_perch')
 local shadowVertices
 local mesh,shader,grassTexture,shadowShader,skyTexture,watercolorTexture,skyShader
 local skyMesh
@@ -143,19 +144,19 @@ function Nature.vertices()
   -- Composition coordinates: u runs across the default view, d into the woods.
   local function world(u,d) return (u-d)*.70710678,(-u-d)*.70710678 end
   local function hash(i) return (math.sin(i*127.1+311.7)*43758.5453)%1 end
-  local function tree(u,d,size,variant)
+  local function tree(u,d,size,variant,yaw)
+    local x,z=Perch.treePosition(u,d)
     local radius=math.sqrt(u*u+d*d)
     if radius<108 then u,d=u*108/radius,d*108/radius end
     if (u+86)^2+(d+72)^2<38^2 then return end
-    local x,z=world(u,d)
-    trees[#trees+1]={x=x,z=z,size=size,variant=variant or 1}
+    trees[#trees+1]={x=x,z=z,size=size,variant=variant or 1,yaw=yaw}
   end
   -- Irregular overlapping rows, with a small sunlit opening at centre-right.
   for i=0,17 do tree(-104+i*12,88+hash(i)*14,23+hash(i+3)*10,i%3+1) end
   for i=0,13 do tree(-84+i*13,65+hash(i+20)*10,19+hash(i+2)*9,i%3+1) end
-  for _,t in ipairs({{-65,24,27},{-48,39,23},{-30,49,21},{-11,65,20},
+  for _,t in ipairs({{-65,24,27},{-48,39,23},{Perch.u,Perch.d,Perch.size,Perch.yaw},{-11,65,20},
     {22,62,20},{42,44,24},{62,25,26},{-54,-3,25},{57,-2,27}}) do
-    tree(t[1],t[2],t[3],1)
+    tree(t[1],t[2],t[3],1,t[4])
   end
   -- Finish the perimeter beyond the camera orbit, including the old foreground.
   for ring=0,2 do for i=0,43 do
@@ -218,7 +219,7 @@ function Nature.vertices()
   for i,t in ipairs(trees) do
     local name=({"tree_detailed","tree_oak","tree_fat"})[t.variant]
     if t.x*t.x+t.z*t.z>150^2 then name=name.."_lod" end
-    place(name,t.x,t.z,t.size,i*2.4,.88+hash(i)*.24)
+    place(name,t.x,t.z,t.size,t.yaw or i*2.4,.88+hash(i)*.24)
   end
   -- Understory grows in uneven patches around the actual tree positions,
   -- rather than another concentric border around the battle clearing.

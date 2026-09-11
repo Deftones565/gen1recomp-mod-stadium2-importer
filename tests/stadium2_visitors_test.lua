@@ -14,6 +14,15 @@ assert(math.random()==expected,'visitors changed gameplay RNG')
 local resident=false
 for _,v in ipairs(grass.active) do if v.name=='caterpie' then resident=true;assert(v.age>200) end end
 assert(resident,'resident Caterpie disappeared')
+local perch=require('mods.STADIUM2_IMPORTER.lib.woodland_perch')
+local px,py,pz=perch.position()
+local tx,tz=perch.treePosition(perch.u,perch.d)
+assert(px==tx and pz==tz and py>perch.size*.5,'Caterpie must sit on its tree crown')
+assert(math.abs(math.sqrt(px*px+pz*pz)-108)<.001,'perch missed the relocated forest perimeter')
+for _,t in ipairs({0,1,20,200}) do
+ local x,y,z,_,size=V.pose('caterpie',t,'grass')
+ assert(x==px and y==py and z==pz and size==1,'resident must not float or grow off its perch')
+end
 for name in pairs(V.species) do
  for _,t in ipairs({0,1,7,10,14,17,22}) do
   local p={V.pose(name,t,'town')};assert(#p==5)

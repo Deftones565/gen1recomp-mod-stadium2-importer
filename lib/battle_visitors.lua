@@ -26,8 +26,8 @@ end
 function V.pose(name,t,environment)
  local u=t/18
  if name=='caterpie' then
-  -- Front of the authored woodland tree at local (-30,49).
-  return -53.8,7+.10*math.sin(t*.65),-11.4,.65,.85+.15*smooth(t)
+  local x,y,z=require('mods.STADIUM2_IMPORTER.lib.woodland_perch').position()
+  return x,y,z,.65,1
  elseif name=='meowth' then
   local x=t<7 and (-115+58*smooth(t/7)) or t<14 and -57 or (-57-58*smooth((t-14)/8))
   return x,.65*math.abs(math.sin(t*4))*((t<7 or t>14) and 1 or 0),-76,t<14 and math.pi/2 or -math.pi/2,smooth(t)
