@@ -1,3 +1,5 @@
+local Instances=require('mods.STADIUM2_IMPORTER.lib.scenery_instances')
+local Chunks=require('mods.STADIUM2_IMPORTER.lib.scenery_chunks')
 -- Cached town scenery with two shadowed street lamps beside the square.
 local Nature=require('mods.STADIUM2_IMPORTER.lib.battle_nature')
 local Mat=require('mods.STADIUM2_IMPORTER.lib.renderer')
@@ -89,6 +91,7 @@ function Town.vertices()
  local function place(name,x,z,size,yaw,tone,roof)
   local co,si=math.cos(yaw),math.sin(yaw)
   local source=buildings[name] or plants[name]
+  if plants[name] and not roof then Instances.record(rows,source,name,x,0,z,size,co,si,tone or {1,1,1},tone~=nil) end
   for index,p in ipairs(source) do
    local color=tone or {p[7],p[8],p[9]}
    if roof and p[10]==5 then color=roof end
@@ -142,11 +145,12 @@ function Town.vertices()
    v(math.cos(p[1])*p[2],-.18,math.sin(p[1])*p[2],0,1,0,{.37,.49,.29},1)
   end
  end
+ require("mods.STADIUM2_IMPORTER.lib.visitor_navigation").build("town",rows)
  Town.triangles=#rows/3;return rows
 end
 local function ensure(g)
- if not mesh then shadowVertices=Town.vertices();mesh=g.newMesh(FORMAT,shadowVertices,'triangles','static') end
- if not shader then shader=g.newShader(LAND) end
+ if not mesh then shadowVertices=Town.vertices();mesh=Chunks.new(g,FORMAT,shadowVertices) end
+ if not shader then shader=g.newShader(Instances.shader(LAND)) end
  if not townPaint then
   local path='assets/kenney_town/watercolor-town.png'
   local data=modRef and love.filesystem.newFileData(assert(modRef:read(path)),'watercolor-town.png') or 'mods.STADIUM2_IMPORTER/'..path
@@ -160,7 +164,7 @@ local function ensure(g)
 end
 function Town.castShadow(g,vp)
  ensure(g)
- if not shadowShader then shadowShader=g.newShader([[
+ if not shadowShader then shadowShader=g.newShader(Instances.shader([[
  varying float depth;
  #ifdef VERTEX
  uniform mat4 lightVP;vec4 position(mat4 tp,vec4 p){vec4 v=lightVP*p;depth=v.z*.5+.5;return v;}
@@ -168,8 +172,8 @@ function Town.castShadow(g,vp)
  #ifdef PIXEL
  vec4 effect(vec4 c,Image t,vec2 uv,vec2 px){float d=clamp(depth,0.,1.)*255.;return vec4(floor(d)/255.,fract(d),0.,1.);}
  #endif
- ]]) end
- g.setShader(shadowShader);shadowShader:send('lightVP','row',vp);g.setDepthMode('less',true);g.setMeshCullMode('none');g.draw(mesh);g.setShader()
+ ]])) end
+ g.setShader(shadowShader);shadowShader:send('lightVP','row',vp);g.setDepthMode('less',true);g.setMeshCullMode('none');mesh:draw(g,vp);g.setShader()
 end
 function Town.updateTorchShadows(g,actors,matrices,modes,env)
  ensure(g)
@@ -188,10 +192,11 @@ function Town.draw(g,frame,env,shadow)
  shader:send('tint',env.modelTint or {1,1,1});shader:send('eye',frame.eye)
  shader:send('paint',paint);shader:send('townPaint',townPaint);shader:send('lightDir',env.light or {-.4,-1,-.3})
  LampShadows.bindModel(shader)
- g.draw(mesh);g.setShader();return true
+ mesh:draw(g,frame.vp);g.setShader();return true
 end
 function Town.endBattle() LampShadows.resetDynamic() end
 function Town.release()
+ require("mods.STADIUM2_IMPORTER.lib.visitor_navigation").clear("town")
  LampShadows.release();shadowVertices=nil
  for _,r in pairs({mesh,shader,paint,townPaint,shadowShader}) do r:release() end
  mesh,shader,paint,townPaint,shadowShader=nil,nil,nil,nil,nil

@@ -593,21 +593,182 @@ rules or encounter data. If an arena cannot be loaded, the battle uses Classic.
 
 **AMBIENT POKEMON** controls cosmetic visitors in the custom environments:
 **NATURAL** (default), **OFF**, or **PREVIEW CAMEOS** for quick testing.
-Woodland has a resident Caterpie on an authored tree and passing Pidgey;
-town has a Meowth that pauses to play before departing, plus passing Pidgey;
-caves have Zubat. Outdoor freshwater also gets bird flyovers.
+Woodland keeps its resident Caterpie and adds butterflies, bugs, Oddish, Paras,
+Pikachu, Eevee and Jigglypuff. Town adds Rattata, Growlithe, Snubbull, Persian
+and resting Abra alongside Meowth and birds. Caves have Zubat, Golbat,
+Geodude, Clefairy, Gastly and Misdreavus. Lake visitors are flying insects and
+birds; land Pokemon are not placed on unsupported open water.
 
 Natural mode rolls once per encounter for a 0.5% Mew cameo and, outdoors,
-a separate 0.5% Ho-Oh flyover outcome. Preview cycles the environment's visitors
-about every 23 seconds, including rare cameos without the rarity roll. Common
-visitors otherwise arrive every 24–44 seconds and are ready to depart after
-18–22 seconds. They are removed only once their entire posed model is outside
-the final camera view, with an extra edge margin. Watched visitors stay visible
-at full size; flyovers continue their flight until out of view.
-At most two visitors are active; Caterpie can stay for the encounter.
+a separate 0.5% Ho-Oh outcome. Preview cycles the expanded pool every ten
+seconds (skipping arrivals while all slots are occupied). Common arrivals are
+attempted every 12–22 seconds and may depart after 32–46 seconds, but only
+when the entire posed model is off camera. At most three visitors are active;
+Caterpie can stay for the encounter.
+
+A conservative collision grid is built from the actual scenery once, with the
+cached map. Visitors sweep their full body volume through each movement step,
+turn or stop at obstacles, and reserve room for battlers and other visitors.
+Animation poses are checked too; an obstructed gesture restores its last safe
+frame. Species pause for authored idle, available sleep, entrance or move-dispatch clips
+with an idle fallback when unavailable. These are ambient gestures, not attacks
+on battlers. The conservative grid can make a visitor wait at a narrow gap.
 
 Visitors use the imported Stadium models and animations, shared watercolor
 finish, and scene lighting/shadows. Missing model packs are skipped. They own
 no battle state, cannot be caught or targeted, and use an independent RNG.
 Their renderers are released when they depart or the battle ends. Test options
 can force an environment to preview its visitors on any encounter.
+
+### Scenery visibility optimization
+
+Woodland, cave, town and freshwater scenery retain their original geometry,
+materials, resolution and draw order. Static meshes now keep bounded spatial
+sections, skipping sections outside each render pass's view. Sun shadows use
+the light's view independently, so off-camera scenery still casts visible
+shadows. Short gaps are merged to limit draw-call overhead. The sections are
+built once with the cached mesh and reused across encounters.
+
+From the game root, run
+`luajit mods/STADIUM2_IMPORTER/tests/stadium2_scenery_chunks_test.lua` for
+triangle preservation, camera-orbit visibility and submission counts. Run
+`love mods/STADIUM2_IMPORTER/tests/drivers/scenery_culling_visual` for 20
+pixel comparisons against the original geometry using a flat-colour shader.
+These tests verify geometry preservation; sustained Android frame times still
+need device profiling with the complete lighting and post-processing enabled.
+
+Repeated woodland trees, grass, bushes and flowers, plus town and freshwater
+vegetation, now use shared model meshes and per-instance transforms on hardware
+reporting instancing support. Each placement keeps its authored scale, rotation,
+colour and material. Camera and sun passes cull each instance independently;
+visible placements are batched by model into reusable instance buffers. Cavern
+geometry continues to use section culling. Unsupported hardware uses the
+original expanded mesh with section culling, with the same visual detail.
+Torch static-shadow caches continue to use the baked geometry.
+
+Run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_scenery_instances_test.lua`
+from the game root for original-vertex equivalence, capability fallback,
+resource reuse and instance counts. The GPU check is
+`love mods/STADIUM2_IMPORTER/tests/drivers/scenery_instancing_visual`;
+it checks five views per scene and executes the production day/night and
+sun-shadow shaders. Instanced GPU transforms and equal-depth overlaps can
+produce isolated edge-pixel differences; the separate static-culling test
+still requires exact pixels. No texture, resolution or geometry detail is reduced.
+
+### Preparing maps before encounters
+
+Entering a map now warms the selected environment offscreen, including meshes,
+instance buffers, textures, scene/shadow shaders, sky and static point-shadow
+maps. When the location declares water, the matching water encounter scene is
+prepared too. If the importer is still loading, preparation waits until it is
+ready; changing the environment-test option also prepares that selection outside
+battle. Classic/arena selections do not preload custom scenery.
+
+The one-time preparation cost occurs on location entry instead of the first
+battle draw. Built maps remain cached across encounters and presentation-option
+changes. Explicit `releaseEnvironment()` or a mod rebind clears them. This is a
+cache of the four supported map types, not one copy per encounter or world map.
+Battle actors and battle-specific render targets still have their own lifetimes.
+
+`luajit mods/STADIUM2_IMPORTER/tests/stadium2_environment_cache_test.lua`
+checks preparation, reuse, failure backoff and routing. The GPU regression is
+`love mods/STADIUM2_IMPORTER/tests/drivers/environment_cache_visual`: it verifies
+three encounters per scene allocate no new map meshes, shaders, textures or
+canvases after preparation. ROM-backed flame loading is stubbed in that test.
+
+### Render scratch storage
+
+Torch-face visibility now tests transformed clip planes directly, without
+allocating a matrix or corner tables for each actor/face. Shadow updates reuse
+visibility lists, bounds outputs, light vectors and framebuffer descriptors.
+Visitors reuse their render matrices, normal matrices, metrics, draw options
+and shadow-input lists; those lists are cleared as visitors leave.
+
+Renderer `poseBounds`, `worldMetrics` and `normalMatrix` accept an optional
+output table for internal reuse. Calls without an output table still return
+independent results, preserving existing consumer ownership.
+
+Run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_render_scratch_test.lua`
+from the game root for reference-visibility comparisons and allocation counts.
+Its allocation benchmark disables JIT allocation elision; it measures this
+visibility function, not whole-game allocation or Android frame times.
+
+### Android Stadium / watercolor manga choice
+
+**MODEL / SCENE SHADER** offers **STADIUM** and **WATERCOLOR MANGA** on Android
+and desktop, using the existing saved `stadium2_shader` choice. Android's model
+shader now implements the manga choice with bounded pigment variation and
+silhouette ink in the same material pass. Warm local lights and dark shading
+feed the treatment; effect alpha and hit flashes retain their existing paths.
+
+For custom battle environments, this choice also enables or bypasses the
+whole-scene manga finish, leaving battle UI unchanged. GLES renderer detection
+works without `love.system` in the mod sandbox and selects the five-sample mobile
+finish. Stadium bypasses that pass and its allocation. Changing the option does
+not rebuild the models or maps. Device-specific Android performance and visual
+validation remain necessary.
+
+Run `love mods/STADIUM2_IMPORTER/tests/drivers/android_watercolor` from the game
+root to validate GLES shader sources, render both mobile model styles, and check
+the scene finish and Stadium bypass with sandbox-style Android detection.
+
+### Lake fireflies
+
+At dusk and night, sixteen small green-gold fireflies drift and breathe in
+independent rhythms around the lake. Four brighter motes supply very faint,
+26-unit local light to banks, water, imported Pokemon and visitors. The other
+motes are decorative. Glows are depth-tested and batched into one reusable
+96-vertex mesh. These tiny fill lights do not allocate shadow maps. Daytime
+hides the fireflies; leaving the lake disables their lighting.
+
+`luajit mods/STADIUM2_IMPORTER/tests/stadium2_fireflies_test.lua` checks motion,
+light limits, daylight gating, RNG isolation and resource reuse. Run
+`love mods/STADIUM2_IMPORTER/tests/drivers/fireflies_visual` from the game root
+for a night render and mobile shader validation.
+
+Visitor collision checks: run
+`luajit mods/STADIUM2_IMPORTER/tests/stadium2_visitor_navigation_test.lua`
+from the game root. It exercises actual map occupancy for 90 seconds per
+spawned species, plus thin-wall sweeps and obstructed animation restoration.
+For imported-model animation validation, set `STADIUM2_PACK_DIR` to the normal
+model-pack directory and run
+`love mods/STADIUM2_IMPORTER/tests/drivers/visitor_navigation_real`.
+
+Visitors are admitted only after the final camera (including overrides) is
+known and their whole model is offscreen. Candidate points must have a clear
+exit corridor; if none are available, the arrival is skipped. Caterpie follows
+the same rule and waits until its perch is outside the view.
+
+Movement now selects reachable destinations, pauses on arrival and replans
+from rest when blocked. Nearby visitors can approach, face one another and
+exchange gestures with a cooldown. Ground visitors use explicitly named walk
+clips where present; otherwise a visitor-only procedural walk/trot/crawl layer
+animates lower-body strides and subtle body motion. Gait phase follows actual
+travel distance and stops at rest. Abra hovers instead of sliding in a seated
+pose. Procedural gaits are stylized fallbacks, not newly authored skeletal clips.
+
+`stadium2_visitor_locomotion_test.lua` checks alternating strides, stationary
+feet and reciprocal greetings. The real-model driver now simulates 60 seconds
+of movement and pose collisions for eight species, including six ground gaits.
+
+
+Scene weather is selected with **SCENE WEATHER: OFF / RAIN / THUNDERSTORM**
+(default OFF). It applies to grass, town and freshwater presentations; caves
+and classic/arena presentations remain unaffected. Weather is cosmetic and
+does not change battle mechanics. Rain uses cool, tapered strokes and small
+impact splashes, followed by the selected scene watercolor finish.
+Thunderstorms vary between jagged single bolts, forked bolts and branching
+lightning across the sky, with soft halos and a single brief illumination of
+the sky, scenery and imported Pokemon; no extra shadow pass is rendered.
+
+The system reuses 180 particle slots and one 1,464-vertex mesh. A four-unit
+surface-height grid is built with each cached map; rain samples it rather than raycasting every mesh every frame.
+Pokemon and visitors do not receive rain splashes.
+These are approximate impacts, especially on thin objects.
+The effect uses no particle textures, framebuffer readbacks or dynamic shadow
+maps. It does not include thunder audio or wet-material simulation.
+
+Run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_weather_test.lua` from the
+game root for impact, resource reuse, option and RNG checks. The
+`tests/drivers/weather_visual` LÖVE driver validates the mobile shader and
+renders a lake storm. Actual Android frame-time measurements are still needed.

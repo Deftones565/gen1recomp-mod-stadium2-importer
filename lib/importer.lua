@@ -142,6 +142,14 @@ function Importer.battleHudEnabled()
   return true
 end
 
+function Importer.weatherStyle()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_weather")
+    if ok and (value=="rain" or value=="storm") then return value end
+  end
+  return "off"
+end
+
 function Importer.shaderStyle()
   if modRef and modRef.options and modRef.options.get then
     local ok, value = pcall(modRef.options.get, modRef.options, "stadium2_shader")

@@ -1,3 +1,6 @@
+local Fireflies=require('mods.STADIUM2_IMPORTER.lib.battle_fireflies')
+local Instances=require('mods.STADIUM2_IMPORTER.lib.scenery_instances')
+local Chunks=require('mods.STADIUM2_IMPORTER.lib.scenery_chunks')
 -- A cached woodland lake: one scenery mesh, one animated water surface.
 local Nature=require('mods.STADIUM2_IMPORTER.lib.battle_nature')
 local Mat=require('mods.STADIUM2_IMPORTER.lib.renderer')
@@ -18,7 +21,7 @@ float shadow(){
  vec4 d=Texel(sunMap,sunPosition.xy);return .64+.36*step(sunPosition.z-.003,d.r+d.g/255.);
 }
 ]]
-local LAND=COMMON..[[
+local LAND=COMMON..require("mods.STADIUM2_IMPORTER.lib.firefly_lighting").pixel..[[
 uniform Image paint;
 vec3 tile(vec2 p,vec2 quadrant){return Texel(paint,quadrant*.5+vec2(.008)+abs(fract(p*.5)*2.-1.)*.484).rgb;}
 vec4 effect(vec4 c,Image t,vec2 uv,vec2 px){
@@ -31,11 +34,12 @@ vec4 effect(vec4 c,Image t,vec2 uv,vec2 px){
  surface=mix(surface,pigment,.55);
  vec3 rgb=surface*(.57+.24*max(n.y,0.)+.30*max(0.,dot(n,normalize(-lightDir))))*shadow();
  rgb=mix(rgb,vec3(.34,.44,.39),smoothstep(150.,450.,length(world-eye)))*tint;
+ rgb+=fireflyLight(world,n)*surface;
  return vec4(rgb,1.);
 }
 #endif
 ]]
-local WATER=COMMON..[[
+local WATER=COMMON..require("mods.STADIUM2_IMPORTER.lib.firefly_lighting").pixel..[[
 uniform float time;
 vec4 effect(vec4 c,Image t,vec2 uv,vec2 px){
  vec2 p=world.xz;
@@ -52,6 +56,7 @@ vec4 effect(vec4 c,Image t,vec2 uv,vec2 px){
  float foam=(1.-smoothstep(.0,2.0,abs(radius-edge+wave*.35)))*.20;
  rgb+=vec3(.58,.61,.49)*foam;
  rgb*=shadow();rgb*=tint;
+ rgb+=fireflyLight(world,n)*mix(deep,shallow,shore);
  return vec4(rgb,1.);
 }
 #endif
@@ -76,6 +81,7 @@ function Lake.vertices()
  local function hash(i) return (math.sin(i*127.1+311.7)*43758.5453)%1 end
  local function place(name,x,y,z,size,yaw,c)
   local co,si=math.cos(yaw),math.sin(yaw)
+  Instances.record(rows,models[name],name,x,y,z,size,co,si,c,true)
   for _,p in ipairs(models[name]) do
    v(x+(p[1]*co+p[3]*si)*size,y+p[2]*size,z+(-p[1]*si+p[3]*co)*size,
     p[4]*co+p[6]*si,p[5],-p[4]*si+p[6]*co,c,p[10])
@@ -129,11 +135,12 @@ function Lake.vertices()
   local s,t={q[1]*1.12,-1.3,z+(q[3]-z)*1.12},{r[1]*1.12,-1.3,z+(r[3]-z)*1.12}
   for _,point in ipairs({q,r,t,q,t,s}) do v(point[1],point[2],point[3],0,1,0,{.48,.47,.34},3) end
  end end
+ require("mods.STADIUM2_IMPORTER.lib.visitor_navigation").build("freshwater",rows)
  Lake.triangles=#rows/3;return rows
 end
 local function ensure(g)
- if not mesh then mesh=g.newMesh(FORMAT,Lake.vertices(),'triangles','static') end
- if not shader then shader=g.newShader(LAND);waterShader=g.newShader(WATER) end
+ if not mesh then mesh=Chunks.new(g,FORMAT,Lake.vertices()) end
+ if not shader then shader=g.newShader(Instances.shader(LAND));waterShader=g.newShader(WATER) end
  if not water then
   local rows={}
   for i=0,127 do
@@ -150,7 +157,7 @@ local function ensure(g)
 end
 function Lake.castShadow(g,vp)
  ensure(g)
- if not shadowShader then shadowShader=g.newShader([[
+ if not shadowShader then shadowShader=g.newShader(Instances.shader([[
  varying float depth;
  #ifdef VERTEX
  uniform mat4 lightVP;vec4 position(mat4 tp,vec4 p){vec4 v=lightVP*p;depth=v.z*.5+.5;return v;}
@@ -158,27 +165,30 @@ function Lake.castShadow(g,vp)
  #ifdef PIXEL
  vec4 effect(vec4 c,Image t,vec2 uv,vec2 px){float d=clamp(depth,0.,1.)*255.;return vec4(floor(d)/255.,fract(d),0.,1.);}
  #endif
- ]]) end
- g.setShader(shadowShader);shadowShader:send('lightVP','row',vp);g.setDepthMode('less',true);g.setMeshCullMode('none');g.draw(mesh);g.setShader()
+ ]])) end
+ g.setShader(shadowShader);shadowShader:send('lightVP','row',vp);g.setDepthMode('less',true);g.setMeshCullMode('none');mesh:draw(g,vp);g.setShader()
 end
-function Lake.updateTorchShadows() end
-function Lake.drawEffects() end
+Lake.bindTorchLighting=Fireflies.bindLighting
+function Lake.updateTorchShadows(g,actors,matrices,modes,env) Fireflies.update(env) end
+Lake.drawEffects=Fireflies.draw
 function Lake.draw(g,frame,env,shadow)
  ensure(g);g.setColor(1,1,1,1);g.setDepthMode('lequal',true);g.setMeshCullMode('none');g.setBlendMode('alpha','alphamultiply')
  for _,entry in ipairs({{shader,mesh},{waterShader,water}}) do
-  local s,m=entry[1],entry[2];g.setShader(s)
+  local s,m=entry[1],entry[2];g.setShader(s);Fireflies.bindLighting(s)
   s:send('vp','row',frame.vp);s:send('sunVP','row',shadow and shadow.sunVP or frame.vp)
   s:send('sunEnabled',shadow and shadow.map and 1 or 0)
   if shadow and shadow.map then s:send('sunMap',shadow.map) end
   s:send('tint',env.modelTint or {1,1,1});s:send('eye',frame.eye)
   if s==shader then s:send('paint',paint);s:send('lightDir',env.light or {-.4,-1,-.3})
   else s:send('time',love.timer.getTime()) end
-  g.draw(m)
+  if m==mesh then mesh:draw(g,frame.vp) else g.draw(m) end
  end
  g.setShader();return true
 end
-function Lake.endBattle() end
+function Lake.endBattle() Fireflies.reset() end
 function Lake.release()
+ require("mods.STADIUM2_IMPORTER.lib.visitor_navigation").clear("freshwater")
+ Fireflies.release()
  for _,r in pairs({mesh,water,shader,waterShader,paint,shadowShader}) do r:release() end
  mesh,water,shader,waterShader,paint,shadowShader=nil,nil,nil,nil,nil,nil
 end

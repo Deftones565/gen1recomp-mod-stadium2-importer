@@ -1,3 +1,4 @@
+local Chunks=require('mods.STADIUM2_IMPORTER.lib.scenery_chunks')
 -- Cached, fully enclosed cavern built from Kenney's Modular Cave Kit.
 local Mat=require('mods.STADIUM2_IMPORTER.lib.renderer')
 local Nature=require('mods.STADIUM2_IMPORTER.lib.battle_nature')
@@ -162,10 +163,11 @@ function Cave.vertices()
    end
   end
  end
+ require("mods.STADIUM2_IMPORTER.lib.visitor_navigation").build("cave",out)
  Cave.triangles=#out/3;vertices=out;return out
 end
 local function ensure(g)
- if not mesh then mesh=g.newMesh(FORMAT,Cave.vertices(),'triangles','static') end
+ if not mesh then mesh=Chunks.new(g,FORMAT,Cave.vertices()) end
  if not shader then shader=g.newShader(SOURCE) end
  if not texture then
   local path='assets/kenney_nature/watercolor-materials.png'
@@ -193,10 +195,11 @@ function Cave.draw(g,frame,environment,shadow)
  shader:send('sunTexel',shadow and shadow.sunTexel or {1/1024,1/1024})
  shader:send('power',1.8*Torches.flicker(Torches.time()))
  for i,p in ipairs(Torches.positions) do shader:send('torch'..i,{p[1],p[2]+1,p[3]}) end
- Shadows.send(shader);g.draw(mesh);g.setShader();return true
+ Shadows.send(shader);mesh:draw(g,frame.vp);g.setShader();return true
 end
 function Cave.endBattle() Shadows.resetDynamic() end
 function Cave.release()
+ require("mods.STADIUM2_IMPORTER.lib.visitor_navigation").clear("cave")
  Shadows.release()
  for _,v in pairs({mesh,shader,texture}) do v:release() end
  mesh,shader,texture,vertices=nil,nil,nil,nil

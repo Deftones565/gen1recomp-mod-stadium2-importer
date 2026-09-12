@@ -361,6 +361,7 @@ void effect() {
 local MOBILE_SHADER = [[
 #define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
 varying STADIUM_FLOAT vec3 vNormal;
+varying STADIUM_FLOAT float vMangaEyeZ;
 varying STADIUM_FLOAT vec2 vGeneratedUV;
 #ifdef VERTEX
 uniform mat4 mvp;
@@ -382,6 +383,7 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   }
   vNormal=normalize(normalMatrix*VertexNormal);
   vec3 eyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
+  vMangaEyeZ=eyeNormal.z;
   vGeneratedUV=(eyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
   vec4 clip=mvp*vertex_position;
   clip.z-=decalDepthBias*clip.w;
@@ -402,6 +404,7 @@ uniform vec4 sceneTint;
 uniform float flashAmount;
 uniform float effectIntensityMode;
 uniform float lightingEnabled;
+uniform float celShadingEnabled;
 uniform float modernLightingEnabled;
 uniform vec3 lightDir;
 uniform vec3 ambient;
@@ -502,6 +505,22 @@ void effect() {
   vec3 authoredLighting=mix(vec3(stadiumShade),modernShade,modernLightingEnabled);
   vec3 lighting=mix(vec3(1.0),authoredLighting,lightingEnabled);
   vec3 shaded=combined*lighting*sceneTint.rgb;
+  if (celShadingEnabled*lightingEnabled > 0.001) {
+    // Bounded phases avoid the large hash multipliers that lose precision on
+    // mediump Android GPUs. No extra texture or outline draw is required.
+    STADIUM_FLOAT vec2 paperUV=mod(love_PixelCoord.xy*(720.0/max(1.0,love_ScreenSize.y)),512.0);
+    float grain=sin(paperUV.x*1.71+sin(paperUV.y*.41))*sin(paperUV.y*1.39)*.5;
+    float wash=sin(paperUV.x*.021+paperUV.y*.017)*.5;
+    float lum=dot(shaded,vec3(.299,.587,.114));
+    float band=(floor(lum*7.0)+smoothstep(.18,.82,fract(lum*7.0)))/7.0;
+    vec3 pigment=shaded*mix(1.0,band/max(lum,.015),.32);
+    pigment=mix(vec3(lum),pigment,.88)*vec3(1.0,.98,.93);
+    pigment*=1.0+grain*.055+wash*.025;
+    float rim=1.0-smoothstep(.025,.15,abs(vMangaEyeZ));
+    float hatch=smoothstep(.58,.76,fract((paperUV.x+paperUV.y)*.115+grain*.35));
+    pigment*=1.0-rim*(.22+.50*hatch);
+    shaded=clamp(pigment,0.0,1.0);
+  }
   shaded=mix(shaded,vec3(1.0),flashAmount);
   love_PixelColor=vec4(shaded,
     texel.a*mix(1.0,environmentColor.a,environmentMix)*sceneTint.a);
@@ -693,17 +712,17 @@ local function modelMatrix(yaw, pitch, scale, cx, cy, cz, flipY)
   return matMul(ry, matMul(rx, sc))
 end
 
-local function normalMatrix(yaw, pitch, flipY)
+local function normalMatrix(yaw, pitch, flipY, out)
   local y = yaw or 0
   local p = pitch or 0
   local sy, cyaw = sin(y), cos(y)
   local sp, cp = sin(p), cos(p)
   local fy = flipY == false and 1 or -1
-  return {
-    cyaw, sy * sp * fy, sy * cp,
-    0, cp * fy, -sp,
-    -sy, cyaw * sp * fy, cyaw * cp,
-  }
+  out = out or {}
+  out[1], out[2], out[3] = cyaw, sy * sp * fy, sy * cp
+  out[4], out[5], out[6] = 0, cp * fy, -sp
+  out[7], out[8], out[9] = -sy, cyaw * sp * fy, cyaw * cp
+  return out
 end
 
 local function normalize3(x, y, z)
@@ -1732,7 +1751,7 @@ function Renderer:updatePose(force)
   local alpha = anim and math.max(0, math.min(0.999999,
     self.time * Pack.FPS - math.floor(self.time * Pack.FPS))) or 0
   if finished then alpha = 0 end
-  local changed = force or frame ~= self.frame or finished ~= self.finished
+  local changed = force or self.visitorLocomotion~=nil or frame ~= self.frame or finished ~= self.finished
     or math.abs(alpha - (self.poseAlpha or -1)) > 0.000001
   self.frame, self.finished = frame, finished
   self.poseAlpha = alpha
@@ -1834,10 +1853,14 @@ function Renderer:updatePose(force)
       end
     end
   end
+  if self.visitorLocomotion then
+    require("mods.STADIUM2_IMPORTER.lib.visitor_locomotion").apply(self)
+  end
   return true
 end
 
-function Renderer:poseBounds()
+function Renderer:poseBounds(out)
+  out = out or {}
   local minX, minY, minZ = math.huge, math.huge, math.huge
   local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
   local count = 0
@@ -1858,12 +1881,18 @@ function Renderer:poseBounds()
     end
   end
   if count == 0 then
-    return { minX = -0.5, minY = -0.5, minZ = -0.5, maxX = 0.5, maxY = 0.5, maxZ = 0.5, cx = 0, cy = 0, cz = 0, radius = 1 }
+    out.minX, out.minY, out.minZ = -0.5, -0.5, -0.5
+    out.maxX, out.maxY, out.maxZ = 0.5, 0.5, 0.5
+    out.cx, out.cy, out.cz, out.radius = 0, 0, 0, 1
+    return out
   end
   local cx, cy, cz = (minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5
   local rx, ry, rz = (maxX - minX) * 0.5, (maxY - minY) * 0.5, (maxZ - minZ) * 0.5
   local radius = math.max(sqrt(rx * rx + ry * ry + rz * rz), 0.001)
-  return { minX = minX, minY = minY, minZ = minZ, maxX = maxX, maxY = maxY, maxZ = maxZ, cx = cx, cy = cy, cz = cz, radius = radius }
+  out.minX, out.minY, out.minZ = minX, minY, minZ
+  out.maxX, out.maxY, out.maxZ = maxX, maxY, maxZ
+  out.cx, out.cy, out.cz, out.radius = cx, cy, cz, radius
+  return out
 end
 
 function Renderer:fitCamera(width, height, options)
@@ -2015,16 +2044,16 @@ function Renderer.callbackTextureCoordinateScale(model, prim, textureIndex,
     sourceH / targetH * targetVS / vs
 end
 
-function Renderer:worldMetrics()
+function Renderer:worldMetrics(out)
   local model = self.model or {}
   local bounds = self.bindBounds or self:poseBounds()
-  return {
-    height = math.max(0.001, tonumber(model.height) or (bounds.maxY - bounds.minY)),
-    floor = tonumber(model.floor) or bounds.minY,
-    radius = math.max(0.001, tonumber(model.radius) or bounds.radius),
-    rootScale = tonumber(model.rootScale) or 1,
-    bounds = bounds,
-  }
+  out = out or {}
+  out.height = math.max(0.001, tonumber(model.height) or (bounds.maxY - bounds.minY))
+  out.floor = tonumber(model.floor) or bounds.minY
+  out.radius = math.max(0.001, tonumber(model.radius) or bounds.radius)
+  out.rootScale = tonumber(model.rootScale) or 1
+  out.bounds = bounds
+  return out
 end
 
 -- Draw into the caller's currently-bound color/depth target. The battle scene
@@ -2308,6 +2337,7 @@ function Renderer:drawScene(pass, model, options)
       self.boundedTextureUV and 1 or 0)
     pcall(self.shader.send, self.shader, "smoothTextureFiltering",
       self.smoothArenaTextures and 1 or 0)
+    pcall(self.shader.send,self.shader,"fireflyEnabled",0)
     pcall(self.shader.send,self.shader,"localTorchEnabled",0)
     if options.bindTorchLighting then options.bindTorchLighting(self.shader) end
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
@@ -2563,6 +2593,7 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "textureScroll", { 0, 0, 0, 0 })
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
       pcall(self.shader.send, self.shader, "sceneTint", {1,1,1,1})
+      pcall(self.shader.send, self.shader, "fireflyEnabled", 0)
       pcall(self.shader.send, self.shader, "localTorchEnabled", 0)
       pcall(self.shader.send, self.shader, "flashAmount", 0)
       pcall(self.shader.send, self.shader, "effectIntensityMode", 0)

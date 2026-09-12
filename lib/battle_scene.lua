@@ -109,6 +109,7 @@ function Scene.new(opts)
 end
 
 function Scene:release()
+  if self.weather then self.weather:release();self.weather=nil end
   if self.visitors then self.visitors:release();self.visitors=nil end
   if self.statusOverlay and self.statusOverlay.release then self.statusOverlay:release() end
   self.statusOverlay,self.statusOverlayReady=nil,nil
@@ -123,7 +124,8 @@ function Scene:release()
   self.arena,self.arenaRenderer=nil,nil
   self.providerBattlerModes=nil
   Watercolor.release()
-  if Importer.environmentStyle()=="kenney" or (Importer.environmentTest and Importer.environmentTest()~="automatic") then Nature.endBattle();Cave.endBattle();Lake.endBattle();Town.endBattle() else Nature.release();Cave.release();Lake.release();Town.release() end
+  -- Scenery belongs to the session cache, even across presentation toggles.
+  Nature.endBattle();Cave.endBattle();Lake.endBattle();Town.endBattle()
   Stage.invalidate()
   Shadow.release()
   Hud.invalidate()
@@ -415,11 +417,22 @@ function Scene:render(requestedWidth,requestedHeight)
     if natureActive and visitorMode~='off' then
       if self.visitors and (self.visitors.environment~=selection.id or self.visitors.mode~=visitorMode) then self.visitors:release();self.visitors=nil end
       if not self.visitors then self.visitors=require('mods.STADIUM2_IMPORTER.lib.battle_visitors').new(selection.id,visitorMode) end
-      self.visitors:update(self.visitorTime and now-self.visitorTime or 0)
+      self.pendingVisitorDT=self.visitorTime and now-self.visitorTime or 0
     elseif self.visitors then self.visitors:release();self.visitors=nil end
     self.visitorTime=now
     self.natureActive=natureActive
     if natureActive then self.environment=environmentScene.lighting(self.environment) end
+    local weatherMode=Importer.weatherStyle()
+    local outdoors=natureActive and (selection.id=='grass' or selection.id=='town' or selection.id=='freshwater')
+    if self.weather and (not outdoors or weatherMode=='off' or self.weather.mode~=weatherMode or self.weather.id~=selection.id) then
+      self.weather:release();self.weather=nil
+    end
+    if outdoors and weatherMode~='off' then
+      self.weather=self.weather or require('mods.STADIUM2_IMPORTER.lib.battle_weather').new(selection.id,weatherMode)
+      self.weatherDT=self.weatherTime and math.max(0,now-self.weatherTime) or 0
+      self.environment=self.weather:lighting(self.environment,self.weatherDT)
+    end
+    self.weatherTime=now
     local defaultFrame
     if self.arenaMode then
       defaultFrame=Camera.sceneFrame(width,height,{
@@ -435,7 +448,10 @@ function Scene:render(requestedWidth,requestedHeight)
     cameraCtx.cameraPhase="select"
     local selectedFrame=Extensions.camera(cameraCtx,function() return defaultFrame end)
     local frame=normalizeFrame(selectedFrame,defaultFrame)
-    if self.visitors then self.visitors:prune(frame) end
+    if self.visitors then
+      self.visitors:update(self.pendingVisitorDT or 0,frame)
+      self.visitors:prune(frame)
+    end
     local marks=projectedMarks(self,frame,width,height)
     local ext=extensionContext(self,g,frame,width,height,renderWidth,renderHeight,marks)
     ext.cameraPhase=nil
@@ -601,6 +617,9 @@ function Scene:render(requestedWidth,requestedHeight)
       if environmentScene.drawEffects then environmentScene.drawEffects(g,frame)
       else require("mods.STADIUM2_IMPORTER.lib.battle_torches").draw(g,frame) end
     end
+    if self.weather then
+      self.weather:draw(g,frame,self.weatherDT or 0)
+    end
     restoreWorldTarget(self,g)
     Extensions.overlay(ext)
     restoreWorldTarget(self,g)
@@ -623,7 +642,7 @@ function Scene:render(requestedWidth,requestedHeight)
   end
 
   self.presentCanvas=AA.resolve(self.canvas,pixelWidth,pixelHeight)
-  if self.natureActive then self.presentCanvas=Watercolor.resolve(self.presentCanvas) end
+  if self.natureActive then self.presentCanvas=Watercolor.resolve(self.presentCanvas,Importer.shaderStyle()) end
   Hud.build(self.presentCanvas)
   self.readyFrame=true
   self.defect=nil

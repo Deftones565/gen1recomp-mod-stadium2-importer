@@ -6,21 +6,17 @@ local shader,target,tw,th
 -- warm flames stay warm, cool shadows stay cool, and black receives no paper lift.
 local PAINT=[[
 float luminance(vec3 c){return dot(c,vec3(.299,.587,.114));}
-vec3 finishPaint(vec3 rgb,float edge,vec2 px){
+vec3 finishPaint(vec3 rgb,float edge){
  float lum=luminance(rgb);
- float grain=sin(px.x*1.71+sin(px.y*.41))*sin(px.y*1.39)*.5
-  +sin(px.x*.073+sin(px.y*.091))*sin(px.y*.061)*.5;
+ // Keep flat colors spatially uniform: no screen-space grain or hatching.
  // Soft pigment bands, not independent RGB posterization (which changes hue).
  float band=(floor(lum*7.)+smoothstep(.18,.82,fract(lum*7.)))/7.;
  rgb*=mix(1.,band/max(lum,.015),.32);
  vec3 paper=vec3(1.,.97,.89);
  rgb=mix(rgb,rgb*paper,.24);
- rgb*=1.+grain*.055*smoothstep(.025,.3,lum);
  // Restrained colored ink follows silhouettes and large tonal boundaries.
  float ink=smoothstep(.12,.42,edge)*.24;
  rgb*=1.-ink;
- float hatch=smoothstep(.87,.98,sin((px.x+px.y)*1.05));
- rgb*=1.-hatch*.045*smoothstep(.05,.16,lum)*(1.-smoothstep(.22,.42,lum))*ink;
  rgb=mix(rgb,paper,.035*smoothstep(.18,.75,lum));
  return clamp(rgb,0.,1.);
 }
@@ -43,7 +39,7 @@ vec4 effect(vec4 color,Image tex,vec2 uv,vec2 px){
   sum+=sampleColor*w;weight+=w;
  }}
  vec3 wash=mix(center.rgb,sum/weight,.72);
- return vec4(finishPaint(wash,edge,px),center.a)*color;
+ return vec4(finishPaint(wash,edge),center.a)*color;
 }]]
 local SIMPLE=[[uniform vec2 texel;
 ]]..PAINT..[[
@@ -55,7 +51,7 @@ vec4 effect(vec4 color,Image tex,vec2 uv,vec2 px){
  vec3 e=Texel(tex,uv-vec2(0.,texel.y)).rgb;
  float edge=length(a-b)+length(d-e);
  vec3 wash=mix(c.rgb,(c.rgb*4.+a+b+d+e)*.125,.45*(1.-smoothstep(.06,.25,edge)));
- return vec4(finishPaint(wash,edge,px),c.a)*color;
+ return vec4(finishPaint(wash,edge),c.a)*color;
 }]]
 Watercolor.fullSource=FULL
 Watercolor.simpleSource=SIMPLE
@@ -63,6 +59,14 @@ Watercolor.simpleSource=SIMPLE
 function Watercolor.choose(g)
  local mobile=love and love.system and love.system.getOS
    and (love.system.getOS()=="Android" or love.system.getOS()=="iOS")
+ -- The mod sandbox exposes renderer information even without love.system.
+ if not mobile and g.getRendererInfo then
+  local ok,name=pcall(g.getRendererInfo)
+  if ok then
+   local label=tostring(name):lower()
+   mobile=label:find('opengl es',1,true)~=nil or label:find('gles',1,true)~=nil
+  end
+ end
  local sources=mobile and {SIMPLE} or {FULL,SIMPLE}
  for _,source in ipairs(sources) do
   local ok,value=pcall(g.newShader,source)
@@ -71,7 +75,8 @@ function Watercolor.choose(g)
  return false,"off"
 end
 
-function Watercolor.resolve(source)
+function Watercolor.resolve(source,style)
+ if style=="stadium" then return source end
  local g=love and love.graphics
  if not (source and g) then return source end
  if shader==nil then shader,Watercolor.mode=Watercolor.choose(g) end

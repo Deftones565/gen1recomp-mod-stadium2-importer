@@ -25,6 +25,18 @@ return function(mod)
   end)
   local Models = ModelApi.new(Importer)
   local importScreen
+  local mapContext,pendingEncounter,lastTimeOfDay
+  local EnvironmentCache=require("mods.STADIUM2_IMPORTER.lib.environment_cache")
+  EnvironmentCache.reset()
+  local preparedContext,preparedStyle,preparedTest,preparedArena
+  local function prepareEnvironment()
+    if not (mapContext and Importer.available()) or Battle.currentScene() then return end
+    local style,test,arena=Importer.environmentStyle(),Importer.environmentTest(),Importer.arenaTest()
+    if preparedContext==mapContext and preparedStyle==style and preparedTest==test and preparedArena==arena then return end
+    if not (love and love.graphics and love.graphics.newCanvas) then return end
+    EnvironmentCache.location(love.graphics,mapContext,style,test,arena)
+    preparedContext,preparedStyle,preparedTest,preparedArena=mapContext,style,test,arena
+  end
   local activatedSave
   local pendingAutoImport = false
   local activatePlaythrough
@@ -87,9 +99,12 @@ return function(mod)
     { key="stadium2_battle_hud", label="STADIUM 2 BATTLE HUD", type="toggle",
       default=true,
       help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
-    { key="stadium2_shader", label="MODEL SHADER", type="choice", default="stadium",
+    { key="stadium2_shader", label="MODEL / SCENE SHADER", type="choice", default="stadium",
       choices={{"STADIUM","stadium"},{"WATERCOLOR MANGA","cel"}},
-      help="Choose authentic Stadium lighting or an inked watercolor-manga treatment for imported Pokemon models." },
+      help="Choose Stadium shading or watercolor manga on desktop and Android. Applies to imported Pokemon and the whole custom battle scene; battle UI stays unchanged." },
+    { key="stadium2_weather", label="SCENE WEATHER", type="choice", default="off",
+      choices={{"OFF","off"},{"RAIN","rain"},{"THUNDERSTORM","storm"}},
+      help="Stylized rain and surface splashes in outdoor custom scenes. Thunderstorm adds occasional lightning and a brief scene illumination. Cosmetic only." },
     { key="stadium2_environment", label="BATTLE ENVIRONMENT", type="choice", default="classic",
       choices={{"CLASSIC","classic"},{"KENNEY NATURE","kenney"}},
       help="Watercolor woodland, cave, freshwater and town scenes for matching wild and trainer encounters. Unbuilt environments use Classic, or a contextual Stadium arena when arenas are enabled." },
@@ -126,6 +141,7 @@ return function(mod)
     levels = { "OFF" },
     update = function(dt)
       Battle.update(dt)
+      prepareEnvironment()
     end,
     -- Satisfy the pipeline record contract without ever entering a render
     -- pass: its only level is OFF, while pipeline updates run unconditionally.
@@ -191,6 +207,7 @@ return function(mod)
   mod.exports.releaseModels = Importer.releaseModels
   -- Explicit cache eviction for tools/reloads; the next Nature battle rebuilds it.
   mod.exports.releaseEnvironment = function()
+    EnvironmentCache.reset()
     require("mods.STADIUM2_IMPORTER.lib.battle_nature").release()
     require("mods.STADIUM2_IMPORTER.lib.battle_cave").release()
     require("mods.STADIUM2_IMPORTER.lib.battle_freshwater").release()
@@ -301,7 +318,6 @@ return function(mod)
   end
 
 
-  local mapContext,pendingEncounter,lastTimeOfDay
   mod.events:on("map.entered",function(ev)
     local map=ev and ev.map
     local def=map and map.def
@@ -313,6 +329,7 @@ return function(mod)
     mapContext={mapId=ev and ev.mapId or map and map.id,
       environment=environment,outside=outside,waterType=def and def.waterType}
     pendingEncounter=nil
+    prepareEnvironment()
   end)
 
   -- Observe the official chains without changing their answers. A successful

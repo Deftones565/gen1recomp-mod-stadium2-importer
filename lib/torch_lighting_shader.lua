@@ -28,9 +28,9 @@ function M.apply(source)
  end
  source=source:gsub('vec4 clip=mvp%*vertex_position;',
   'vTorchWorld=(modelMatrix*vertex_position).xyz;\n  vec4 clip=mvp*vertex_position;',1)
- source=source:gsub('#ifdef PIXEL',function() return '#ifdef PIXEL\n'..M.pixel end,1)
+ source=source:gsub('#ifdef PIXEL',function() return '#ifdef PIXEL\n'..M.pixel..require('mods.STADIUM2_IMPORTER.lib.firefly_lighting').pixel end,1)
  source=source:gsub('(vec3 shaded%s*=%s*combined%s*%*%s*lighting%s*%*%s*sceneTint%.rgb;)',
-  '%1\n  shaded+=combined*localTorchLight(vTorchWorld,n);',1)
+  '%1\n  shaded+=combined*(localTorchLight(vTorchWorld,n)+fireflyLight(vTorchWorld,n));',1)
  return source
 end
 return M

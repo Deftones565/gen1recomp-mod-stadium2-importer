@@ -9,6 +9,16 @@ local positions=options.positions or Torches.positions
 local S={resolution=P.size,interval=1/20}
 local maps,shader,scratch,last={},nil,nil,nil
 local windowW,windowH
+local actorBounds,boundsStorage={},{}
+local faceTarget={depth=true}
+local identity=Mat.identity()
+local lightVectors={}
+local function lightVector(i,p)
+ local v=lightVectors[i]
+ if not v then v={};lightVectors[i]=v end
+ v[1],v[2],v[3]=p[1],p[2]+1,p[3]
+ return v
+end
 local SOURCE=[[
 varying vec3 shadowWorld;varying vec4 shadowClip;
 #ifdef VERTEX
@@ -36,35 +46,36 @@ function S.frame(p,face)
 end
 -- Conservative clip test of the current posed bounds. A face is skipped only
 -- when all eight corners lie beyond one clip plane, including seam crossings.
-function S.visibleInFace(vp,model,bounds)
+function S.visibleInFace(vp,model,bounds,margin)
  if not bounds then return true end
- local m=Mat.matMul(vp,model)
- local outside={true,true,true,true,true,true}
- for _,x in ipairs({bounds.minX,bounds.maxX}) do
-  for _,y in ipairs({bounds.minY,bounds.maxY}) do
-   for _,z in ipairs({bounds.minZ,bounds.maxZ}) do
-    local c={}
-    for row=1,4 do local i=(row-1)*4;c[row]=m[i+1]*x+m[i+2]*y+m[i+3]*z+m[i+4] end
-    for axis=1,3 do
-     outside[axis*2-1]=outside[axis*2-1] and c[axis]<-c[4]
-     outside[axis*2]=outside[axis*2] and c[axis]>c[4]
-    end
-   end
+ margin=margin or 1
+ -- Transform each clip plane into model space, then test its furthest AABB
+ -- point. This is the same six-plane test without matrices/corner tables.
+ for row=0,2 do
+  local i=row*4;local scale=row<2 and 1/margin or 1
+  for sign=-1,1,2 do
+   local x,y,z,w=vp[13]+sign*vp[i+1]*scale,vp[14]+sign*vp[i+2]*scale,
+    vp[15]+sign*vp[i+3]*scale,vp[16]+sign*vp[i+4]*scale
+   local a=x*model[1]+y*model[5]+z*model[9]+w*model[13]
+   local b=x*model[2]+y*model[6]+z*model[10]+w*model[14]
+   local c=x*model[3]+y*model[7]+z*model[11]+w*model[15]
+   local d=x*model[4]+y*model[8]+z*model[12]+w*model[16]
+   if a*(a>=0 and bounds.maxX or bounds.minX)+b*(b>=0 and bounds.maxY or bounds.minY)
+    +c*(c>=0 and bounds.maxZ or bounds.minZ)+d < -1e-7 then return false end
   end
  end
- for _,v in ipairs(outside) do if v then return false end end
  return true
 end
 local function canvas(g,w,h)
  local c=g.newCanvas(w,h,{format='rgba8',readable=true,dpiscale=1})
  c:setFilter('nearest','nearest');return c
 end
-local function beginFace(g,target,p,vp)
- g.setCanvas({target,depth=true});g.clear(1,1,1,1,true,true)
+local function beginFace(g,target,p,vp,lightIndex)
+ faceTarget[1]=target;g.setCanvas(faceTarget);g.clear(1,1,1,1,true,true)
  g.origin();g.setScissor();g.setDepthMode('less',true);g.setMeshCullMode('none')
  g.setBlendMode('replace','premultiplied');g.setColor(1,1,1,1);g.setShader(shader)
- shader:send('lightVP','row',vp);shader:send('modelMatrix','row',Mat.identity())
- shader:send('shadowLight',{p[1],p[2]+1,p[3]})
+ shader:send('lightVP','row',vp);shader:send('modelMatrix','row',identity)
+ shader:send('shadowLight',lightVector(lightIndex,p))
 end
 function S.update(g,vertices,format,actors,matrices,modes)
  local w,h=g.getDimensions()
@@ -79,9 +90,12 @@ function S.update(g,vertices,format,actors,matrices,modes)
  if last and now-last<S.interval then return maps end
  if not pcall(g.push,'all') then return nil end
  local ok,err=pcall(function()
-  local actorBounds={}
+  for side in pairs(actorBounds) do actorBounds[side]=nil end
   for side,actor in pairs(actors) do
-   if actor.renderer and actor.renderer.poseBounds then actorBounds[side]=actor.renderer:poseBounds() end
+   if actor.renderer and actor.renderer.poseBounds then
+    boundsStorage[side]=boundsStorage[side] or {}
+    actorBounds[side]=actor.renderer:poseBounds(boundsStorage[side])
+   end
   end
   shader=shader or g.newShader(SOURCE)
   scratch=scratch or canvas(g,P.size,P.size)
@@ -103,22 +117,23 @@ function S.update(g,vertices,format,actors,matrices,modes)
     end
     for face=1,6 do
      local v=entry.faces[face]
-     if not v then v={map=canvas(g,P.size,P.size),vp=S.frame(p,face)};entry.faces[face]=v end
+     if not v then v={map=canvas(g,P.size,P.size),vp=S.frame(p,face),visible={}};entry.faces[face]=v end
      v.hadActors=nil
-     beginFace(g,v.map,p,v.vp);shader:send('staticDepth',scratch);shader:send('useStaticDepth',0);if entry.mesh then g.draw(entry.mesh) end
+     beginFace(g,v.map,p,v.vp,i);shader:send('staticDepth',scratch);shader:send('useStaticDepth',0);if entry.mesh then g.draw(entry.mesh) end
 
     end
     entry.ready=true
    end
    for face,v in ipairs(entry.faces) do
-    local visible={}
+    local visible=v.visible
+    for j=#visible,1,-1 do visible[j]=nil end
     for side in pairs(actors) do
      local actor,matrix=actors[side],matrices[side]
      if actor and actor.renderer and matrix and modes[side]=='host'
        and S.visibleInFace(v.vp,matrix[1],actorBounds[side]) then visible[#visible+1]=side end
     end
     if #visible>0 then
-     beginFace(g,scratch,p,v.vp)
+     beginFace(g,scratch,p,v.vp,i)
      g.setShader();g.setDepthMode('always',false);g.draw(v.map)
      g.setShader(shader);g.setDepthMode('less',true)
      shader:send('staticDepth',v.map);shader:send('useStaticDepth',1)
@@ -152,12 +167,16 @@ function S.bindModel(shader)
  shader:send('localTorchShadows',#maps==2 and not S.error and 1 or 0)
  shader:send('localTorchEnabled',1);shader:send('localTorchPower',S.power or 0)
  for i,p in ipairs(positions) do
-  shader:send('localTorch'..i,{p[1],p[2]+1,p[3]})
+  shader:send('localTorch'..i,lightVector(i,p))
   if maps[i] then shader:send('localTorchMap'..i,maps[i].map) end
  end
 end
 function S.resetDynamic()
  last=nil;S.power=0
+ for side in pairs(actorBounds) do actorBounds[side]=nil end
+ for _,entry in ipairs(maps) do for _,face in ipairs(entry.faces) do
+  for i=#face.visible,1,-1 do face.visible[i]=nil end
+ end end
  -- Preserve hadActors until the next update, so formerly occupied faces get
  -- their clean cached scenery restored before the new battle is drawn.
 end
@@ -168,6 +187,7 @@ function S.release()
  end
  if scratch then scratch:release() end
  if shader then shader:release() end
+ faceTarget[1]=nil;actorBounds={};boundsStorage={};lightVectors={}
  maps,shader,scratch,last={},nil,nil,nil;windowW,windowH=nil,nil;S.error=nil
 end
 return S

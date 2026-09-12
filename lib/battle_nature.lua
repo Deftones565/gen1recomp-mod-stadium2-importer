@@ -1,3 +1,5 @@
+local Instances=require('mods.STADIUM2_IMPORTER.lib.scenery_instances')
+local Chunks=require('mods.STADIUM2_IMPORTER.lib.scenery_chunks')
 -- Textured Kenney Nature Kit woodland clearing.
 local Torches=require("mods.STADIUM2_IMPORTER.lib.battle_torches")
 local TorchShadows=require("mods.STADIUM2_IMPORTER.lib.battle_torch_shadows")
@@ -208,6 +210,9 @@ function Nature.vertices()
   local function place(name,x,z,size,yaw,tone)
     local c,s=math.cos(yaw),math.sin(yaw)
     tone=tone or 1
+    if name:match("^tree_") or name:match("^plant_") or name:match("^grass") or name:match("^flower_") then
+      Instances.record(vertices,models[name],name,x,0,z,size,c,s,{tone,tone,tone},false,true)
+    end
     for _,v in ipairs(models[name]) do
       local foliage=v[10]==1
       local lift=foliage and (.80+.20*math.min(1,v[2]*3)) or 1
@@ -323,6 +328,7 @@ function Nature.vertices()
     end
   end
   shadowVertices=vertices
+ require("mods.STADIUM2_IMPORTER.lib.visitor_navigation").build("grass",vertices)
   Nature.triangles=#vertices/3
   return vertices
 end
@@ -337,8 +343,8 @@ end
 
 function Nature.draw(g,frame,environment,shadow)
   ensurePaint(g)
-  if not mesh then mesh=g.newMesh(FORMAT,Nature.vertices(),"triangles","static") end
-  if not shader then shader=g.newShader(SHADER) end
+  if not mesh then local rows=Nature.vertices();mesh=Chunks.new(g,FORMAT,rows,Nature.groundVertices) end
+  if not shader then shader=g.newShader(Instances.shader(SHADER)) end
   if not grassTexture then
     grassTexture=imageAsset(g,"meadow-grass.png")
     grassTexture:setWrap("repeat","repeat");grassTexture:setFilter("linear","linear",8)
@@ -362,7 +368,7 @@ function Nature.draw(g,frame,environment,shadow)
   shader:send("flicker",Torches.flicker(Torches.time()))
   for i,p in ipairs(Torches.positions) do shader:send("torch"..i,{p[1],p[2]+1,p[3]}) end
   TorchShadows.send(shader)
-  g.draw(mesh);g.setShader()
+  mesh:draw(g,frame.vp);g.setShader()
   return true
 end
 
@@ -380,8 +386,8 @@ function Nature.frame(frame)
 end
 
 function Nature.castShadow(g,lightVP)
-  if not mesh then mesh=g.newMesh(FORMAT,Nature.vertices(),"triangles","static") end
-  if not shadowShader then shadowShader=g.newShader([[
+  if not mesh then local rows=Nature.vertices();mesh=Chunks.new(g,FORMAT,rows,Nature.groundVertices) end
+  if not shadowShader then shadowShader=g.newShader(Instances.shader([[
     varying float depth;
     #ifdef VERTEX
     uniform mat4 lightVP;
@@ -390,12 +396,11 @@ function Nature.castShadow(g,lightVP)
     #ifdef PIXEL
     vec4 effect(vec4 c,Image t,vec2 uv,vec2 sc){float d=clamp(depth,0.,1.)*255.;return vec4(floor(d)/255.,fract(d),0.,1.);}
     #endif
-  ]]) end
+  ]])) end
   g.setShader(shadowShader);shadowShader:send("lightVP","row",lightVP)
   g.setDepthMode("less",true);g.setMeshCullMode("none")
   g.setBlendMode("replace","premultiplied")
-  mesh:setDrawRange(Nature.groundVertices+1,Nature.triangles*3-Nature.groundVertices)
-  g.draw(mesh);mesh:setDrawRange();g.setShader()
+  mesh:draw(g,lightVP,true);g.setShader()
 end
 
 -- A translation-free camera VP: the sky is infinitely distant. Camera
@@ -416,7 +421,7 @@ function Nature.sky(g,w,h,environment,frame)
     vec4 position(mat4 tp,vec4 p){return skyVP*p;}
     #endif
     #ifdef PIXEL
-    uniform Image paper;uniform float nightSky;
+    uniform Image paper;uniform float nightSky;uniform float weatherFlash;
     vec4 effect(vec4 color,Image tex,vec2 uv,vec2 screen){
       vec2 skyUV=vec2(abs(fract(uv.x*2.)*2.-1.),clamp((uv.y-.5)*3.2+.82,.01,.99));
       vec3 sky=Texel(tex,skyUV).rgb;
@@ -427,7 +432,7 @@ function Nature.sky(g,w,h,environment,frame)
       sky*=mix(1.,.25,nightSky);
       float horizon=smoothstep(.44,.52,uv.y);
       sky=mix(sky,vec3(.27,.35,.28),horizon);
-      return vec4(sky,1.)*color;
+      return vec4(sky*color.rgb+vec3(.22,.27,.36)*weatherFlash,1.);
     }
     #endif
   ]]) end
@@ -451,6 +456,7 @@ function Nature.sky(g,w,h,environment,frame)
   end
   g.setShader(skyShader);skyShader:send("paper",watercolorTexture)
   skyShader:send("nightSky",environment.daytime=="NITE" and 1 or 0)
+  skyShader:send("weatherFlash",environment.weatherFlash or 0)
   skyShader:send("skyVP","row",Nature.skyVP(frame))
   g.setDepthMode("always",false);g.setMeshCullMode("none")
   local tint=environment.daytime=="NITE" and {.19,.24,.36} or environment.modelTint or {1,1,1}
@@ -476,6 +482,7 @@ function Nature.endBattle()
 end
 
 function Nature.release()
+ require("mods.STADIUM2_IMPORTER.lib.visitor_navigation").clear("grass")
   TorchShadows.release();shadowVertices=nil
   Torches.release()
   if skyMesh then skyMesh:release();skyMesh=nil end
