@@ -17,6 +17,8 @@ local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
 local UILayers = require("mods.STADIUM2_IMPORTER.lib.battle_ui_layers")
 
 local Gen1={COUNT=251}
+local PatchScope=require("mods.STADIUM2_IMPORTER.lib.patch_scope")
+local patches
 local modRef,installed,session
 local configured=151
 local originals={}
@@ -1001,15 +1003,21 @@ end
 
 function Gen1.install()
   if installed then return true end
-  local ok,err=pcall(installHooks)
+  patches=PatchScope.new()
+  local ok,err=pcall(function()
+    patches:capture({require("src.battle.BattleState"),require("src.battle.AnimPlayer")},installHooks)
+  end)
   if not ok then warn(err); return false end
   local composeOk,composeErr=pcall(installComposeHook)
   if not composeOk or not composeErr then
+    patches:restore()
     warn(composeOk and "render.compose hook unavailable" or composeErr)
     return false
   end
-  local controlsOk,controlsErr=pcall(installControls)
-  if not controlsOk then warn(controlsErr) end
+  local controlsOk,controlsErr=pcall(function()
+    patches:capture({gameRef or modRef.game},installControls)
+  end)
+  if not controlsOk then warn(controlsErr);return false end
   installed=true
   return true
 end
@@ -1125,8 +1133,15 @@ function Gen1.currentScene()
   return session
 end
 
-function Gen1.resetForTests()
+function Gen1.uninstall()
+  if patches then patches:restore();patches=nil end
+  installed=false
+  pointerHookInstalled=false
   Gen1.finish()
+end
+
+function Gen1.resetForTests()
+  Gen1.uninstall()
   ArenaRuntime.resetForTests()
   installed=false
   modRef=nil

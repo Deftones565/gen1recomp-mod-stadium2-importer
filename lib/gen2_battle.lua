@@ -18,6 +18,8 @@ local Unown = require("src.core.gen2.Unown")
 local GameVersion = require("src.core.GameVersion")
 
 local Gen2 = { COUNT = 251 }
+local PatchScope=require("mods.STADIUM2_IMPORTER.lib.patch_scope")
+local patches
 local modRef, installed, session
 local configured = 251
 local lastDiagnostic
@@ -119,6 +121,17 @@ function Scene.new(battle,context)
 end
 
 function Scene:release()
+  if self.screen then
+    self.screen.stadium2ImporterRetainedAnim=nil
+    local images=self.trainerImageOriginals
+    if images then
+      for _,key in ipairs({'enemyTrainerImage','playerBackImage'}) do
+        if self.screen[key]==images.applied[key] then self.screen[key]=images[key] end
+      end
+      self.screen.stadium2ImporterTrainerImagesPrepared=images.prepared
+      self.trainerImageOriginals=nil
+    end
+  end
   UIOwnership.release(self.screen)
   self.substituteActors.player:release()
   self.substituteActors.enemy:release()
@@ -453,6 +466,9 @@ local function installScreenHooks()
   -- or GPU readback is involved.
   local function prepareTrainerImages(screen)
     if not screen or screen.stadium2ImporterTrainerImagesPrepared then return end
+    local scene=active(screen)
+    if scene then scene.trainerImageOriginals={enemyTrainerImage=screen.enemyTrainerImage,
+      playerBackImage=screen.playerBackImage,prepared=screen.stadium2ImporterTrainerImagesPrepared,applied={}} end
     screen.stadium2ImporterTrainerImagesPrepared = true
     if screen.enemyTrainerImage and screen.enemyTrainerPath then
       screen.enemyTrainerImage = TrainerSprite.fromPath(
@@ -464,6 +480,10 @@ local function installScreenHooks()
         and not screen.playerBackTrueColor then
       screen.playerBackImage = TrainerSprite.fromPath(
         screen.playerBackPath, screen.playerBackImage, "shade0")
+    end
+    if scene then
+      scene.trainerImageOriginals.applied.enemyTrainerImage=screen.enemyTrainerImage
+      scene.trainerImageOriginals.applied.playerBackImage=screen.playerBackImage
     end
   end
 
@@ -922,9 +942,13 @@ end
 
 function Gen2.install()
   if installed then return true end
-  installScreenHooks()
-  installAnimationProjection()
-  installControls()
+  patches=PatchScope.new()
+  patches:capture({require("src.ui.gen2.BattleState"),require("src.battle.gen2.Battle"),
+    require("src.ui.gen2.BattleAnimView"),require("src.core.Game2")},function()
+    installScreenHooks()
+    installAnimationProjection()
+    installControls()
+  end)
   installed = true
   return true
 end
@@ -1028,8 +1052,14 @@ function Gen2.currentScene()
   return session
 end
 
+function Gen2.uninstall()
+  if patches then patches:restore();patches=nil end
+  installed=false
+  Gen2.finish(nil,true)
+end
+
 function Gen2.resetForTests()
-  Gen2.finish()
+  Gen2.uninstall()
   ArenaRuntime.resetForTests()
   installed, modRef, configured = false, nil, 251
 end

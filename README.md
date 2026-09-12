@@ -772,3 +772,19 @@ Run `luajit mods/STADIUM2_IMPORTER/tests/stadium2_weather_test.lua` from the
 game root for impact, resource reuse, option and RNG checks. The
 `tests/drivers/weather_visual` LÖVE driver validates the mobile shader and
 renders a lake storm. Actual Android frame-time measurements are still needed.
+
+
+Direct engine patches are now session-owned. Disabling Stadium for the active
+game, uninstalling it, rolling back a failed load, or ending/replacing the game
+session restores the original Gen 1/Gen 2 battle, animation and control methods
+and clears the install sentinels. Official hook/event subscriptions and cached
+presentation resources are released too. The next enabled game session installs
+fresh wrappers; changing another game's checkbox does not stop the active one.
+A wrapper retained by a later mod becomes a pass-through, preserving that mod.
+
+The current host has no general mod-unload callback, so `lib/mod_lifecycle.lua`
+observes the existing loader, launcher, runtime and session teardown methods.
+Those observers are themselves restored during teardown. `mod.exports.uninstall()`
+provides the same idempotent cleanup for tools. Regression coverage lives in
+`tests/stadium2_patch_lifecycle_test.lua` and both generations' control/ownership
+tests, including repeated install/remove and partial-install failure.

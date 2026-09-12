@@ -70,6 +70,9 @@ function BattleState:bottomUIVisible() return true end
 package.loaded["mods.STADIUM2_IMPORTER.lib.gen2_battle"]=nil
 local Gen2=require("mods.STADIUM2_IMPORTER.lib.gen2_battle")
 Gen2.bind({log={warn=function() end}})
+local targets={BattleState,View,Game2,require("src.battle.gen2.Battle")}
+local before={}
+for i,t in ipairs(targets) do before[i]={};for k,v in pairs(t) do before[i][k]=v end end
 assert(Gen2.install())
 
 local mon={species="PIKACHU",hp=20}
@@ -179,3 +182,14 @@ assert(battle.events[1]==emitted and ownedScene.eventVisuals[emitted],
 
 Gen2.finish(nil,true)
 print("18 checks passed (Stadium 2 permanent Gen 2 hooks, controls and move triggers)")
+
+Gen2.uninstall()
+for i,t in ipairs(targets) do
+ for k,v in pairs(t) do assert(before[i][k]==v,'Gen2 patch leaked: '..k) end
+ for k,v in pairs(before[i]) do assert(t[k]==v) end
+end
+assert(Gen2.install(),'Gen2 could not reinstall')
+Gen2.uninstall()
+assert(not BattleState.stadium2ImporterGen2 and not View.stadium2ImporterProjection
+ and not Game2.stadium2ImporterGen2Controls)
+print('Gen2 battle, animation, input and install flag restoration/reinstall passed')

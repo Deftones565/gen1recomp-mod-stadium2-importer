@@ -9,6 +9,11 @@ local ModelApi = require("mods.STADIUM2_IMPORTER.lib.model_api")
 local BattleUIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 
 return function(mod)
+  local lifecycle=require("mods.STADIUM2_IMPORTER.lib.mod_lifecycle").new(mod)
+  lifecycle:add(Battle.uninstall)
+  lifecycle:add(BattleUIOwnership.resetForTests)
+  lifecycle:add(BattleAA.release)
+  lifecycle:add(function() require("mods.STADIUM2_IMPORTER.lib.battle_watercolor").release() end)
   Importer.bind(mod)
   require("mods.STADIUM2_IMPORTER.lib.battle_nature").bind(mod)
   require("mods.STADIUM2_IMPORTER.lib.battle_cave").bind(mod)
@@ -213,6 +218,8 @@ return function(mod)
     require("mods.STADIUM2_IMPORTER.lib.battle_freshwater").release()
     require("mods.STADIUM2_IMPORTER.lib.battle_town").release()
   end
+  lifecycle:add(mod.exports.releaseEnvironment)
+  lifecycle:add(Importer.releaseModels)
   mod.exports.readHandlers = Importer.readHandlers
   mod.exports.handlerInfo = Importer.handlerInfo
   mod.exports.evaluateHandler = Importer.evaluateHandler

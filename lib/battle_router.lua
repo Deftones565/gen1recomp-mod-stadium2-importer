@@ -73,6 +73,12 @@ function Router.ready()
   return impl and impl.ready and impl.ready() or false
 end
 
+function Router.uninstall()
+  local impl=implementation
+  implementation,gameRef,modRef=nil,nil,nil
+  if impl and impl.uninstall then impl.uninstall() end
+end
+
 function Router.resetForTests()
   if implementation and implementation.resetForTests then
     pcall(implementation.resetForTests)
