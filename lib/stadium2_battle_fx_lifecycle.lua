@@ -35,18 +35,18 @@ local DATA = {
     "shared-wrapper", nil, nil, 0x84168000),
   [1] = row(1, 0, 0, 0, "empty"),
   [2] = row(2, 0x841572A0, 0x841572D4, 0x84157344,
-    "timer-model", 0x841A4D4C, nil, 0x84162DE8,
-    {kind = "window-modulo", first = 1770, last = 1800, modulo = 3}),
+    "timer-model", 0x841A4D4C, 1801, 0x84162DE8,
+    {kind = "window-modulo", first = 1, last = 1769, modulo = 3}),
   [3] = row(3, 0x84157AB0, 0x84157ADC, 0x84157C58,
     "stochastic-controller", 0x841A4D54, nil, 0x84166A64),
   [4] = row(4, 0x84156E58, 0x84156E8C, 0x84156EFC,
-    "timer-model", 0x841A4D4A, nil, 0x8415DBBC,
-    {kind = "window-modulo", first = 120, last = 180, modulo = 7}),
+    "timer-model", 0x841A4D4A, 181, 0x8415DBBC,
+    {kind = "window-modulo", first = 1, last = 119, modulo = 7}),
   [5] = row(5, 0x84158BA8, 0x84158BD8, 0x84158BF8,
     "shared-wrapper", nil, nil, 0x84168000),
   [6] = row(6, 0x84157558, 0x8415758C, 0x841575FC,
-    "timer-model", 0x841A4D4E, nil, 0x8415DBBC,
-    {kind = "window-modulo", first = 120, last = 180, modulo = 7}),
+    "timer-model", 0x841A4D4E, 181, 0x8415DBBC,
+    {kind = "window-modulo", first = 1, last = 119, modulo = 7}),
   [7] = row(7, 0x84156BD4, 0x84156C40, 0x84156C60,
     "float-setup", nil, nil, 0x8415ADE0),
   [8] = row(8, 0x84159C2C, 0x84159C6C, 0x84159CC8,
@@ -78,8 +78,8 @@ local DATA = {
   [20] = row(20, 0x84158840, 0x84158874, 0x841588C0,
     "timer-model", 0x841A4D06, 181, 0x8415DBBC),
   [21] = row(21, 0x841579B8, 0x841579EC, 0x84157A5C,
-    "timer-model", 0x841A4D52, nil, 0x8415DBBC,
-    {kind = "window-modulo", first = 120, last = 180, modulo = 7}),
+    "timer-model", 0x841A4D52, 181, 0x8415DBBC,
+    {kind = "window-modulo", first = 1, last = 119, modulo = 7}),
   [22] = row(22, 0, 0, 0, "empty"),
   [23] = row(23, 0x84156F50, 0x84156FC8, 0x84156FE8,
     "model-parameter", nil, nil, 0x8415C2E0),
@@ -367,7 +367,7 @@ end
 function Manager:_update(instance)
   local family = instance.family
   instance.frame = instance.frame + 1
-  if family.counterAddress then instance.counter = instance.counter + 1 end
+  if family.counterAddress then instance.counter = (instance.counter + 1 + 32768)%65536-32768 end
   local count = instance.counter
   instance.gateEligible = gateEligible(family.phaseGate, count)
 

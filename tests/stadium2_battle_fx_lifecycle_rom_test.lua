@@ -72,5 +72,19 @@ assert(metadata[2].counterAddress == 0x841A4D4C
 assert(metadata[12].drawGate.first == 2,
   "family 12 draw gate is not retained")
 
+-- Verify branch operands directly in the retail update callbacks, rather
+-- than accepting the readable decomp's conditions without ROM evidence.
+for _,id in ipairs({2,4,6,21}) do
+  local row=metadata[id]
+  local stop=id==2 and 1801 or 181
+  local spawnLimit=id==2 and 1770 or 120
+  assert(FxRom.read32(rom,row.update+0x20)==0x28410000+stop)
+  assert(FxRom.read32(rom,row.update+0x24)==0x54200004)
+  assert(FxRom.read32(rom,row.update+0x30)==0x2402FFFF)
+  assert(FxRom.read32(rom,row.update+0x34)==0x28410000+spawnLimit)
+  assert(FxRom.read32(rom,row.update+0x38)==0x10200007)
+  assert(row.terminationThreshold==stop and row.phaseGate.last==spawnLimit-1)
+end
+
 print("stadium2 battle FX lifecycle ROM: 30 rows, 34 routes, 29 moves, "
   .. "18 alternate-bank entries")

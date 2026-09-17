@@ -40,25 +40,20 @@ ok(events[3].id == first and events[3].phase == "update"
 ok(manager:snapshot().instances[1].context.nested.x == 1,
   "spawn context is copied")
 
--- Family 4's ROM gate is an update helper gate at 120..180, every seven
--- frames.  The instance remains active outside the helper window.
+-- Spawn every seven ticks below 120; drain through 180 and stop at 181.
 manager:step(118)
 local snap119 = manager:snapshot()
 ok(snap119.frame == 119 and snap119.instances[1].counter == 119
-  and not snap119.instances[1].gateEligible, "family 4 frame 119 gate")
+  and snap119.instances[1].gateEligible, "family 4 frame 119 gate")
 manager:step(1)
 ok(not manager:snapshot().instances[1].gateEligible,
   "family 4 frame 120 gate")
 manager:step(6)
-ok(manager:snapshot().instances[1].gateEligible,
+ok(not manager:snapshot().instances[1].gateEligible,
   "family 4 frame 126 gate")
 manager:step(54)
 ok(manager:snapshot().instances[1].counter == 180
   and manager:snapshot().instances[1].active, "family 4 frame 180 alive")
-manager:step(1)
-ok(not manager:snapshot().instances[1].gateEligible
-  and manager:snapshot().instances[1].active, "family 4 frame 181 remains alive")
-
 local packets = manager:draw()
 ok(#packets == 2 and packets[1].command == 0xDA380003
   and packets[1].pointer == 0x841A4D08
@@ -68,6 +63,28 @@ ok(#packets == 2 and packets[1].command == 0xDA380003
 packets[1].context.sourceSide = "mutated"
 ok(manager:draw()[1].context.sourceSide == "player",
   "draw packet context is caller-owned")
+manager:step(1)
+ok(not manager:snapshot().instances[1].active and #manager:draw()==0,
+  "families 4 and 6 terminate at 181")
+
+for _,family in ipairs({2,4,6,21}) do
+  local ticks={}
+  local m=Lifecycle.new({callback=function(phase,_,instance)
+    if phase=="update" and instance.gateEligible then ticks[#ticks+1]=instance.counter end
+  end})
+  m:spawn(family)
+  local stop=family==2 and 1801 or 181
+  m:step(stop)
+  ok(#ticks==(family==2 and 589 or 17),"native spawn cadence family "..family)
+  ok(ticks[#ticks]==(family==2 and 1767 or 119),"last spawn family "..family)
+  ok(not m:snapshot().instances[1].active,"native termination family "..family)
+end
+
+local wrapping=Lifecycle.new({callback=function()end})
+local wid=wrapping:spawn(3)
+wrapping.instances[wid].counter=32767
+wrapping:step(1)
+ok(wrapping:snapshot().instances[1].counter==-32768,"native signed counter wraps")
 
 -- Family 12's update window and direct termination are distinct from its draw
 -- gate: frame 2 draws, frame 50 is terminated before resolver work.
