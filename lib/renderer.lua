@@ -84,6 +84,7 @@ uniform vec4 sceneTint;
 uniform float flashAmount;
 uniform Image sunMap;
 uniform float sunEnabled;
+uniform float prelitShadowEnabled;
 uniform float sunDark;
 uniform float sunBias;
 uniform vec2 sunTexel;
@@ -320,7 +321,10 @@ void effect() {
   float washShade=floor(styleShade*3.0+0.5)/3.0;
   vec3 authoredLighting=mix(vec3(litShade),modernShade,modernLightingEnabled);
   authoredLighting=mix(authoredLighting,vec3(washShade),mangaAmount);
-  vec3 lighting=mix(vec3(1.0),authoredLighting,lightingEnabled);
+  // Arena vertex colours already contain lighting, but still receive the
+  // battlers' cast shadows. Preserve an ambient floor without relighting RGB.
+  float prelitShade=mix(1.0,0.30+0.70*shadowVisibility,prelitShadowEnabled);
+  vec3 lighting=mix(vec3(prelitShade),authoredLighting,lightingEnabled);
   vec3 shaded=combined * lighting * sceneTint.rgb;
   if (mangaAmount > 0.001) {
     // Watercolor-manga mode stays in the existing material pass. A warm paper
@@ -2343,6 +2347,8 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
     pcall(self.shader.send, self.shader, "sunEnabled",
       options.sunMap and self.receiveModelSunShadows and 1 or 0)
+    pcall(self.shader.send, self.shader, "prelitShadowEnabled",
+      isArenaModel(self.model) and 1 or 0)
     if options.sunMap then pcall(self.shader.send,self.shader,"sunMap",options.sunMap) end
     pcall(self.shader.send,self.shader,"sunDark",options.sunDark or 0.68)
     pcall(self.shader.send,self.shader,"sunBias",options.sunBias or 0.002)
@@ -2452,8 +2458,12 @@ function Renderer:drawScene(pass, model, options)
             Renderer.callbackSecondaryWrap(set)
           sendTextureWrapMode(self.shader, "secondaryWrapMode",
             secondaryWrapS, secondaryWrapT)
-          if secondary.setWrap and set.wrap then
-            pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
+          -- Phase-5 uses per-axis samplers, without the legacy set.wrap.
+          -- Desktop sampling needs the image state as well as shader modes;
+          -- leaving the default clamp stretches the Poké Ball mask edges.
+          if secondary.setWrap then
+            pcall(secondary.setWrap, secondary, physicalTextureWrap(secondaryWrapS),
+              physicalTextureWrap(secondaryWrapT))
           end
           pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
           local sw, sh = imageDimensions(secondary,self.model.textures[set[2]])
@@ -2601,6 +2611,8 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "primaryIntensityAlpha", 0)
       pcall(self.shader.send, self.shader, "secondaryIntensityAlpha", 0)
       pcall(self.shader.send, self.shader, "lightingEnabled", 1)
+      pcall(self.shader.send, self.shader, "sunEnabled", 0)
+      pcall(self.shader.send, self.shader, "prelitShadowEnabled", 0)
       pcall(self.shader.send, self.shader, "modernLightingEnabled",
         modernLighting == true and 1 or 0)
       pcall(self.shader.send, self.shader, "celShadingEnabled",
@@ -2717,8 +2729,9 @@ function Renderer:renderToCanvas(width, height, options)
                 Renderer.callbackSecondaryWrap(set)
               sendTextureWrapMode(self.shader,"secondaryWrapMode",
                 secondaryWrapS,secondaryWrapT)
-              if secondary.setWrap and set.wrap then
-                pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
+              if secondary.setWrap then
+                pcall(secondary.setWrap, secondary, physicalTextureWrap(secondaryWrapS),
+                  physicalTextureWrap(secondaryWrapT))
               end
               pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
               local sw,sh=imageDimensions(secondary,model.textures[set[2]])
