@@ -23,7 +23,7 @@ local function mergeDiagnostics(target,items,seen)
 end
 function Player.new(options)
   options=type(options)=="table"and options or{};local runtime=options.runtime
-  local beamScene={}
+  local beamScene={value=options.sceneContext}
   if not runtime then local ro=copy(options.runtimeOptions or{});ro.catalog=options.catalog or ro.catalog
     if options.resolveBeam then
       ro.lifecycleOptions=ro.lifecycleOptions or {}
@@ -168,7 +168,11 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
           for _,layer in ipairs(geometry.layers) do for _,symbol in ipairs(layer.draw.textures) do
             if not asset[symbol] then
               local ok,value
-              if symbol==-1 then ok,value=true,assets and assets.beamGlow
+              if symbol==-3 then ok,value=true,assets and assets.needle and assets.needle.texture
+              elseif symbol==-2 then
+                local ribbon=assets and assets.ribbon
+                ok,value=true,ribbon and {w=8,h=16,format=3,size=1,rgba=ribbon.rgba}
+              elseif symbol==-1 then ok,value=true,assets and assets.beamGlow
               else ok,value=pcall(self.loadBeamTexture or function()end,moveId,symbol) end
               if ok then asset[symbol]=value end
               if not asset[symbol] then asset=nil;break end

@@ -180,7 +180,11 @@ function Runtime.new(options)
     nativeObjects = NativeObjects.new(options.nativeObjectOptions or {})
   end
   local lifecycle = options.lifecycle
-  if lifecycle == nil then lifecycle = Lifecycle.new(options.lifecycleOptions or {}) end
+  if lifecycle == nil then
+    local lifecycleOptions=copyContext(options.lifecycleOptions or {})
+    lifecycleOptions.assets=lifecycleOptions.assets or (options.catalog and options.catalog.lifecycleAssets)
+    lifecycle = Lifecycle.new(lifecycleOptions)
+  end
   local material = options.material or Material
   return setmetatable({
     catalog = options.catalog or {},

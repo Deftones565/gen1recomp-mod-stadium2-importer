@@ -128,7 +128,7 @@ function VM:call(address,args,limit)
           elseif fn==13 then F[sh]=u(trunc(x))
           elseif fn==12 or fn==36 then
             local low=math.floor(x);local frac=x-low
-            F[sh]=u(frac>.5 or (frac==.5 and low%2~=0) and low+1 or low)
+            F[sh]=u((frac>.5 or (frac==.5 and low%2~=0)) and low+1 or low)
           elseif fn>=48 then
             self.condition=(band(fn,4)~=0 and x<y) or (band(fn,2)~=0 and x==y)
               or (band(fn,1)~=0 and (x~=x or y~=y))

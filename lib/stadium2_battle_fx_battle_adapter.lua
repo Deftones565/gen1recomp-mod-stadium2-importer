@@ -104,15 +104,18 @@ function Adapter.beamInputs(context,sceneContext)
   local units=Adapter.worldUnits(sceneContext,source)
   local origin=scaled(slots[source],1/units)
   local a,b={0,0,0},{}
-  for i=1,3 do b[i]=slots[target][i]/units-origin[i] end
+  local targetPosition=scaled(slots[target],1/units)
+  for i=1,3 do b[i]=targetPosition[i]-origin[i] end
   local actors=sceneContext.scene and sceneContext.scene.actors
   local host=sceneContext.scene and sceneContext.scene.host
   local usedMarkers,profiles=0,0
+  local swiftTarget,modelScale,sourceSpecies
   for _,pair in ipairs({{source,a},{target,b}}) do
     local actor=host and host.visualActor and host:visualActor(pair[1])
       or actors and actors[pair[1]]
     local renderer=actor and actor.renderer
     local model=renderer and renderer.model
+    if pair[1]==source then sourceSpecies=model and model.species end
     local profile=Dispatch.battleProfile(model and model.fxBattleProfile)
     local position=scaled(slots[pair[1]],1/units)
     local height=0
@@ -121,6 +124,12 @@ function Adapter.beamInputs(context,sceneContext)
       if ok and metrics then height=metrics.height*.5 end
     end
     local bytes=model and model.fxDispatch
+    local moveRow=(tonumber(context.moveId) or 0)-1
+    if pair[1]==source and bytes and moveRow>=0 and #bytes>=(moveRow+1)*20 then
+      -- 8411AF6C copies dispatch +0F to owner+661; 84109544 multiplies by .01f.
+      local f32=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
+      modelScale=f32(bytes:byte(moveRow*20+16)*f32(.01))
+    end
     local isTarget=pair[1]==target
     -- Target marker always comes from context 254, but its offset comes from
     -- the currently selected animation (84114730), including idle/hit.
@@ -169,6 +178,12 @@ function Adapter.beamInputs(context,sceneContext)
         end
       end
     end
+    if isTarget then
+      swiftTarget=Endpoints.resolve({position=position,centerY=center or position[2]+height,
+        flags=actor and actor.nativeFxFlags or 0,offset=offset,rotation=rotation},false)
+      swiftTarget[2]=math.max(0,swiftTarget[2])
+      for k=1,3 do swiftTarget[k]=swiftTarget[k]-origin[k] end
+    end
     local resolved=Endpoints.resolve({position=position,marker=point,
       centerY=center or position[2]+height,targetHeight=height,
       flags=actor and actor.nativeFxFlags or 0,offset=offset,rotation=rotation},isTarget)
@@ -180,8 +195,16 @@ function Adapter.beamInputs(context,sceneContext)
   for i=1,3 do direction[i]=direction[i]/length end
   local eye=sceneContext.camera and sceneContext.camera.eye
   local camera
-  if eye then camera={eye[1]/units-origin[1],eye[2]/units-origin[2],eye[3]/units-origin[3]} end
-  return {origin=a,direction=direction,endpointA=a,endpointB=b,cameraEye=camera,
+  if eye then
+    camera=scaled(eye,1/units)
+    for i=1,3 do camera[i]=camera[i]-origin[i] end
+  end
+  local swiftDirection={swiftTarget[1]-a[1],swiftTarget[2]-a[2],swiftTarget[3]-a[3]}
+  local swiftLength=math.sqrt(swiftDirection[1]^2+swiftDirection[2]^2+swiftDirection[3]^2)
+  for i=1,3 do swiftDirection[i]=swiftLength>0 and swiftDirection[i]/swiftLength or 0 end
+  return {origin=a,direction=direction,swiftDirection=swiftDirection,
+    swiftOrigin={a[1]+origin[1],a[2]+origin[2],a[3]+origin[3]},swiftFrameOrigin=origin,
+    modelScale=modelScale,sourceSpecies=sourceSpecies,endpointA=a,endpointB=b,cameraEye=camera,
     approximate=profiles<2,attachmentCount=usedMarkers}
 end
 

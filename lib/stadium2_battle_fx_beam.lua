@@ -202,11 +202,11 @@ function Beam.model(g,textures)
   for i,layer in ipairs(g.layers) do
     local d=layer.draw
     local p={pos=layer.pos,uv=layer.uv,idx=layer.idx,nverts=#layer.pos/3,nidx=#layer.idx,
-      nrm={},skin={},color={},tex=#model.textures+1,texAnim=-1,additive=false,cull=false,
-      lighting=false,vertexSemantics="color",alphaMode="blend",geometryMode=layer.glow and 0x200004 or 0x200005,
+      nrm={},skin={},color={},tex=d.textures[1] and #model.textures+1 or -1,texAnim=-1,additive=false,cull=false,
+      lighting=layer.lighting or false,vertexSemantics="color",alphaMode="blend",geometryMode=layer.geometryMode or (layer.glow and 0x200004 or 0x200005),
       sampler={cms=0,cmt=0},material={phase5=true,primitiveColor={},environmentColor={},
         primitiveLodFraction=d.lodFraction/255,
-        combiner={cycles=layer.glow and 1 or 2,color0={unpack(d.cycle0,1,4)},alpha0={unpack(d.cycle0,5,8)},
+        combiner={cycles=d.cycles or (layer.glow and 1 or 2),color0={unpack(d.cycle0,1,4)},alpha0={unpack(d.cycle0,5,8)},
           color1={unpack(d.cycle1,1,4)},alpha1={unpack(d.cycle1,5,8)}}}}
     for _,symbol in ipairs(d.textures) do
       model.textures[#model.textures+1]=assert(textures[symbol],"beam ROM texture unavailable")
@@ -214,6 +214,7 @@ function Beam.model(g,textures)
     p.battleFxNoDepth=layer.glow or false
     for v=1,p.nverts do
       p.skin[v]=0;p.nrm[v*3-2],p.nrm[v*3-1],p.nrm[v*3]=0,1,0
+      if layer.nrm then for c=1,3 do p.nrm[(v-1)*3+c]=layer.nrm[(v-1)*3+c] end end
       for c=1,4 do p.color[(v-1)*4+c]=layer.color and layer.color[(v-1)*4+c] or 0 end
     end
     model.prims[i]=p
@@ -226,13 +227,14 @@ function Beam.updateModel(model,g)
   for i,layer in ipairs(g.layers) do
     local p,d=model.prims[i],layer.draw
     p.pos=layer.pos
+    if layer.nrm then p.nrm=layer.nrm end
     if layer.color then p.color=layer.color end
     for c=1,4 do
       p.material.primitiveColor[c]=(c==4 and trunc(f(d.primary[c]*d.alpha)) or d.primary[c])/255
       p.material.environmentColor[c]=(c==4 and trunc(f(d.environment[c]*d.alpha)) or d.environment[c])/255
     end
     local shift=d.scrollAndShift
-    p.battleFxTextures={p.tex,d.textures[2] and p.tex+1 or nil,phase5=true,wrap="repeat",
+    p.battleFxTextures={d.textures[1] and p.tex or nil,d.textures[2] and p.tex+1 or nil,phase5=true,wrap="repeat",
       samplers={{cms=0,cmt=0,shifts=shift[3],shiftt=shift[4]},
         {cms=0,cmt=0,shifts=shift[7],shiftt=shift[8]}},
       scroll={{-(d.uv[1]%4096)/128,-(d.uv[2]%4096)/128},

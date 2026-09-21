@@ -4,6 +4,9 @@
 local Lifecycle = {}
 local Ribbon = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_ribbon")
 local WaveGrid = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_wave_grid")
+local Radial = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_radial")
+local Swift = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_swift")
+local Needle = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_needle")
 local Beam = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_beam")
 local Random = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_random")
 
@@ -202,6 +205,126 @@ end
 function Manager:_phase(instance, phase, address)
   local signal=self.finishedEffects[instance.context.effectId] and 1 or self.nativeSignal
   if type(self.callback) ~= "function" then
+    if instance.familyId==17 then
+      if phase=="draw" then return 0 end
+      if not instance.needle then
+        local inputs=instance.context.lifecycleBeam
+        if self.resolveBeam then
+          local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+          if ok then inputs=value else
+            self:_emit(diagnostic("lifecycle-needle-input-error",nil,address,tostring(value),"error"),instance)
+            return nil
+          end
+        end
+        local function valid(v)
+          if type(v)~="table" then return false end
+          for i=1,3 do if type(v[i])~="number" or v[i]~=v[i] or math.abs(v[i])==math.huge then return false end end
+          return true
+        end
+        if type(inputs)~="table" or not valid(inputs.swiftOrigin or inputs.origin) or not valid(inputs.direction)
+            or (inputs.swiftFrameOrigin and not valid(inputs.swiftFrameOrigin)) then
+          self:_emit(diagnostic("unresolved-needle-endpoints",nil,address,"needle projectiles require live source and target anchors"),instance)
+          return nil
+        end
+        if not (self.assets and self.assets.needle) then
+          self:_emit(diagnostic("unresolved-needle-model",nil,0x84188A70,"needle ROM model is unavailable"),instance)
+          return nil
+        end
+        if inputs.approximate or not inputs.sourceSpecies then
+          self:_emit(diagnostic("approximate-needle-inputs",nil,address,"needle uses fallback anchors or species where imported model data is unavailable"),instance)
+        end
+        instance.needle=Needle.new(inputs.swiftOrigin or inputs.origin,inputs.direction,
+          inputs.sourceSpecies,self.random,inputs.swiftFrameOrigin)
+      end
+      if phase=="update" then return Needle.step(instance.needle) end
+      return 0
+    end
+    if Radial.families[instance.familyId] then
+      if phase=="draw" then return 0 end
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        if ok then inputs=value else
+          self:_emit(diagnostic("lifecycle-radial-input-error",nil,address,tostring(value),"error"),instance)
+          return nil
+        end
+      end
+      local function valid(v)
+        if type(v)~="table" then return false end
+        for i=1,3 do
+          if type(v[i])~="number" or v[i]~=v[i] or math.abs(v[i])==math.huge then return false end
+        end
+        return true
+      end
+      if type(inputs)~="table" or not valid(inputs.swiftOrigin or inputs.origin) or not valid(inputs.direction)
+          or (inputs.swiftFrameOrigin and not valid(inputs.swiftFrameOrigin)) then
+        self:_emit(diagnostic("unresolved-radial-endpoints",nil,address,"radial ribbons require live source and target anchors"),instance)
+        return nil
+      end
+      local scale=instance.context.lifecycleScale or inputs.modelScale or 1
+      if type(scale)~="number" or scale~=scale or math.abs(scale)==math.huge then
+        self:_emit(diagnostic("invalid-radial-scale",nil,address,"radial ribbons require a finite model scale"),instance)
+        return nil
+      end
+      if inputs.approximate or not (instance.context.lifecycleScale or inputs.modelScale) then
+        self:_emit(diagnostic("approximate-radial-inputs",nil,address,"radial ribbons use fallback anchors/scale where imported ROM data is unavailable"),instance)
+      end
+      local fresh=not instance.radial
+      if fresh then instance.radial=Radial.new(instance.familyId,inputs.swiftFrameOrigin) end
+      local origin=inputs.swiftOrigin or inputs.origin
+      if fresh or (phase=="update" and instance.counter<120 and instance.counter%7==0) then
+        Radial.spawn(instance.radial,origin,inputs.direction,scale,self.random)
+      end
+      if phase=="update" then return Radial.step(instance.radial,origin) end
+      return 0
+    end
+    if instance.familyId==2 then
+      if phase=="draw" then return 0 end
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        if ok then inputs=value else
+          self:_emit(diagnostic("lifecycle-swift-input-error",nil,address,
+            tostring(value),"error"),instance)
+          return nil
+        end
+      end
+      local function valid(v)
+        if type(v)~="table" then return false end
+        for i=1,3 do
+          if type(v[i])~="number" or v[i]~=v[i] or math.abs(v[i])==math.huge then return false end
+        end
+        return true
+      end
+      if type(inputs)~="table" or not valid(inputs.swiftOrigin or inputs.origin)
+          or not valid(inputs.swiftDirection or inputs.direction)
+          or (inputs.swiftFrameOrigin and not valid(inputs.swiftFrameOrigin)) then
+        self:_emit(diagnostic("unresolved-swift-endpoints",nil,address,
+          "Swift requires live source and target anchors"),instance)
+        return nil
+      end
+      local scale=instance.context.lifecycleScale or inputs.modelScale or 1
+      if type(scale)~="number" or scale~=scale or math.abs(scale)==math.huge then
+        self:_emit(diagnostic("invalid-swift-scale",nil,0x84109544,
+          "Swift requires a finite native model scale"),instance)
+        return nil
+      end
+      if inputs.approximate then
+        self:_emit(diagnostic("approximate-swift-endpoints",nil,0x841098C0,
+          "Swift uses host fallback anchors where imported ROM attachments/profile are unavailable"),instance)
+      end
+      if not (instance.context.lifecycleScale or inputs.modelScale) then
+        self:_emit(diagnostic("approximate-swift-scale",nil,0x84109544,
+          "native secondary-owner model scale unavailable; using scale 1"),instance)
+      end
+      local fresh=not instance.swift
+      if fresh then instance.swift=Swift.new(inputs.swiftFrameOrigin) end
+      if fresh or (phase=="update" and instance.counter<1770 and instance.counter%3==0) then
+        Swift.spawn(instance.swift,inputs.swiftOrigin or inputs.origin,inputs.swiftDirection or inputs.direction,scale,self.random)
+      end
+      if phase=="update" then return Swift.step(instance.swift,signal) end
+      return 0
+    end
     if Beam.families[instance.familyId] and phase ~= "draw" then
       local inputs=instance.context.lifecycleBeam
       if self.resolveBeam then
@@ -314,6 +437,7 @@ function Lifecycle.new(options)
     callback = options.callback or options.phaseResolver,
     resolveAnchor = options.resolveAnchor,
     resolveBeam = options.resolveBeam,
+    assets = options.assets,
     nativeSignal = options.nativeSignal or 0,
     finishedEffects = {},
     random = options.random or Random.new(options.seed or 0),
@@ -459,7 +583,7 @@ function Manager:_draw(invokeResolver)
           context = copy(instance.context),
           counter = instance.counter,
           frame = instance.frame,
-          geometry = instance.ribbon and Ribbon.geometry(instance.ribbon)
+          geometry = instance.needle and Needle.geometry(instance.needle,self.assets.needle) or instance.radial and Radial.geometry(instance.radial) or instance.swift and Swift.geometry(instance.swift) or instance.ribbon and Ribbon.geometry(instance.ribbon)
             or instance.waveGrid and WaveGrid.geometry(instance.waveGrid)
             or instance.beam and Beam.geometry(instance.beam) or nil,
         }
@@ -485,7 +609,7 @@ function Manager:snapshot()
         active = instance.active, gateEligible = instance.gateEligible,
         lastPhase = instance.lastPhase, lastResult = instance.lastResult,
         nativeState = instance.waveGrid and WaveGrid.snapshot(instance.waveGrid)
-          or instance.beam and Beam.snapshot(instance.beam) or nil,
+          or instance.beam and Beam.snapshot(instance.beam) or instance.swift and Swift.snapshot(instance.swift) or instance.radial and Radial.snapshot(instance.radial) or instance.needle and Needle.snapshot(instance.needle) or nil,
       }
     end
   end

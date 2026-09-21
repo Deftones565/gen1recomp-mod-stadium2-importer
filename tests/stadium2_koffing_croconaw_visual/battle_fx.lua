@@ -16,7 +16,7 @@ function Preview:release()
   self.nativeColor=nil
 end
 
-function Preview:start(moveId, side, alternate)
+function Preview:start(moveId, side, alternate, sceneContext)
   self:release()
   self.frame, self.diagnostics, self.drawn = 0, {}, 0
   self.traceFrame=nil
@@ -37,6 +37,7 @@ function Preview:start(moveId, side, alternate)
     if not resources then return nil, err end
   end
   self.player=Player.new({catalog=catalog, runtimeOptions=options.runtimeOptions,
+    sceneContext=sceneContext or self.sceneContext,
     resolveBeam=Adapter.beamInputs,
     loadBeamTexture=function(id,symbol)
       return Resources.beamTexture(resources or options.importer.battleFxResources(id),symbol)
@@ -108,6 +109,7 @@ function Preview:step()
 end
 
 function Preview:draw(context)
+  self.sceneContext=context
   if not self.active then return end
   local result=self.player:draw(context)
   self.drawn=result.drawn

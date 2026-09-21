@@ -571,7 +571,7 @@ local function startBattleFx()
     })
   end
   local effect, err=battleFx.preview:start(battleFxMove, selectedSide,
-    battleFx.alternate)
+    battleFx.alternate, battleFx.sceneContext)
   battleFx.active=effect~=nil
   battleFx.frame=0
   if not effect then battleFx.error=tostring(err) end
@@ -587,6 +587,7 @@ local function cycleBattleFx(delta)
 end
 
 local function drawBattleFx(nextDraw,context)
+  battleFx.sceneContext=context
   local result=nextDraw()
   if battleFx.active then battleFx.preview:draw(context) end
   return result

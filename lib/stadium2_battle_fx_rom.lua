@@ -638,9 +638,38 @@ function FxRom.ribbonAsset(rom)
       pixels[#pixels + 1] = string.char(intensity, intensity, intensity, alpha)
     end
   end
-  return {rgba=table.concat(pixels), address=0x84187418,
+  return {w=8,h=16,format=3,size=1,rgba=table.concat(pixels), address=0x84187418,
     combiner={cycles=1, color0={3,5,1,5}, alpha0={1,7,3,7},
       color1={3,5,1,5}, alpha1={1,7,3,7}}}
+end
+
+-- Static needle display list 84188A70: 18 ROM vertices, 16 triangles, I4 4x4.
+function FxRom.needleAsset(rom)
+  local out={pos={},uv={},nrm={},idx={}}
+  for j=0,17 do
+    local at=0x84188948+j*16
+    for k=0,2 do
+      out.pos[#out.pos+1]=readSigned16(rom,at+k*2)
+      local word=read32(rom,at+12)
+      local n=math.floor(word/2^(24-k*8))%256
+      out.nrm[#out.nrm+1]=(n>=128 and n-256 or n)/127
+    end
+    out.uv[#out.uv+1]=readSigned16(rom,at+8)/128
+    out.uv[#out.uv+1]=readSigned16(rom,at+10)/128
+  end
+  for at=0x84188B00,0x84188B38,8 do
+    for _,word in ipairs({read32(rom,at),read32(rom,at+4)}) do
+      for shift=16,0,-8 do out.idx[#out.idx+1]=math.floor(word/2^shift)%256/2+1 end
+    end
+  end
+  local pixels={}
+  for at=0x84188A68,0x84188A6C,4 do for _,v in ipairs(rgbaAt(rom,at)) do
+    for _,n in ipairs({math.floor(v/16),v%16}) do
+      local i=n*17;pixels[#pixels+1]=string.char(i,i,i,i)
+    end
+  end end
+  out.texture={w=4,h=4,format=4,size=0,rgba=table.concat(pixels)}
+  return out
 end
 
 function FxRom.catalog(rom,trigBytes)
@@ -660,7 +689,7 @@ function FxRom.catalog(rom,trigBytes)
     programs = programs,
     moves = moves,
     lifecycle = FxRom.lifecycle(rom),
-    lifecycleAssets = {ribbon=FxRom.ribbonAsset(rom),beamGlow=(function()
+    lifecycleAssets = {needle=FxRom.needleAsset(rom),ribbon=FxRom.ribbonAsset(rom),beamGlow=(function()
       local pixels={}
       for i=0,1023,4 do for _,v in ipairs(rgbaAt(rom,0x84188738+i)) do
         local intensity=math.floor(v/16)*17

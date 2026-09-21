@@ -199,7 +199,7 @@ ok(#unresolved:snapshot().particles==0,
 
 local unsupportedCatalog = {
   programs = {},
-  moves = {[1] = {primaryDispatch = {{kind = "lifecycle", lifecycleId = 4}}}},
+  moves = {[1] = {primaryDispatch = {{kind = "lifecycle", lifecycleId = 7}}}},
 }
 local unsupported = Runtime.new({catalog = unsupportedCatalog})
 assert(unsupported:trigger({moveId = 1}))
@@ -207,6 +207,16 @@ ok(unsupported:snapshot().diagnostics[1].code == "unsupported-lifecycle-callback
   and unsupported:snapshot().diagnostics[1].effectId == 1
   and unsupported:snapshot().diagnostics[1].programId == nil,
   "lifecycle manager diagnostic retains dispatch context")
+
+local missingAnchors = Runtime.new({catalog = {
+  programs = {},
+  moves = {[1] = {primaryDispatch = {{kind = "lifecycle", lifecycleId = 4}}}},
+}})
+assert(missingAnchors:trigger({moveId = 1}))
+local missingDiagnostic = missingAnchors:snapshot().diagnostics[1]
+ok(missingDiagnostic.code == "unresolved-radial-endpoints"
+  and missingDiagnostic.effectId == 1 and missingDiagnostic.context.lifecycleId == 4,
+  "implemented radial lifecycle reports missing anchors with dispatch context")
 
 local invalid = Runtime.new({catalog = catalog})
 local invalidStep = pcall(function() invalid:step(-1) end)
