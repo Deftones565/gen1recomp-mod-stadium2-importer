@@ -204,3 +204,43 @@ A particle counts as updated after its first runtime step. Affected moves:
 55, 140, 188, 190 (origin) and every move for the cap. Cost: allocation is
 one slot probe per particle unless the pool is nearly full; the origin scan
 is at most 300 slots and runs only for those descriptors.
+
+## Event codes and non-move entries (2026-09-25)
+
+Source: US assembly (fragment79_37A6E0/393CA0 and data), fork C `7fc529e5`,
+pret/pokecrystal `e058e4f` for constants. Matches ROM assembly; the entry
+visuals are not visually confirmed.
+
+The battle engine queues an event code per record (84134CBC(side, code) ->
++4). Actor states map codes to 8410890C entries:
+
+- 84119630 (counter 2), jtbl_84189240 from 0x30: 0x30 -> 0x113,
+  0x31 -> 0x106, 0x32 -> 0x107, 0x33 -> 0x120, 0x34 -> 0x121,
+  0x35 -> 0x11F, 0x36 -> 0x10C (each with a sound; 0x36 also 84124104).
+- 84118DD4 (counter 2), jtbl_84189194 from 0x3C: 0x3C/0x3D/0x44 -> 0x101,
+  0x3E -> 0x102, 0x3F -> 0x103, 0x40 -> 0x10A, 0x41 -> 0xFC, 0x42 -> 0xFD,
+  0x43 -> 0x109, 0x45 -> 0x105, 0x46 -> 0x10B, 0x48 -> 0x125,
+  0x49 -> 0x10F, 0x4A -> 0x10D, 0x4C -> 0xFF, 0x4D -> 0x10E,
+  0x4E -> 0x110, 0x4F -> 0x111, 0x50 -> 0x118, 0x51 -> 0x117,
+  0x52 -> 0x115, 0x53 -> 0x116, 0x54 -> 0x114, 0x55 -> 0x123,
+  0x56 -> 0x10D (with sound 0x127; 841189EC preloads 0x127 for this code),
+  0x57 -> 0x128, 0x58 -> 0x129, 0x59 -> 84108728 route 0xC3; 0x47/0x4B
+  signal nothing; code 6 -> 0x108.
+- 841189EC preloads the same entries for 0x40..0x59 (jtbl_841890B4).
+
+Named so far:
+- Weather (841324EC, pokecrystal HandleWeather; D_841951F0+0x9C4 weather
+  1..3 = WEATHER_RAIN/SUN/SANDSTORM, +0x9C5 turns): continuing rain/sun/
+  sandstorm queue 0x32/0x31/0x30 for battler 0; ending queues 0x35/0x34/
+  0x33; each battler the sandstorm hurts gets 0x48. So rain 0x107/0x11F,
+  sun 0x106/0x121, sandstorm 0x113/0x120, sandstorm hit 0x125.
+- 0x36 is queued by 84127194 (turn check) when the status byte has bit
+  0x40 (pokecrystal PAR) and a random roll is below 0x3F: fully paralyzed.
+- D_84185EB0 is the engine's battle-command table (84127194 turn check,
+  84127C88 critical), but it has 168 entries to pokecrystal's 175, so the
+  other handlers are not named by position.
+
+Implemented: the Gen 2 host signals the weather entries (matching Gold's
+own WEATHER_TURN_TEXT/WEATHER_END_TEXT through Strings, and damage events
+tagged ANIM_IN_SANDSTORM). Full paralysis is not wired: the host's message
+carries no side. The remaining codes are not named yet.

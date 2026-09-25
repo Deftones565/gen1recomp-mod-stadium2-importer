@@ -74,6 +74,24 @@ scene:handleEvent({kind="move",side="player",move=42})
 scene:syncBattleFxAnimation(true)
 ok(calls.finishes==3,"move without a host animation finishes after queue dispatch")
 
+-- Weather entries (841324EC -> 84119630/84118DD4), matched against Gold's
+-- own Strings() tables.
+local signals={}
+scene.battleFx.signalEffect=function(_,id,owner) signals[#signals+1]={id=id,owner=owner} end
+local Effects=require("src.battle.gen2.Effects")
+local Strings=require("src.core.Strings")
+scene:handleEvent({kind="message",text=Strings(Effects.WEATHER_TURN_TEXT.rain)})
+scene:handleEvent({kind="message",text=Strings(Effects.WEATHER_TURN_TEXT.sandstorm)})
+scene:handleEvent({kind="weather",weather=nil,text=Strings(Effects.WEATHER_END_TEXT.sun)})
+scene:handleEvent({kind="damage",side="enemy",amount=3,hp=10,anim="ANIM_IN_SANDSTORM"})
+scene:handleEvent({kind="weather",weather="rain",text=Strings(Effects.WEATHER_START_TEXT.rain)})
+scene:handleEvent({kind="message",text="Something else."})
+ok(#signals==4,"only ongoing, ended and sandstorm-hit weather events signal FX")
+ok(signals[1].id==0x107 and signals[1].owner=="player","rain continues -> entry 0x107")
+ok(signals[2].id==0x113,"sandstorm rages -> entry 0x113")
+ok(signals[3].id==0x121,"sunlight faded -> entry 0x121")
+ok(signals[4].id==0x125 and signals[4].owner=="enemy","sandstorm hit -> entry 0x125 on that side")
+
 -- This file does not release the adapter: Presentation owns shared scene
 -- teardown, which is deliberately tested by the common scene integration.
 Importer.betaBattleFxEnabled=oldEnabled

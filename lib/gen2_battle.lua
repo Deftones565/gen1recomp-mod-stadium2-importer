@@ -14,6 +14,7 @@ local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 local ArenaSelector = require("mods.STADIUM2_IMPORTER.lib.arena_selector")
 local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
+local FxSequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
 local BattleFxAdapter = require(
   "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
 local Unown = require("src.core.gen2.Unown")
@@ -401,6 +402,44 @@ function Scene:handleEvent(event)
     self.actors[side]:load(data, event.mon, dexOf(data, event.mon))
     self.actors[side]:play("entrance", false)
   end
+  self:signalWeatherFx(event)
+end
+
+-- Stadium's weather entries (Sequence.WEATHER_ENTRIES). Gold emits the
+-- ongoing-weather line as a plain message and the end as a weather event
+-- with no weather, both built with Strings() from the engine's own tables,
+-- so the same lookup identifies them exactly. Sandstorm damage is a damage
+-- event tagged ANIM_IN_SANDSTORM on the side that took it.
+local function weatherFrom(tableName, text)
+  if type(text) ~= "string" then return nil end
+  local okE, Effects = pcall(require, "src.battle.gen2.Effects")
+  local okS, Strings = pcall(require, "src.core.Strings")
+  local texts = okE and type(Effects) == "table" and Effects[tableName]
+  if not okS or type(texts) ~= "table" then return nil end
+  for weather, source in pairs(texts) do
+    local ok, shown = pcall(Strings, source)
+    if ok and shown == text then return weather end
+  end
+  return nil
+end
+
+function Scene:signalWeatherFx(event)
+  local fx = self.battleFx
+  if not fx or not fx.signalEffect then return end
+  local entry, owner
+  if event.kind == "message" then
+    local weather = weatherFrom("WEATHER_TURN_TEXT", event.text)
+    entry = weather and FxSequence.WEATHER_ENTRIES[weather].turn
+    owner = FxSequence.WEATHER_OWNER
+  elseif event.kind == "weather" and event.weather == nil then
+    local weather = weatherFrom("WEATHER_END_TEXT", event.text)
+    entry = weather and FxSequence.WEATHER_ENTRIES[weather].ended
+    owner = FxSequence.WEATHER_OWNER
+  elseif event.kind == "damage" and event.anim == "ANIM_IN_SANDSTORM"
+      and (event.side == "player" or event.side == "enemy") then
+    entry, owner = FxSequence.SANDSTORM_HIT_ENTRY, event.side
+  end
+  if entry then pcall(fx.signalEffect, fx, entry, owner) end
 end
 
 -- Gold's ReturnMon BG effect shrinks the native pic through its authored

@@ -1,5 +1,14 @@
 Move bug list
 
+Battle follow-up (2026-09-25, weather):
+- Gen 2 battles now play Stadium's weather effects: each turn rain, sun or
+  sandstorm continues (entries 0x107/0x106/0x113), when it ends
+  (0x11F/0x121/0x120), and the sandstorm hit on each battler it hurts
+  (0x125). Decoded from the game's own weather handler. Needs your retest
+  (Rain Dance, Sunny Day, Sandstorm).
+- "Fully paralyzed" is entry 0x10C, but it isn't wired yet: the battle
+  message doesn't say which side is paralyzed.
+
 Implementation follow-up (2026-09-25, particle pool):
 - The 300-particle pool is now modelled. Once 300 particles are alive, the
   rest of an emission is not created, as in the ROM, and the log reports

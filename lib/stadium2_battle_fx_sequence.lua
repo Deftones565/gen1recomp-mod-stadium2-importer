@@ -80,6 +80,23 @@ function Sequence.resultByte(facts)
   return result
 end
 
+-- Weather FX entries. The Gen 2 engine's HandleWeather (841324EC) queues,
+-- for battler 0, code 0x32/0x31/0x30 while rain/sun/sandstorm continues and
+-- 0x35/0x34/0x33 when it ends (D_841951F0+0x9C4 is the weather, 1..3 as in
+-- pokecrystal WEATHER_RAIN/SUN/SANDSTORM; +0x9C5 the turn count), and code
+-- 0x48 for each battler the sandstorm hurts. The actor state 84119630 turns
+-- 0x30..0x36 and 84118DD4 turns 0x48 into these 8410890C entries.
+Sequence.WEATHER_ENTRIES = {
+  rain = {turn = 0x107, ended = 0x11F},
+  sun = {turn = 0x106, ended = 0x121},
+  sandstorm = {turn = 0x113, ended = 0x120},
+}
+Sequence.WEATHER_OWNER = "player"
+Sequence.SANDSTORM_HIT_ENTRY = 0x125
+-- 84127194 (the turn check): paralysis (status bit 0x40) with a random roll
+-- below 0x3F queues code 0x36 for the battler -> entry 0x10C.
+Sequence.FULLY_PARALYZED_ENTRY = 0x10C
+
 -- Returns the dispatch hit frame for `moveId`, or nil when the row is absent.
 function Sequence.hitFrame(dispatchBytes, moveId)
   moveId = math.floor(tonumber(moveId) or 0)
