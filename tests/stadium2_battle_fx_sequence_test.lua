@@ -30,6 +30,25 @@ ok(Sequence.hitFrame(bytes, 2) == 14, "hit frame is dispatch row +0x0B")
 ok(Sequence.hitFrame(bytes, 3) == -16, "hit frame is a signed byte")
 ok(Sequence.hitFrame(bytes, 9) == nil and Sequence.hitFrame(nil, 1) == nil, "absent rows stay unresolved")
 
+-- Result byte built from battle facts (84124A7C / 84128298 / 84130E04).
+ok(Sequence.resultByte({missed = true, damaging = true, critical = true}) == 1,
+  "a missed attack keeps result 1")
+ok(Sequence.resultByte({damaging = true, typeModifier = 10}) == 0, "neutral hit is 0")
+ok(Sequence.resultByte({damaging = true, typeModifier = 20}) == 3, "super effective is 3")
+ok(Sequence.resultByte({damaging = true, typeModifier = 5}) == 2, "not very effective is 2")
+ok(Sequence.resultByte({damaging = true, critical = true, typeModifier = 20}) == 4,
+  "a critical hit overrides effectiveness")
+ok(Sequence.resultByte({damaging = true, ohko = true}) == 4, "OHKO is 4")
+for _, move in ipairs({0x14, 0x23, 0x84}) do
+  ok(Sequence.resultByte({damaging = true, typeModifier = 20, moveId = move}) == 5,
+    ("move 0x%X is 5"):format(move))
+end
+ok(Sequence.resultByte({damaging = true, critical = true, moveEffect = 0x75}) == 5,
+  "move effect 0x75 is 5 even after a critical hit")
+ok(Sequence.resultByte({damaging = true}) == nil, "a missing type modifier stays unresolved")
+ok(Sequence.resultByte({damaging = false}) == nil, "status-move results are not guessed")
+ok(Sequence.resultByte(nil) == nil, "absent facts stay unresolved")
+
 -- Router variant channel.
 local move = {primaryDispatch = {{kind = "program", programId = 1}},
   alternateDispatch = {{kind = "program", programId = 2}},

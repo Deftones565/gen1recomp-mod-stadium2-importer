@@ -126,8 +126,35 @@ Consumers of the result byte D_84193DD0+9 found in C:
 - 84118138 and 841182E0 select 0xFE at state counter 0 unconditionally and
   signal entry 0xFE at counter 8.
 
-Which host outcome writes each value is not in C (the writer is asm), so
-hosts still pass no result byte. Implemented: the adapter calls the host's
+Writer (decoded 2026-09-25 from the US assembly for fragment79_393CA0,
+the Gen 2 battle engine; C from the fork where matched): the battle engine
+queues 0x280-byte event records in a 30-slot ring at D_84195280 (write
+index +0x4D81, read index +0x4D80). 84134CBC(side, code) -> 84134A6C builds
+one: +0 side, +2 = 1, +4 event code, and per battler (16-byte stride from
++0xC) +C, +E HP, +10 status byte (battle mon +0x24), +12 volatile flags,
++14. 84134DD8 writes the move (+8), 84134E30 the low three result bits and
+84134E00 ORs flags into +9. 84137BD4 copies the next record into
+D_84199D80, which 8413E2EC passes to 8410AA18 as D_84193DD0.
+
+Result low bits (84134E30 call sites):
+- 1: 841246AC when the move is used; 84130E04 when D_841951D2 is set.
+  84128298 sets D_841951D2 and zeroes damage unless the effect is 0x2D
+  (the Gen 2 engine's Jump Kick crash effect), so D_841951D2 is "attack
+  missed" and 1 marks a miss or failure.
+- 84124A7C (damaging hits, e.g. BattleAnim_Table_84186004_080): 4 when
+  D_841951E4 is 1 or 2 (84127C88 sets 1 from the D_84185484 critical-hit
+  table; 8412A804 sets 2 for a one-hit KO and 0xFF when it fails), else 3
+  when D_841951E5 > 10, 2 when < 10, 0 when 10 (type modifier; 84127194
+  and 84132350 reset it to 10). Then 5 for moves 0x14/0x23/0x84 (Bind, Wrap,
+  Constrict) or when 80062D20(move) == 0x75.
+- 5 and 6 are also written by about 20 effect handlers (8412E420, 8412FD24
+  and others) that are not decoded; 8412FD24 pairs 6 with flag 0x10, so
+  bit 0x10 is not a critical-hit flag.
+
+`Sequence.resultByte(facts)` builds the byte for misses and damaging hits
+only and returns nil for other moves. Hosts do not pass it yet: their
+battle events come from the Gen1Recomp repository, which was not available
+when this was written. Implemented: the adapter calls the host's
 `onImpact(target, source, moveId)` when 841087B8 plays the impact, and the
 Gen 1/Gen 2 hosts play the defender's own hit clip (Actor:hit, no fallback).
 Timing is approximate (the ROM starts the clip when the defender state

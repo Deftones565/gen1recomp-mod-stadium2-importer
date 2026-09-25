@@ -38,6 +38,46 @@ function Sequence.impactAction(moveId, nativeResult)
   return "impact"
 end
 
+-- Result byte low bits as the Gen 2 battle engine in fragment79_393CA0
+-- writes them (84134E30 into queued event +9):
+--   841246AC sets 1 when the move is used; 84128298/84130E04 keep 1 when
+--   the attack missed (D_841951D2, which is cleared only for effect 0x2D).
+--   84124A7C, after damage: 4 when D_841951E4 (critical hit 1 / OHKO 2) is
+--   set, else by D_841951E5 (type modifier, 10 = neutral): >10 -> 3,
+--   <10 -> 2, 10 -> 0; then 5 for moves 0x14/0x23/0x84 or move effect 0x75
+--   (80062D20).
+-- Other move-effect handlers write 5 or 6 themselves and are not decoded,
+-- so only damaging hits and misses are built here. `facts`:
+--   missed, damaging (bool), critical, ohko (bool), typeModifier (number),
+--   moveId, moveEffect (80062D20 value, optional).
+-- Returns the byte, or nil plus a reason when it cannot be derived.
+Sequence.RESULT_NEUTRAL, Sequence.RESULT_MISSED = 0, 1
+Sequence.RESULT_NOT_VERY, Sequence.RESULT_SUPER = 2, 3
+Sequence.RESULT_CRITICAL, Sequence.RESULT_HELD = 4, 5
+Sequence.HELD_MOVES = {[0x14] = true, [0x23] = true, [0x84] = true}
+Sequence.HELD_EFFECT = 0x75
+function Sequence.resultByte(facts)
+  if type(facts) ~= "table" then return nil, "battle facts are unavailable" end
+  if facts.missed == true then return Sequence.RESULT_MISSED end
+  if facts.damaging ~= true then
+    return nil, "non-damaging results are written by undecoded effect handlers"
+  end
+  local result
+  if facts.critical == true or facts.ohko == true then
+    result = Sequence.RESULT_CRITICAL
+  else
+    local modifier = tonumber(facts.typeModifier)
+    if modifier == nil then return nil, "type modifier is unavailable" end
+    result = modifier > 10 and Sequence.RESULT_SUPER
+      or modifier < 10 and Sequence.RESULT_NOT_VERY or Sequence.RESULT_NEUTRAL
+  end
+  if Sequence.HELD_MOVES[tonumber(facts.moveId)]
+      or tonumber(facts.moveEffect) == Sequence.HELD_EFFECT then
+    result = Sequence.RESULT_HELD
+  end
+  return result
+end
+
 -- Returns the dispatch hit frame for `moveId`, or nil when the row is absent.
 function Sequence.hitFrame(dispatchBytes, moveId)
   moveId = math.floor(tonumber(moveId) or 0)
