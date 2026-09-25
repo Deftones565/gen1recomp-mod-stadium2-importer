@@ -759,6 +759,12 @@ end
 function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult)
   if nativeResult == nil then nativeResult = Adapter.takeHitResult(source, moveId) end
   local effect, err = self:playMove(moveId, source)
+  -- 841153DC (Rest): at the hit frame, entry 0x100 on the user.
+  if tonumber(moveId) == Sequence.REST then
+    local model = actor and actor.renderer and actor.renderer.model
+    local hit = Sequence.hitFrame(model and model.fxDispatch, moveId)
+    if hit then self:scheduleSignal(Sequence.REST_ENTRY, source, math.max(0, hit)) end
+  end
   local model = actor and actor.renderer and actor.renderer.model
   self:scheduleImpact(moveId, source,
     Sequence.hitFrame(model and model.fxDispatch, moveId), nativeResult)

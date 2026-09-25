@@ -15,6 +15,9 @@ Sequence.RESULT1_IMPACT_MOVES = {
   [0x67] = true, [0xAD] = true, [0xC3] = true,
 }
 Sequence.SURF = 0x39
+-- BattleAnim_Dispatch_017 sends move 0x9C (Rest) to 841153DC: at the hit
+-- frame it plays the (empty) move route, the sleep clip, and entry 0x100.
+Sequence.REST, Sequence.REST_ENTRY = 0x9C, 0x100
 Sequence.DIG = 0x5B
 -- 84108974 signals this entry on the failure path after a Dig mode-1 route.
 Sequence.DIG_FAILURE_ENTRY = 0x12D

@@ -1,5 +1,16 @@
 Move bug list
 
+Battle follow-up (2026-09-25, moves with no effect data, web session):
+- Growth, Metronome and Splash: in Stadium these are just the species'
+  own move animation, which the mod already plays. Nothing was missing.
+- Minimize now shrinks the Pokemon to 80% over 20 frames from the move's
+  hit frame, and it stays small until it's switched out, as in Stadium.
+- Rest now plays Stadium's effect 0x100 on the user at its hit frame, then
+  the sleep pose.
+- Agility and Double Team use their own model routines in Stadium (speed
+  blur / clones); decoded where they live, not implemented yet.
+- Needs your retest.
+
 Battle follow-up (2026-09-25, two-turn moves, web session):
 - The charge turn of Razor Wind, Fly, SolarBeam, Dig, Skull Bash and Sky
   Attack now plays Stadium's charge clip for the species and the move's

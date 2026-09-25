@@ -160,4 +160,16 @@ player.runtime.frame = 209; adapter:_firePendingVariants()
 ok(#variants == 1 and variants[1][1] == 19 and variants[1][2] == "enemy", "variant route at byte 0x0B")
 ok(adapter:playCharge(33, "enemy", {}) == nil, "ordinary moves have no charge turn")
 
+-- Rest (841153DC): entry 0x100 on the user at Rest's hit frame.
+local restRows = {}
+for i = 1, 271 * 20 do restRows[i] = "\0" end
+restRows[155 * 20 + 0x0B + 1] = string.char(7)
+signalled = {}
+adapter.playMove = function() return 1 end
+adapter.scheduleImpact = function() return true end
+player.runtime.frame = 300
+adapter:playMoveAndImpact(156, "player", {renderer = {model = {fxDispatch = table.concat(restRows)}}})
+player.runtime.frame = 307; adapter:_firePendingSignals()
+ok(#signalled == 1 and signalled[1].id == 0x100 and signalled[1].owner == "player", "Rest signals 0x100 at its hit frame")
+
 print(("%d checks passed (battle FX defender reaction)"):format(checks))

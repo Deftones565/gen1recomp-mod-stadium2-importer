@@ -5,9 +5,19 @@
 -- simulation remains entirely in the host generation's battle engine.
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
+local Sequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
 
 local Actor = {}
 Actor.__index = Actor
+
+-- 84114804 sets a per-move behaviour kind at actor+0x61F; 8411845C runs its
+-- start routine (84123F60) at the move's hit frame and its update routine
+-- (84124104) every later frame of the attack state. Kind 9 (Minimize) is
+-- 84122998: uniform scale Math_StepToF(scale, 0.8, 0.01, 0.01). Other kinds
+-- (6 Agility, 7 Double Team, 4/8/0xA/0xC/0xD/0xE/0x13/0x18/0x19/0x1A) are
+-- not decoded yet and do nothing here.
+Actor.SPECIAL_KINDS = {[107] = 9}
+Actor.MINIMIZE_TARGET, Actor.MINIMIZE_STEP = 0.8, 0.01
 
 local STATE_RANK = { idle=0, entrance=1, attack=2, attack_default=2, hit=2, faint=3 }
 local SHINY_ATTACK = {
@@ -66,6 +76,7 @@ function Actor:release()
   self.faintFinished=false
   self.pendingFaint=false
   self.rest,self.restKey,self.restHold,self.restHidden=nil,nil,nil,false
+  self.sizeScale,self.special=1,nil
 end
 
 function Actor:retire(reason)
@@ -192,7 +203,13 @@ function Actor:attack(moveIndex, strict)
       :format(tostring(self.dex),tostring(moveIndex))
   end
   if not ok then ok=self:play("attack",false) end
-  if ok then self.context="attack" end
+  if ok then
+    self.context="attack"
+    local kind=Actor.SPECIAL_KINDS[tonumber(moveIndex)]
+    local model=self.renderer.model
+    local hit=kind and Sequence.hitFrame(model and model.fxDispatch,moveIndex)
+    self.special=hit and {kind=kind,at=hit,clock=0,ticks=0} or nil
+  end
   return ok
 end
 
@@ -247,10 +264,29 @@ function Actor:faint()
 end
 
 function Actor:scale()
-  if not self.grow then return 1 end
+  local size=self.sizeScale or 1
+  if not self.grow then return size end
   local t=clamp(self.grow.time/self.grow.duration,0,1)
   t=t*t*(3-2*t)
-  return t
+  return t*size
+end
+
+-- Special routine ticks at 30 Hz while the attack state (clip) runs.
+function Actor:stepSpecial(dt)
+  local special=self.special
+  if not special then return end
+  if self.context~="attack" then self.special=nil;return end
+  special.clock=special.clock+(tonumber(dt) or 0)*30
+  while special.clock>=1 do
+    special.clock=special.clock-1
+    special.ticks=special.ticks+1
+    if special.ticks>=special.at and special.kind==9 then
+      local s=self.sizeScale or 1
+      local target,step=Actor.MINIMIZE_TARGET,Actor.MINIMIZE_STEP
+      if s<target then s=math.min(target,s+step) else s=math.max(target,s-step) end
+      self.sizeScale=s
+    end
+  end
 end
 
 function Actor:update(dt)
@@ -275,6 +311,7 @@ function Actor:update(dt)
     modelAlphaByte=self.modelAlphaByte,
     dynamicObjectGastlyAlternate=self.variant=="shiny",
   },true)
+  self:stepSpecial(dt)
   if self.context=="idle" then self:applyRest() end
   -- A held resting pose (frozen, Diglett underground) does not advance.
   self.renderer:step(self.context=="idle" and self.restHold and 0 or dt)
@@ -283,6 +320,7 @@ function Actor:update(dt)
       self.faintFinished=true
     elseif self.context~="idle" then
       self.context="idle"
+      self.special=nil
       self.restKey,self.restHold=nil,nil
       self:applyRest()
     end

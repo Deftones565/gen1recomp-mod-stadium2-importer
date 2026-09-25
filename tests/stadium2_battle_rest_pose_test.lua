@@ -96,4 +96,26 @@ ok(calls[1][2] == "rom_context_256" and calls[1][3] == false and calls[2][1] == 
 local chargeOk, why = actor:charge(259, 0)
 ok(chargeOk == false and why:find("rom_context_259", 1, true), "a missing charge clip is reported")
 
+-- Minimize (kind 9, 84122998): scale steps 0.01/tick toward 0.8 from the
+-- hit frame while the attack clip runs, and stays.
+local rows = {}
+for i = 1, 271 * 20 do rows[i] = "\0" end
+rows[106 * 20 + 0x0B + 1] = string.char(5)
+renderer.model = {fxDispatch = table.concat(rows)}
+renderer.setMove = function(self) self.finished = false return true end
+actor:play("idle", true)
+ok(actor:attack(107) and actor.special and actor.special.at == 5, "Minimize arms kind 9 at its hit frame")
+for _ = 1, 4 do actor:update(1 / 30) end
+ok(actor:scale() == 1, "no shrink before the hit frame")
+for _ = 1, 10 do actor:update(1 / 30) end
+ok(math.abs(actor:scale() - 0.9) < 1e-9, "0.01 per tick from the hit frame")
+for _ = 1, 30 do actor:update(1 / 30) end
+ok(math.abs(actor:scale() - 0.8) < 1e-9, "stops at 0.8")
+renderer.finished = true
+actor:update(1 / 30)
+ok(actor.context == "idle" and math.abs(actor:scale() - 0.8) < 1e-9 and actor.special == nil,
+  "the size stays after the attack state ends")
+actor:release()
+ok(actor.sizeScale == 1, "a new Pokemon starts at full size")
+
 print(("%d checks passed (battle rest pose)"):format(checks))

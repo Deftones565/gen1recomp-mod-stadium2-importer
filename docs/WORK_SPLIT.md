@@ -116,6 +116,11 @@ Local session: move them to "Verified" with the result.
   reports it), and the variant FX of 13, 19, 76, 91, 143 draw (130's
   variant is the empty program 394).
 
+- 2026-09-25 (this commit) Minimize scale: with the ROM/VM, confirm the
+  actor's base uniform scale (+0x30) is 1.0 before 84122998 runs (the mod
+  treats Minimize's 0.8 as relative to normal size). Viewer check of
+  entry 0x100 (Rest).
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,
