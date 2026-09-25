@@ -149,6 +149,20 @@ ok(not carrierState.castsShadow,
 local colorState = Renderer.primitiveRenderState({}, { lighting = false, cull = true })
 ok(not colorState.lightingEnabled and colorState.cullEnabled,
   "source vertex-colour geometry disables lighting without disabling culling")
+-- FX combiners without SHADE ignore lighting (sandstorm shape 147).
+local lit = { lightingEnabled = true }
+local sandstorm = { phase5 = true, combiner = { cycles = 2,
+  color0 = { 2, 1, 14, 1 }, color1 = { 3, 5, 0, 5 } } }
+ok(not Renderer.surfaceLit(lit, { battleFx = true }, sandstorm),
+  "a battle-FX combiner without SHADE is drawn unlit")
+local shaded = { phase5 = true, combiner = { cycles = 1,
+  color0 = { 1, 0, 4, 0 }, color1 = { 1, 0, 4, 0 } } }
+ok(Renderer.surfaceLit(lit, { battleFx = true }, shaded),
+  "a battle-FX combiner that reads SHADE stays lit")
+ok(Renderer.surfaceLit(lit, { species = 25 }, sandstorm),
+  "a Pokemon model without a display-list state keeps its lighting")
+ok(not Renderer.surfaceLit({ lightingEnabled = false }, { battleFx = true }, shaded),
+  "an unlit primitive stays unlit")
 local arenaPrimitive = { lighting = true, cull = true }
 local arenaCullState = Renderer.primitiveRenderState(
   { species = 0, staticPose = true }, arenaPrimitive)

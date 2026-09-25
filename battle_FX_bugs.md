@@ -24,6 +24,17 @@ Battle follow-up (2026-09-25, moves with no effect data, web session):
   blur / clones); decoded where they live, not implemented yet.
 - Needs your retest.
 
+Battle follow-up (2026-09-25, sandstorm colour, local session's fix,
+finished by the web session):
+- Sandstorm (0x113/0x120, shape 147) drew as a near-black screen layer. Its
+  N64 colour combiner never reads the vertex shade, so on the N64 the
+  scene lighting cannot darken it, but the mod lit it anyway. Battle-FX
+  surfaces whose combiner ignores shade are now drawn unlit, so it keeps
+  its sand colour. Applies to every such FX surface. Thunderbolt and
+  Psychic's white screen flashes are their own authored flashes, not this.
+- Needs your retest (Sandstorm, and a few common moves for any colour
+  change).
+
 Battle follow-up (2026-09-25, switching and trapping, web session):
 - Withdrawing a Pokemon now plays Stadium's recall effect (0x126) on it:
   Gen 1 when your Pokemon starts its retreat, Gen 2 when the opponent's

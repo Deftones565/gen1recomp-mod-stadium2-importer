@@ -1016,6 +1016,18 @@ local function sendTextureWrapMode(shader, uniform, wrapS, wrapT)
     {Sampler.wrapCode(wrapS), Sampler.wrapCode(wrapT)})
 end
 
+-- An FX surface drawn through an N64 combiner (a node display list, or any
+-- battle-FX model's phase-5 material) is lit only through SHADE; a combiner
+-- that never reads SHADE ignores the RSP lighting state (shape 147, the
+-- sandstorm sheet, drew near-black when lit).
+function Renderer.surfaceLit(renderState, model, material)
+  if not (renderState and renderState.lightingEnabled) then return false end
+  local listState = material and material.displayListState
+  local fxCombiner = (listState or (model and model.battleFx == true))
+    and material and material.phase5 and material.combiner
+  return not (fxCombiner and not Renderer.combinerUsesShade(fxCombiner))
+end
+
 function Renderer.combinerUsesShade(combiner)
   if type(combiner) ~= "table" then return true end
   local SHADE, SHADE_ALPHA = 4, 11
@@ -2477,13 +2489,8 @@ function Renderer:drawScene(pass, model, options)
           part.prim.effect == "fire" and 2
             or (material and material.intensity and 1 or 0))
         pcall(self.shader.send, self.shader, "primitiveColor", color)
-        -- An FX surface drawn through an N64 combiner is lit only through
-        -- SHADE; a combiner without SHADE ignores the RSP lighting state.
-        local fxCombiner = (listState or self.model.battleFx == true)
-          and material and material.phase5 and material.combiner
         pcall(self.shader.send, self.shader, "lightingEnabled",
-          renderState.lightingEnabled and not (fxCombiner
-            and not Renderer.combinerUsesShade(fxCombiner)) and 1 or 0)
+          Renderer.surfaceLit(renderState, self.model, material) and 1 or 0)
         if g.setDepthMode then
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
           if fxMode and fxMode.depthCompare ~= nil then

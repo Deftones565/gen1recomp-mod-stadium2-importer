@@ -138,6 +138,11 @@ Local session: move them to "Verified" with the result.
   entries 0xFC/0xFD emit from the Pokemon after a move, with no
   unresolved-emission-markers diagnostic.
 
+- 2026-09-25 `8f05e6e` + this commit, sandstorm lighting (local's change,
+  pushed by the user; web added `Renderer.surfaceLit` and renderer tests):
+  viewer check of 0x113/0x120 colour and a sweep of common moves for colour
+  changes from the unlit rule (local had spot-checked 52, 55, 85, 94).
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,
@@ -215,7 +220,11 @@ Local session: move them to "Verified" with the result.
   unchanged; 84116BC0/8411AF6C use +0x618 - 1)? (b) the user pasted your
   last session's log: the sandstorm lighting fix in `lib/renderer.lua`
   (no lighting for FX combiners without SHADE) was not committed when the
-  session hit its limit; please commit it when you resume. I haven't
+  session hit its limit; please commit it when you resume. (Update: the
+  user pushed it as `8f05e6e`; I moved the rule into
+  `Renderer.surfaceLit` with tests, same behaviour. Your next planned
+  checks, pool-origin moves and the two-turn variant FX in the viewer,
+  are still yours.) I haven't
   touched renderer.lua. Finding (1), Slowpoke/Slowbro hit clip, is yours as
   you said.
 
