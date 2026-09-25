@@ -108,6 +108,10 @@ Local session: move them to "Verified" with the result.
 - 2026-09-25 `ae4b0dd`/`ad71572` result byte from `battle.damage_dealt`:
   no visible change expected; run the ROM suite.
 
+- 2026-09-25 (this commit) resting poses: viewer or battle check of
+  context 261 (sleep), 262 (Fly) and 258 (Diglett/Dugtrio Dig) clips for a
+  few species; confirm no species lacks them (the actor warns once if so).
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,

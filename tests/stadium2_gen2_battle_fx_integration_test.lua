@@ -92,6 +92,29 @@ ok(signals[2].id==0x113,"sandstorm rages -> entry 0x113")
 ok(signals[3].id==0x121,"sunlight faded -> entry 0x121")
 ok(signals[4].id==0x125 and signals[4].owner=="enemy","sandstorm hit -> entry 0x125 on that side")
 
+-- Resting-pose condition follows presented status events, not live status.
+battle.player.status="sleep"
+ok(not scene:restCondition("player").asleep,"live status alone does not start the sleep pose")
+scene:handleEvent({kind="status",side="player",status="sleep",text="fell asleep"})
+ok(scene:restCondition("player").asleep,"a presented sleep status starts the sleep pose")
+scene:handleEvent({kind="status",side="player",status=nil,text="woke up"})
+ok(not scene:restCondition("player").asleep,"waking up ends it")
+scene:handleEvent({kind="status",side="enemy",status="freeze",text="frozen"})
+ok(scene:restCondition("enemy").frozen,"a presented freeze holds the frozen pose")
+
+-- Fly/Dig after the departing animation, told apart by the charge move.
+local vol={}
+scene.actors.player.mon=scene.actors.player.mon or battle.player
+battle.volatile=function(_,mon) return mon==scene.actors.player.mon and vol or {} end
+vol.vanished,vol.chargeMove=true,"FLY"
+ok(scene:restCondition("player").flying,"Fly's charge move is the flying pose")
+vol.chargeMove="DIG"
+ok(scene:restCondition("player").underground,"Dig's charge move is the underground pose")
+scene.vanish.player={active=true,mode="depart"}
+ok(not scene:restCondition("player").underground,"not while the departing animation runs")
+scene.vanish.player={active=false}
+battle.volatile=function() return {} end
+
 -- This file does not release the adapter: Presentation owns shared scene
 -- teardown, which is deliberately tested by the common scene integration.
 Importer.betaBattleFxEnabled=oldEnabled

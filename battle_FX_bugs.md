@@ -1,5 +1,12 @@
 Move bug list
 
+Battle follow-up (2026-09-25, resting poses, web session):
+- Pokemon now hold Stadium's resting poses between actions: asleep loops
+  its sleep clip, frozen holds its hit clip, a Pokemon up in the air during
+  Fly loops its in-air clip, and Diglett/Dugtrio stay visible underground
+  during Dig (other species are hidden underground, as in Stadium). Decoded
+  from Stadium's idle state. Needs your retest in Gen 1 and Gen 2 battles.
+
 Battle follow-up (2026-09-25, weather):
 - Gen 2 battles now play Stadium's weather effects: each turn rain, sun or
   sandstorm continues (entries 0x107/0x106/0x113), when it ends

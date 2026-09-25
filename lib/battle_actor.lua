@@ -4,6 +4,7 @@
 -- playback, send-out growth, hit flash, and the terminal faint pose. Battle
 -- simulation remains entirely in the host generation's battle engine.
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
+local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
 
 local Actor = {}
 Actor.__index = Actor
@@ -64,6 +65,7 @@ function Actor:release()
   self.flash=0
   self.faintFinished=false
   self.pendingFaint=false
+  self.rest,self.restKey,self.restHold,self.restHidden=nil,nil,nil,false
 end
 
 function Actor:retire(reason)
@@ -93,7 +95,45 @@ function Actor:play(context, loop)
   end
   self.context=ok and actual or "idle"
   if ok then self.renderer.finished=false end
+  -- Any explicit clip replaces the resting pose until it ends; an explicit
+  -- idle loop already is the plain resting pose.
+  self.restKey=(ok and actual=="idle" and loop) and RestPose.key({context="idle"}) or nil
+  self.restHold=nil
   return ok and true or false
+end
+
+-- Host battle condition for the resting pose (flying, underground, frozen,
+-- asleep). Applied while the actor is idle; see battle_rest_pose.lua.
+function Actor:setRest(condition)
+  self.rest=type(condition)=="table" and condition or nil
+end
+
+-- 841139D0 as re-run by the idle state every frame: pick the pose for the
+-- current condition and switch only when it changes. Held poses stay on
+-- their frame. Returns the selected pose.
+function Actor:applyRest()
+  local pose=RestPose.select(self.rest,self.dex)
+  self.restHidden=pose.hidden==true
+  local key=RestPose.key(pose)
+  if pose.hidden or key==self.restKey then return pose end
+  local renderer=self.renderer
+  local ok=renderer and renderer.setContext
+    and renderer:setContext(pose.context,pose.loop==true) or false
+  if ok and pose.hold and renderer.seekFrame then ok=renderer:seekFrame(pose.hold) end
+  if not ok then
+    -- A species without this clip keeps its idle loop; report it once.
+    if pose.context~="idle" and self.warn and self.restWarned~=key then
+      self.restWarned=key
+      pcall(self.warn,("species %s has no %s clip for its resting pose")
+        :format(tostring(self.dex),tostring(pose.context)))
+    end
+    if renderer and renderer.setContext then renderer:setContext("idle",true) end
+    self.restKey,self.restHold=key,nil
+    return pose
+  end
+  renderer.finished=false
+  self.restKey,self.restHold=key,pose.hold
+  return pose
 end
 
 function Actor:load(data, mon, forcedDex)
@@ -218,13 +258,16 @@ function Actor:update(dt)
     modelAlphaByte=self.modelAlphaByte,
     dynamicObjectGastlyAlternate=self.variant=="shiny",
   },true)
-  self.renderer:step(dt)
+  if self.context=="idle" then self:applyRest() end
+  -- A held resting pose (frozen, Diglett underground) does not advance.
+  self.renderer:step(self.context=="idle" and self.restHold and 0 or dt)
   if self.renderer.finished then
     if self.context=="faint" then
       self.faintFinished=true
     elseif self.context~="idle" then
       self.context="idle"
-      self:play("idle",true)
+      self.restKey,self.restHold=nil,nil
+      self:applyRest()
     end
   end
 end

@@ -15,6 +15,7 @@ local ArenaSelector = require("mods.STADIUM2_IMPORTER.lib.arena_selector")
 local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local FxSequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
+local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
 local BattleFxAdapter = require(
   "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
 local Unown = require("src.core.gen2.Unown")
@@ -127,6 +128,9 @@ function Scene.new(battle,context)
   }
   self.substituteActive={player=false,enemy=false}
   self.vanish={player={active=false},enemy={active=false}}
+  -- Major status as presented so far. Gold resolves the whole turn before
+  -- presenting it, so the live mon.status can run ahead of the screen.
+  self.presentedStatus={}
   self.battleFx=newBattleFx()
   if self.battleFx then
     -- The defender plays its own hit clip (context 254) at the impact.
@@ -201,6 +205,41 @@ function Scene:volatileFor(side)
   return ok and value or nil
 end
 
+-- Fly and Dig share EFFECT_FLY in Gen 2; the stored charge move tells them
+-- apart (Battle.lua keeps it as the move name; accept the ID too).
+local function chargeKind(volatile)
+  local move=volatile and volatile.chargeMove
+  if move=="FLY" or tonumber(move)==19 then return "flying" end
+  if move=="DIG" or tonumber(move)==91 then return "underground" end
+  return nil
+end
+
+-- Condition for the Stadium resting pose (battle_rest_pose.lua), from what
+-- has been presented: the vanish state once its departing animation has
+-- finished, and the presented major status.
+function Scene:restCondition(side)
+  local condition={}
+  local volatile=self:volatileFor(side)
+  local vanish=self.vanish and self.vanish[side] or {}
+  if vanish.mode==nil and (vanish.active or (volatile and volatile.vanished)) then
+    local kind=chargeKind(volatile)
+    if kind then condition[kind]=true end
+  end
+  local status=self.presentedStatus and self.presentedStatus[side]
+  condition.asleep=status=="sleep"
+  condition.frozen=status=="freeze"
+  return condition
+end
+
+-- Stadium keeps a flying Pokemon (context 262) and an underground Diglett
+-- or Dugtrio (context 258) on screen; other species underground are hidden.
+function Scene:restVisible(side)
+  local actor=self.actors[side]
+  local condition=self:restCondition(side)
+  local pose=RestPose.select(condition,actor and actor.dex)
+  return (condition.flying or condition.underground) and not pose.hidden
+end
+
 function Scene:visualState(side, screen)
   screen=screen or self.screen
   if not self:ownsSlot(side,screen) then return "trainer" end
@@ -260,6 +299,8 @@ function Scene:visualState(side, screen)
     -- the stored move's return animation.
     if not (volatile and volatile.vanished) and not screen.anim then
       vanish.active=false
+    elseif self:restVisible(side) then
+      return actor.renderer and "pokemon" or "defect"
     else
       return "hidden"
     end
@@ -267,7 +308,10 @@ function Scene:visualState(side, screen)
   if state and state.hidden and not actor.grow then return "hidden" end
   -- Gold's BG animation state exists only while the current script runs.
   -- `vanished` is the persistent truth between Fly/Dig's two turns.
-  if volatile and volatile.vanished then return "hidden" end
+  if volatile and volatile.vanished then
+    if self:restVisible(side) and actor.renderer then return "pokemon" end
+    return "hidden"
+  end
   if not actor.renderer then return "defect" end
   return "pokemon"
 end
@@ -378,6 +422,8 @@ function Scene:handleEvent(event)
     local data = self.screen and self.screen.game and self.screen.game.data
     local def = data and data.moves and data.moves[event.move]
     if actor then actor:attack(def and tonumber(def.index or def.number)) end
+  elseif event.kind == "status" and side then
+    self.presentedStatus[side] = event.status
   elseif event.kind == "damage" and side then
     local actor = self.actors[side]
     if actor then actor.flash = 0.12 end
@@ -390,12 +436,17 @@ function Scene:handleEvent(event)
     self.substituteActive[side]=false
     self.vanish[side]={active=false}
     self:sync()
+    -- Status carries over with the mon being sent out.
+    local sent=self.actors[side] and self.actors[side].mon
+    self.presentedStatus[side]=sent and sent.status or nil
     local actor = self.actors[side]
     if actor then actor:entrance() end
   elseif event.kind == "sendout" then
     self.substituteActive.player=false
     self.vanish.player={active=false}
     self:sync()
+    local sent=self.actors.player and self.actors.player.mon
+    self.presentedStatus.player=sent and sent.status or nil
     self.actors.player:entrance()
   elseif event.kind == "transform" and side and event.mon then
     local data = self.screen and self.screen.game and self.screen.game.data
@@ -494,6 +545,10 @@ function Scene:update(dt)
   Camera.stickOrbit(self.stickX,dt)
   Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
+  for _,which in ipairs({"player","enemy"}) do
+    local actor=self.actors[which]
+    if actor.setRest then actor:setRest(self:restCondition(which)) end
+  end
   self.actors.player:update(dt)
   self.actors.enemy:update(dt)
   self.substituteActors.player:update(dt)

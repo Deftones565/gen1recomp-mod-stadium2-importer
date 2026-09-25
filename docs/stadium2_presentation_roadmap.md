@@ -18,9 +18,10 @@ shadows, and most of the move-effect engine. Move-level status is tracked in
 
 Large; visible every turn.
 
-- Actors play only idle, entrance, attack, hit and faint. Stadium also has
-  per-species clips for sleep, confusion, stat changes, status damage and
-  more (animation contexts 255-270). None are played yet.
+- Battle selects only contexts 251-254, 258, 261 and 262
+  (`docs/luna/research/battle-rest-pose.md`); 255-257, 259-260 and
+  263-270 are never read. Resting poses (261 asleep, 262 Fly, 258
+  Diglett/Dugtrio Dig, frozen hit hold) are implemented (2026-09-25).
 - The decoded event codes show which clip Stadium plays for which battle
   event. Work: pair each code with the matching Gen1Recomp event, then play
   the clip and its effect together.

@@ -16,6 +16,7 @@ local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
 local BattleFxAdapter = require(
   "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
+local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
 
 local Gen1={COUNT=251}
 local modRef,installed,session
@@ -186,6 +187,24 @@ function Scene:ensureSubstitute(side)
   return actor
 end
 
+-- Condition for the Stadium resting pose (battle_rest_pose.lua). Red's
+-- engine runs in step with its queue, so the battler's live state is what is
+-- being presented. Fly/Dig count once the charge turn's animation is over.
+function Scene:restCondition(side)
+  local battle,b=self.battle,self:shownBattler(side)
+  local condition={}
+  if not b then return condition end
+  if b.invulnerable and b.charging and not (battle and battle.animPlaying) then
+    local id=b.charging.id
+    if id=="FLY" then condition.flying=true
+    elseif id=="DIG" then condition.underground=true end
+  end
+  local status=b.mon and b.mon.status
+  condition.asleep=status=="SLP"
+  condition.frozen=status=="FRZ"
+  return condition
+end
+
 function Scene:visualState(side)
   local battle,b=self.battle,self:shownBattler(side)
   if not self:ownsSlot(side) then return "native" end
@@ -205,6 +224,10 @@ function Scene:visualState(side)
   if side=="player" and battle.sendingOut and not grow then return "empty" end
   if self:hostHidden(side) then return "hidden" end
   if (battle.introSlide or 0)>0 and side=="player" then return "empty" end
+  -- 8411EE74: Stadium hides a species underground unless it has a dig pose.
+  if RestPose.select(self:restCondition(side),self.actors[side].dex).hidden then
+    return "hidden"
+  end
   return actor.renderer and "pokemon" or "native"
 end
 
@@ -294,6 +317,10 @@ function Scene:update(dt)
   Camera.stickOrbit(self.stickX,dt)
   Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
+  for _,which in ipairs({"player","enemy"}) do
+    local actor=self.actors[which]
+    if actor.setRest then actor:setRest(self:restCondition(which)) end
+  end
   self.actors.player:update(dt)
   self.actors.enemy:update(dt)
   self.substituteActors.player:update(dt)
