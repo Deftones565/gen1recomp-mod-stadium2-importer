@@ -54,6 +54,19 @@ Battle follow-up (2026-09-25, defender hit reaction):
   114, 123, 139, 207, 223, 234, 235, 236.
 - Needs your retest in battle.
 
+Local follow-up (2026-09-25, Razor Leaf / Petal Dance and lag):
+- Razor Leaf (75) and Petal Dance (80): the leaves and petals drew as grey
+  noise squares because their RGBA16 sprite texture was decoded as I4.
+  Checked in real-time viewer playback: green leaves and pink petals now fly
+  to the target (commit 93022dd). Retest.
+- Lag and crash: Razor Leaf took 1-1.4 s per frame in real time. Fixed in
+  three steps: the MIPS VM no longer allocates a closure per instruction
+  (256c22f); each draw reuses one runtime snapshot; lifecycle geometry is no
+  longer deep-copied twice (50e77b1). Real-time averages on the local
+  machine now: 75/80 about 11 ms; 7, 8, 9, 28, 37, 52, 53, 55 between 8.6 and
+  15 ms. The first play of a move still has one ~360 ms frame while its
+  models load. Retest for lag.
+
 Local follow-up (2026-09-25, textures on the worst-moves list):
 - Swords Dance (14): five of the six swords drew their blades and guards
   with the brown grip texture. They now use the chrome callback texture
@@ -63,8 +76,9 @@ Local follow-up (2026-09-25, textures on the worst-moves list):
   so they are translucent white streaks. Retest.
 - Hydro Pump (56), Strength (70), Absorb/Mega Drain (71/72),
   Earthquake/Fissure rocks (88), Razor Wind leaves (13), Vicegrip (11/12)
-  and Bite (44): their shapes render textured in a close-up check. The
-  remaining "unfinished" look is in placement or timing, not textures.
+  and Bite (44): their shapes render in an isolated close-up only. That
+  says nothing about how they look in the viewer (the user found Razor
+  Leaf's leaves wrong there), so these still need viewer checks.
 - Open: the wind sheet used by Razor Wind, Gust, Whirlwind and Roar
   (13/16/18/46) and Strength's column (70) render as a dark opaque wall.
   Their ROM nodes set no combiner of their own; they inherit the state left
