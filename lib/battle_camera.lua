@@ -25,9 +25,13 @@ Camera.STADIUM = {
   -- X and looks across that line from the player's side of the field.  Keep
   -- this pose in source units so arenaScale is the sole unit conversion.
   eye={-420,260,520}, focus={0,62,0},
-  -- D_8418455C: the 21 camera families consumed by fragment 79. Each row is
-  -- pitch A, yaw A, distance A, pitch B, yaw B, distance B, FOV, follow, pan.
-  -- Angles use the N64's signed 16-bit turn representation.
+  -- D_8418455C: the camera shot table consumed by fragment 79 (shot index
+  -- D_841911E0+0x98, read by 8410B884/8410C934/8410CAE4). 39 rows of 0x1C
+  -- bytes: pitch A, yaw A, distance A, pitch B, yaw B, distance B, then
+  -- three floats (the first is overwritten with 45 or 80 by 8410C934).
+  -- Angles use the N64's signed 16-bit turn representation. Rows 21-38
+  -- added 2026-09-25 from the US data section; shot 0x27 (written by
+  -- 84113E7C) would read past row 38 and is not represented.
   presets={
     {1536,0,1.8,1536,0,1.8,45,.2,.03},
     {1536,-10922,2,1536,-10922,2,45,.2,.03},
@@ -50,6 +54,24 @@ Camera.STADIUM = {
     {1536,0,1.8,9102,-12743,1.8,45,.2,.03},
     {-1536,-9102,2,14563,0,1.8,45,.2,.03},
     {1536,-9102,2,10922,-18204,1.8,45,.2,.03},
+    {1536,0,1.8,1536,0,1.8,45,.2,.03},
+    {1536,-10922,2,1536,-10922,2,45,.2,.03},
+    {5120,0,1.8,5120,0,1.8,45,.2,.03},
+    {5120,-10922,1.8,5120,-10922,1.8,45,.2,.03},
+    {1536,-4550,2,1536,-4550,2,45,.2,.03},
+    {5120,-3640,2,5120,-3640,2,45,.2,.05},
+    {1536,0,1.2,1536,0,1.2,45,.2,.03},
+    {1536,-10922,1.2,1536,-10922,1.2,45,.2,.03},
+    {5120,0,1.2,5120,0,1.2,45,.2,.03},
+    {5120,-10922,1.2,5120,-10922,1.2,45,.2,.03},
+    {1536,-3640,1.2,1536,-3640,1.2,45,.2,.03},
+    {5120,-3640,1.2,5120,-3640,1.2,45,.2,.05},
+    {1536,0,1.8,1536,0,1.8,45,.2,.03},
+    {3640,0,8.8,3640,0,1.8,70,.2,.01},
+    {1820,0,7.8,1820,0,1.8,45,.2,.03},
+    {3640,-4550,.9,3640,-4550,.9,70,.3,.03},
+    {3640,-5460,1.3,3640,-5460,1.3,70,.3,.03},
+    {3640,-4550,1.2,3640,-4550,1.2,70,.3,.03},
   },
 }
 

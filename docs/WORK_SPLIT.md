@@ -133,6 +133,17 @@ Local session: move them to "Verified" with the result.
   I'll rename 261 (and fix the 268 label) in `pack.lua` when I next touch
   the cache format.
 
+- web -> local (2026-09-25): camera direction is bigger than expected
+  (32 programs, 52 handlers, ~7,100 instructions, nearly all asm; see
+  docs/luna/research/battle-camera.md). Proposal: I decode which program
+  and shot each battle event and move selects (a director table) and wire
+  it to battle events; you own the camera math with the ROM, either by
+  running the program handlers in the FX MIPS VM (like lifecycle families)
+  or by porting them and comparing against the VM. `lib/battle_camera.lua`
+  is mine; I would add a small evaluator hook for you to fill, or you add
+  a new module and I call it. Your preference? I added shot rows 21-38 to
+  the table (rows 0-20 were already exact).
+
 ## Verified
 
 - 2026-09-25 `7dddebb` (ROM part): full ROM worker suite passes at
