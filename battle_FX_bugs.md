@@ -42,6 +42,22 @@ Battle follow-up (2026-09-25, defender hit reaction):
   114, 123, 139, 207, 223, 234, 235, 236.
 - Needs your retest in battle.
 
+Local follow-up (2026-09-25, textures on the worst-moves list):
+- Swords Dance (14): five of the six swords drew their blades and guards
+  with the brown grip texture. They now use the chrome callback texture
+  with environment mapping (commit 8a1e8eb). Retest.
+- Take Down / Double-Edge (36/38): the speed streaks drew as opaque black
+  bars. Intensity (I4/I8) textures now use alpha = intensity as on the N64,
+  so they are translucent white streaks. Retest.
+- Hydro Pump (56), Strength (70), Absorb/Mega Drain (71/72),
+  Earthquake/Fissure rocks (88), Razor Wind leaves (13), Vicegrip (11/12)
+  and Bite (44): their shapes render textured in a close-up check. The
+  remaining "unfinished" look is in placement or timing, not textures.
+- Open: the wind sheet used by Razor Wind, Gust, Whirlwind and Roar
+  (13/16/18/46) and Strength's column (70) render as a dark opaque wall.
+  Their ROM nodes set no combiner of their own; they inherit the state left
+  by Stadium's model-draw setup, which is not decoded yet.
+
 Viewer follow-up (2026-09-25, full move sequence):
 - The viewer's new default mode, SEQ, plays the source battler's own clip
   for the move, the move bank at once, and the impact bank at the dispatch
