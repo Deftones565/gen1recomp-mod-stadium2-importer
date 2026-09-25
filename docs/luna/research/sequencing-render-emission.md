@@ -152,9 +152,16 @@ Result low bits (84134E30 call sites):
   bit 0x10 is not a critical-hit flag.
 
 `Sequence.resultByte(facts)` builds the byte for misses and damaging hits
-only and returns nil for other moves. Hosts do not pass it yet: their
-battle events come from the Gen1Recomp repository, which was not available
-when this was written. Implemented: the adapter calls the host's
+only and returns nil for other moves. Hosts feed it through Gen1Recomp's
+`battle.damage_dealt` event (bryanthaboi/gen1recomp `8d1e155`: Gen 1
+src/battle/EffectRegistry.lua and Gen 2 src/battle/gen2/Battle.lua emit
+crit and the x10 type multiplier per landed hit while the turn resolves).
+main.lua forwards it to `Adapter.recordHit`; `playMoveAndImpact` takes the
+attacker's first recorded hit for that move. The payload has no OHKO flag,
+so OHKO hits are built from crit/type (approximate). Presented misses do
+not reach the adapter, and status moves stay nil. With the current
+consumers (841087B8 only distinguishes 1 and 6) this changes nothing on
+screen yet; it is the input the result-gated behaviour above needs. Implemented: the adapter calls the host's
 `onImpact(target, source, moveId)` when 841087B8 plays the impact, and the
 Gen 1/Gen 2 hosts play the defender's own hit clip (Actor:hit, no fallback).
 Timing is approximate (the ROM starts the clip when the defender state

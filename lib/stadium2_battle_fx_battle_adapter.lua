@@ -664,10 +664,65 @@ function Adapter:scheduleImpact(moveId, source, ticks, nativeResult)
   return true
 end
 
+-- Facts for Sequence.resultByte from the host's battle.damage_dealt event
+-- (Gen 1 EffectRegistry and Gen 2 Battle:dealDamage emit it per landed hit
+-- while the turn resolves, before the move animation is presented). Kept per
+-- attacking side in arrival order; a move start takes the oldest entry for
+-- its move and drops older entries for other moves. OHKO is not in the
+-- payload, so an OHKO hit is built from its crit/type fields.
+local hitFacts = {player = {}, enemy = {}}
+
+local function payloadMoveId(ev)
+  local id = tonumber(ev.moveId)
+  if id then return id end
+  local move = ev.move
+  if type(move) == "number" then return move end
+  if type(move) == "table" then return tonumber(move.index or move.number) end
+  return nil
+end
+
+function Adapter.recordHit(ev)
+  if type(ev) ~= "table" then return false end
+  local side
+  if ev.side == "player" or ev.side == "enemy" then
+    side = ev.side == "player" and "enemy" or "player" -- Gen 2 names the defender
+  elseif type(ev.user) == "table" and ev.user.isPlayer ~= nil then
+    side = ev.user.isPlayer and "player" or "enemy"
+  end
+  local moveId = payloadMoveId(ev)
+  if not side or not moveId then return false end
+  local list = hitFacts[side]
+  local last = list[#list]
+  -- Later hits of one multi-hit move add nothing: 84124A7C runs per hit
+  -- but the record presented at the hit frame is the first one.
+  if last and last.moveId == moveId then return true end
+  list[#list + 1] = {moveId = moveId, damaging = true,
+    critical = ev.crit == true, typeModifier = tonumber(ev.effectiveness or ev.typeMult)}
+  -- Entries nobody presents (FX disabled, cancelled animations) must not pile up.
+  while #list > 8 do table.remove(list, 1) end
+  return true
+end
+
+function Adapter.clearHits()
+  hitFacts = {player = {}, enemy = {}}
+end
+
+function Adapter.takeHitResult(side, moveId)
+  local list = hitFacts[side]
+  moveId = tonumber(moveId)
+  if not list or not moveId then return nil, "no battle facts for this move" end
+  while #list > 0 do
+    local facts = table.remove(list, 1)
+    if facts.moveId == moveId then return Sequence.resultByte(facts) end
+  end
+  return nil, "no battle facts for this move"
+end
+
 -- Host entry point: move bank now, impact bank at the attacker's dispatch
 -- hit frame. `actor` is the host visual actor whose model carries the
 -- species animation-dispatch rows (model.fxDispatch).
 function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult)
+  if nativeResult == nil then nativeResult = Adapter.takeHitResult(source, moveId) end
   local effect, err = self:playMove(moveId, source)
   local model = actor and actor.renderer and actor.renderer.model
   self:scheduleImpact(moveId, source,

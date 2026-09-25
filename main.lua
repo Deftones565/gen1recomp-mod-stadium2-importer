@@ -283,6 +283,9 @@ return function(mod)
   mod.events:on("world.stepped",function() pendingEncounter=nil end)
 
   mod.events:on("battle.started", function(ev)
+    local fxOk, FxAdapter = pcall(require,
+      "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
+    if fxOk then FxAdapter.clearHits() end
     local current=mod.world and mod.world.current and mod.world:current() or nil
     local mapId=current and current.mapId or mapContext and mapContext.mapId
     local mapped=mapContext and mapContext.mapId==mapId and mapContext or nil
@@ -301,6 +304,13 @@ return function(mod)
       battleTower=battle and battle.inBattleTowerBattle==true,
     })
     pendingEncounter=nil
+  end)
+
+  -- Hit facts for the battle FX result byte (Sequence.resultByte).
+  mod.events:on("battle.damage_dealt", function(ev)
+    local ok, Adapter = pcall(require,
+      "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
+    if ok then Adapter.recordHit(ev) end
   end)
 
   mod.events:on("battle.ended", function(ev)
