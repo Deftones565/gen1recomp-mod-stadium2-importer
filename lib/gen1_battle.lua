@@ -359,7 +359,8 @@ function Scene:syncPresentationState()
           if battle.animAlternate==true then
             self.battleFx:trigger(moveId,side,true)
           elseif self.battleFx.playMoveAndImpact then
-            self.battleFx:playMoveAndImpact(moveId,side,self.actors[side])
+            self.battleFx:playMoveAndImpact(moveId,side,self.actors[side],nil,
+              self.actors[side=="player" and "enemy" or "player"])
           else
             self.battleFx:trigger(moveId,side,false)
           end

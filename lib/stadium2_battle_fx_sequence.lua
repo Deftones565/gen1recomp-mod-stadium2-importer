@@ -191,4 +191,74 @@ function Sequence.hitFrame(dispatchBytes, moveId)
   return value >= 0x80 and value - 0x100 or value
 end
 
+-- Attack-state timeline, from the move's dispatch rows. Attacker (family 2):
+-- 84114A04 loads the row (841146D4), starts the counter (+0x7E8) at 0, or at
+-- the hit frame when that is negative (holding the idle pose until 0), and
+-- rebases +0x619 (hit, byte 0x0B) and +0x61A (byte 0x0A) by +0x61B (byte 6).
+-- 84114BF4: at counter 0 the clip starts at frame byte 6; at counter ==
+-- +0x619 the move's route plays (84114600 -> 84108728) with its sound, and
+-- 84112564 releases the next event record (the defender) at the frame chosen
+-- below. Defender (family 4): 841170A0 loads its own species row for the
+-- received move (84116BC0: +0x619 = byte 7), starts its counter at 0, and
+-- 8411845C plays the impact route (841087B8) at counter == +0x619.
+-- Ticks are 30 Hz frames after the move event; each counter is tested before
+-- it advances. Returns a table, or nil and a reason when a row is missing.
+Sequence.RELEASE_OFFSETS = {[153] = 30, [120] = 30, [135] = 70, [208] = 54,
+  [234] = 95, [235] = 95, [236] = 95}   -- D_84183A18 moves, 84115044..84115220
+-- 84114E8C..84114F9C: these species play only the move's sound (84114678).
+Sequence.SOUND_ONLY_SPECIES = {
+  [110] = {[7] = true, [8] = true, [9] = true},                 -- D_841839EC
+  [122] = {[42] = true, [173] = true, [90] = true, [92] = true, -- D_841839F4
+    [93] = true, [94] = true, [108] = true},
+  [205] = {[76] = true, [232] = true, [241] = true},            -- D_84183A04
+}
+Sequence.CURSE = 0xAE              -- route only when result bit 0x80 is set
+Sequence.FORESIGHT = 0xC1          -- 84117744: defender hit frame forced to 0
+-- 84114C5C..84114C74: these start their behaviour routine at counter 0.
+Sequence.COUNTER_ZERO_SPECIALS = {[185] = true, [187] = true}
+
+local function s8(value) value = value % 256; return value >= 0x80 and value - 0x100 or value end
+
+function Sequence.attackTiming(attackerDispatch, moveId, options)
+  options = type(options) == "table" and options or {}
+  moveId = math.floor(tonumber(moveId) or 0)
+  if type(attackerDispatch) ~= "string" or moveId < 1 or moveId > 251 then
+    return nil, "attacker dispatch row is unavailable"
+  end
+  local base = (moveId - 1) * 20
+  local rawHit, start, second = attackerDispatch:byte(base + 0x0B + 1),
+    attackerDispatch:byte(base + 6 + 1), attackerDispatch:byte(base + 0x0A + 1)
+  if not (rawHit and start and second) then return nil, "attacker dispatch row is unavailable" end
+  local hit = s8(rawHit)
+  local counter0 = hit < 0 and hit or 0
+  local rebHit = s8(hit - start)          -- sb +0x619, read with lb
+  local rebSecond = (second - start) % 256 -- sb +0x61A, read with lbu
+  local function tick(value)
+    if value == nil or value < counter0 then return nil end
+    return value - counter0
+  end
+  local out = {clipStart = start, preRoll = -counter0, hit = hit,
+    route = tick(rebHit), diagnostics = {}}
+  if out.route == nil then
+    out.diagnostics[#out.diagnostics + 1] = {code = "unreached-attack-hit-frame",
+      message = ("move %d: hit frame %d before the clip start %d is never reached"):format(moveId, hit, start)}
+  end
+  local species = tonumber(options.species)
+  local soundOnly = Sequence.SOUND_ONLY_SPECIES[moveId]
+  out.soundOnly = soundOnly and species and soundOnly[species] or false
+  local k = Sequence.RELEASE_OFFSETS[moveId]
+  local release
+  if k then release = rebSecond < rebHit + k and rebHit or rebHit + k
+  else release = (rebSecond - 30 < rebHit) and 0 or rebHit end
+  out.release = tick(release)
+  out.special = Sequence.COUNTER_ZERO_SPECIALS[moveId] and tick(0) or out.route
+  local defender = options.defenderDispatch
+  if type(defender) == "string" and out.release then
+    local defHit = moveId == Sequence.FORESIGHT and 0 or s8(defender:byte(base + 7 + 1) or 0)
+    if defender:byte(base + 7 + 1) and defHit >= 0 then out.impact = out.release + defHit end
+    out.defenderHit = defHit
+  end
+  return out
+end
+
 return Sequence

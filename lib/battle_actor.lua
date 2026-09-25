@@ -230,6 +230,7 @@ function Actor:attack(moveIndex, strict)
     return false,("actor is busy (%s)"):format(tostring(self.context))
   end
   local ok=moveIndex and self.renderer:setMove(moveIndex,false) or false
+  local moveClip=ok
   if not ok and strict then
     return false,("species %s has no animation for move %s")
       :format(tostring(self.dex),tostring(moveIndex))
@@ -241,12 +242,39 @@ function Actor:attack(moveIndex, strict)
     self.nativeMarkerRow=tonumber(moveIndex) and tonumber(moveIndex)-1 or nil
     self.nativeScaleSource=self.nativeMarkerRow and {row=self.nativeMarkerRow,byte=0xF} or nil
     self:clearNative()
-    local kind=Actor.SPECIAL_KINDS[tonumber(moveIndex)]
+    self.pendingClip=nil
     local model=self.renderer.model
-    local hit=kind and Sequence.hitFrame(model and model.fxDispatch,moveIndex)
-    self.special=hit and {kind=kind,at=hit,clock=0,ticks=0} or nil
+    local timing=Sequence.attackTiming(model and model.fxDispatch,moveIndex,{species=self.dex})
+    if moveClip and timing then
+      if timing.preRoll>0 then
+        -- 84114A04/841120AC: a negative hit frame holds the idle pose until
+        -- the counter reaches 0, then 84114BF4 starts the clip.
+        self.pendingClip={move=moveIndex,start=timing.clipStart,ticks=timing.preRoll,clock=0}
+        if self.renderer.setContext then self.renderer:setContext("idle",true) end
+      elseif timing.clipStart>0 and self.renderer.seekFrame then
+        -- 84114BF4: the clip starts at the row's byte 6 (+0x61B).
+        self.renderer:seekFrame(timing.clipStart)
+      end
+    end
+    local kind=Actor.SPECIAL_KINDS[tonumber(moveIndex)]
+    local at=kind and timing and timing.special
+    self.special=at and {kind=kind,at=at,clock=0,ticks=0} or nil
   end
   return ok
+end
+
+-- Idle pre-roll of a negative hit frame (see Actor:attack).
+function Actor:stepPendingClip(dt)
+  local pending=self.pendingClip
+  if not pending then return end
+  if self.context~="attack" then self.pendingClip=nil;return end
+  pending.clock=pending.clock+(tonumber(dt) or 0)*30
+  if pending.clock<pending.ticks then return end
+  self.pendingClip=nil
+  if self.renderer:setMove(pending.move,false) and pending.start>0 and self.renderer.seekFrame then
+    self.renderer:seekFrame(pending.start)
+  end
+  self.renderer.finished=false
 end
 
 -- Context 254: the species' own hit clip, played once with no generic
@@ -361,6 +389,7 @@ function Actor:update(dt)
     modelAlphaByte=self.modelAlphaByte,
     dynamicObjectGastlyAlternate=self.variant=="shiny",
   },true)
+  self:stepPendingClip(dt)
   self:stepSpecial(dt)
   if self.context=="idle" then self:applyRest() end
   -- A held resting pose (frozen, Diglett underground) does not advance.

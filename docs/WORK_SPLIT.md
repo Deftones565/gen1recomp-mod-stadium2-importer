@@ -143,6 +143,11 @@ Local session: move them to "Verified" with the result.
   viewer check of 0x113/0x120 colour and a sweep of common moves for colour
   changes from the unlit rule (local had spot-checked 52, 55, 85, 94).
 
+- 2026-09-25 (this commit) attack-state timeline (`Sequence.attackTiming`):
+  with the ROM/VM, compare a few moves' route start, defender release and
+  impact frames against 84114BF4/8411845C execution (the release latency
+  after 84112564 is assumed 0); viewer/battle check that effects line up.
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,

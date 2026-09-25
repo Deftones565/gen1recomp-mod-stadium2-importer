@@ -694,7 +694,7 @@ end
 -- emulate the actor state machine start this count at the move start; the
 -- native count restarts when the attack state is entered (after any
 -- approach phase), so this timing is an approximation and is reported.
-function Adapter:scheduleImpact(moveId, source, ticks, nativeResult)
+function Adapter:scheduleImpact(moveId, source, ticks, nativeResult, native)
   if not self.player then return nil, "battle FX player is unavailable" end
   ticks = tonumber(ticks)
   if not ticks or ticks < 0 then
@@ -702,8 +702,10 @@ function Adapter:scheduleImpact(moveId, source, ticks, nativeResult)
       ("move %s has no dispatch hit frame; impact bank not scheduled"):format(tostring(moveId))})
     return nil, "impact frame unavailable"
   end
-  self:_warn({code = "approximate-impact-timing", message =
-    "impact bank is timed from the move start by the dispatch hit frame; attack-state approach phases are not emulated"})
+  if not native then
+    self:_warn({code = "approximate-impact-timing", message =
+      "impact bank is timed from the move start by the dispatch hit frame; attack-state approach phases are not emulated"})
+  end
   self.pendingImpacts = self.pendingImpacts or {}
   self.pendingImpacts[#self.pendingImpacts + 1] = {moveId = moveId, source = source,
     result = nativeResult, frame = (self.player.runtime and self.player.runtime.frame or 0) + math.floor(ticks)}
@@ -773,19 +775,62 @@ end
 -- Host entry point: move bank now, impact bank at the attacker's dispatch
 -- hit frame. `actor` is the host visual actor whose model carries the
 -- species animation-dispatch rows (model.fxDispatch).
-function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult)
+-- `target` is the defending actor; its own species row times the impact
+-- (Sequence.attackTiming). Without it the impact falls back to the
+-- attacker's hit frame and says so.
+function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult, target)
   if nativeResult == nil then nativeResult = Adapter.takeHitResult(source, moveId) end
-  local effect, err = self:playMove(moveId, source)
-  -- 841153DC (Rest): at the hit frame, entry 0x100 on the user.
-  if tonumber(moveId) == Sequence.REST then
-    local model = actor and actor.renderer and actor.renderer.model
-    local hit = Sequence.hitFrame(model and model.fxDispatch, moveId)
-    if hit then self:scheduleSignal(Sequence.REST_ENTRY, source, math.max(0, hit)) end
-  end
   local model = actor and actor.renderer and actor.renderer.model
-  self:scheduleImpact(moveId, source,
-    Sequence.hitFrame(model and model.fxDispatch, moveId), nativeResult)
-  return effect, err
+  local targetModel = target and target.renderer and target.renderer.model
+  local timing = Sequence.attackTiming(model and model.fxDispatch, moveId,
+    {species = actor and actor.dex, defenderDispatch = targetModel and targetModel.fxDispatch})
+  if not timing then
+    -- No row: the previous approximation (move now, impact at the hit frame).
+    local effect, err = self:playMove(moveId, source)
+    self:scheduleImpact(moveId, source, Sequence.hitFrame(model and model.fxDispatch, moveId), nativeResult)
+    return effect, err
+  end
+  for _, d in ipairs(timing.diagnostics) do self:_warn(d) end
+  moveId = tonumber(moveId)
+  -- 84114BF4: route and sound at the attacker's hit frame; some species play
+  -- only the sound; Curse's route needs result bit 0x80.
+  local routed = not timing.soundOnly and (moveId ~= Sequence.CURSE
+    or math.floor((tonumber(nativeResult) or 0) / 0x80) % 2 == 1)
+  local ticks = timing.route or 0
+  if routed then self:scheduleRoute(moveId, source, ticks) end
+  -- 841153DC (Rest): at the hit frame, entry 0x100 on the user.
+  if moveId == Sequence.REST then self:scheduleSignal(Sequence.REST_ENTRY, source, ticks) end
+  if timing.impact then
+    self:scheduleImpact(moveId, source, timing.impact, nativeResult, true)
+  else
+    self:_warn({code = "approximate-impact-timing", message =
+      "defender row unavailable; impact timed from the attacker's hit frame"})
+    self:scheduleImpact(moveId, source, timing.route, nativeResult, true)
+  end
+  return true
+end
+
+-- The move route (84108728) `ticks` frames from now. A host finish that
+-- arrives first is carried over: the route is released after the same time
+-- the host allowed since the move started.
+function Adapter:scheduleRoute(moveId, source, ticks)
+  local now = self.player and self.player.runtime and self.player.runtime.frame or 0
+  ticks = math.max(0, math.floor(tonumber(ticks) or 0))
+  self.pendingRoute, self.pendingFinish = nil, nil -- a newer move supersedes
+  if ticks == 0 then return self:playMove(moveId, source) end
+  self:finish()
+  self.pendingRoute = {moveId = moveId, source = source, frame = now + ticks, queued = now}
+  return true
+end
+
+function Adapter:_firePendingRoute()
+  local route = self.pendingRoute
+  if not route then return end
+  local now = self.player and self.player.runtime and self.player.runtime.frame or 0
+  if now < route.frame then return end
+  self.pendingRoute = nil
+  self:playMove(route.moveId, route.source)
+  if route.finishAfter then self.pendingFinish = {frame = now + route.finishAfter} end
 end
 
 -- Queue 8410890C(entry) for `owner`, `ticks` 30 Hz ticks from now.
@@ -838,6 +883,12 @@ function Adapter:_firePendingImpacts()
 end
 
 function Adapter:finish()
+  local route = self.pendingRoute
+  if route and not route.finishAfter then
+    local now = self.player and self.player.runtime and self.player.runtime.frame or 0
+    route.finishAfter = math.max(0, now - route.queued)
+    return true
+  end
   if not self.player or not self.activeEffect then return false end
   local effect=self.activeEffect
   self.activeEffect=nil
@@ -851,6 +902,12 @@ end
 function Adapter:update(dt)
   if self.player then
     local frame = self.player:update(dt)
+    self:_firePendingRoute()
+    local now = self.player.runtime and self.player.runtime.frame or 0
+    if self.pendingFinish and now >= self.pendingFinish.frame then
+      self.pendingFinish = nil
+      self:finish()
+    end
     self:_firePendingImpacts()
     self:_firePendingSignals()
     self:_firePendingVariants()
@@ -870,6 +927,7 @@ function Adapter:backgroundColor(base)
 end
 
 function Adapter:release()
+  self.pendingRoute, self.pendingFinish = nil, nil
   self.pendingImpacts = nil
   if not self.player then return false end
   local player = self.player

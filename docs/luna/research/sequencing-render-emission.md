@@ -273,3 +273,58 @@ Open: 84114804 passes +0x618 (the 1-based move id) to 841146D4 as the row
 index, while 84116BC0 and 8411AF6C read row (+0x618 - 1). The mod's
 convention (move M at row M - 1) agrees with the latter two; check the
 former against ROM execution.
+
+## Attack-state timeline (2026-09-25)
+
+Web session; US assembly, fork C `7fc529e5` for the C-matched functions.
+Matches the assembly by reading; not checked against ROM execution or
+visually. Implemented as `Sequence.attackTiming` (adapter, actor).
+
+Ordinary moves use state family 2: 841149A0 (preload, +0x618 = move,
++0x7F6 = 5), 84114A04 (start), 841154F8 -> 84114BF4 (per frame; Rest goes to
+841153DC).
+
+84114A04, once 84113430 reports ready: 84114804/841146D4 load the move row
+(+0x616 byte 0 body clip, +0x617 byte 1 aux, +0x619 byte 0x0B hit (s8),
++0x61A byte 0x0A, +0x61B byte 6 start, +0x620 byte 9, +0x61C/+0x61D bytes
+2/3, +0x628/+0x62A/+0x62C bytes 0xC-0xE, +0x661 byte 0xF). Counter
+(+0x7E8) = 0; if the hit frame is negative, counter = hit and 841120AC
+holds row 251 (idle) so its loop ends as the counter reaches 0. Then
++0x61A -= +0x61B and +0x619 -= +0x61B.
+
+84114BF4:
+- counter 0: 84111D64/84111E50/84111E80/84111DB4 start the body/aux clips
+  at frame +0x61B (byte 6). Feint Attack (185) and Belly Drum (187) start
+  their behaviour routine (84123F60) here.
+- counter == +0x620: entry 0xFC under a result condition (not yet wired).
+- counter == +0x619 (the rebased hit): behaviour routine (other moves),
+  camera nudges (8410B578), and 84114600 = move route 84108728 + sound
+  800231A0, except Withdraw (110) for species 7/8/9 (D_841839EC), Lick
+  (122) for 42/173/90/92/93/94/108 (D_841839F4), Rollout (205) for
+  76/232/241 (D_84183A04), which play only the sound (84114678), and Curse
+  (174), whose route needs result bit 0x80.
+- 84112564 releases the next event record (the defender): for ordinary
+  moves at counter 0 when (+0x61A - 30) < +0x619, otherwise at +0x619. For
+  D_84183A18 (Explosion 153, Self-Destruct 120: k = 30; Softboiled 135: 70;
+  Milk Drink 208: 54; Morning Sun 234, Synthesis 235, Moonlight 236: 95) at
+  +0x619 when +0x61A < +0x619 + k, else at +0x619 + k.
+
+Defender (family 4): 841170A0 calls 84116BC0, which loads from the
+defender's own species row for the received move: +0x619 = byte 7, +0x61A
+= byte 0x0A, +0x620 = byte 8, +0x628/+0x62A/+0x62C/+0x661 = bytes
+0x10-0x13, +0x61C/+0x61D from row 254. Counter = 0. 841187E4 dispatches by
+code; 8411845C (after 84117744, which sets +0x61A for Lock-On, Rollout,
+Whirlwind, Roar, Spite, Foresight and zeroes Foresight's +0x619) plays the
+impact route 841087B8 when 84117CAC sees counter == +0x619.
+
+The mod previously started the move route with the move event and the
+impact at raw byte 0x0B. Now: route at (hit - start) ticks, impact at the
+release tick + the defender's byte 7, clip from byte 6. Open: the latency
+between 84112564 and the defender state's first frame (taken as 0), the
+0xFC signal at +0x620, the other defender handlers' timing (assumed to
+match 8411845C), and the defender's own behaviour kinds set by 84116BC0
+(0xF for Stomp and Body Slam).
+
+Charge turns (84115A64 etc.) reset the counter to 0 without rebasing and
+fire the variant route at raw byte 0x0B; the existing charge timing already
+matches.

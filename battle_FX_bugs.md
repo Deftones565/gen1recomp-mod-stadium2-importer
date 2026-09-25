@@ -24,6 +24,20 @@ Battle follow-up (2026-09-25, moves with no effect data, web session):
   blur / clones); decoded where they live, not implemented yet.
 - Needs your retest.
 
+Battle follow-up (2026-09-25, move timing, web session):
+- Moves now follow Stadium's attack timeline from the species' own rows:
+  the attacker's animation starts partway in (row byte 6) as in Stadium;
+  the move's effect starts at the attacker's hit frame instead of at the
+  start; the defender's impact comes from the defender's own row (byte 7)
+  after the attacker releases it. Previously the effect started
+  immediately and the impact came at the attacker's hit frame.
+- Special cases from the ROM: Explosion, Self-Destruct and the healing
+  moves release the defender later; Withdraw/Lick/Rollout play only their
+  sound for a few species (Squirtle line, ghosts, Golem...); Curse's effect
+  needs the ghost result. Two-turn moves were already timed this way.
+- Needs your retest (effects should now line up with the Pokemon's
+  motion; tell me any that start late or feel off).
+
 Battle follow-up (2026-09-25, Sandstorm near-black, web session):
 - Move 201 is one full-screen particle (program 11, mode 7, shape 147;
   decoded from fragment 79's data, no colour layer). Shape 147 has two

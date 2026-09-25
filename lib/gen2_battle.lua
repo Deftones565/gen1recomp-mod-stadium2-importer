@@ -385,7 +385,8 @@ function Scene:handleEvent(event)
           self.actors and self.actors[side])
       elseif event.alternate~=true and self.battleFx.playMoveAndImpact then
         ok,err=pcall(self.battleFx.playMoveAndImpact,self.battleFx,moveId,side,
-          self.actors and self.actors[side])
+          self.actors and self.actors[side],nil,
+          self.actors and self.actors[side=="player" and "enemy" or "player"])
       else
         ok,err=pcall(self.battleFx.trigger,self.battleFx,moveId,side,
           event.alternate==true)
