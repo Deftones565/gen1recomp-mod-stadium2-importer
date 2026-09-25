@@ -44,8 +44,10 @@ end
 --   the attack missed (D_841951D2, which is cleared only for effect 0x2D).
 --   84124A7C, after damage: 4 when D_841951E4 (critical hit 1 / OHKO 2) is
 --   set, else by D_841951E5 (type modifier, 10 = neutral): >10 -> 3,
---   <10 -> 2, 10 -> 0; then 5 for moves 0x14/0x23/0x84 or move effect 0x75
---   (80062D20).
+--   <10 -> 2, 10 -> 0; then 5 for moves 0x14/0x23/0x84 (Bind, Wrap,
+--   Constrict) or move effect 0x75 (80062D20; EFFECT_ROLLOUT in pokecrystal
+--   constants/move_effect_constants.asm, which also names 0x2D
+--   EFFECT_JUMP_KICK).
 -- Other move-effect handlers write 5 or 6 themselves and are not decoded,
 -- so only damaging hits and misses are built here. `facts`:
 --   missed, damaging (bool), critical, ohko (bool), typeModifier (number),

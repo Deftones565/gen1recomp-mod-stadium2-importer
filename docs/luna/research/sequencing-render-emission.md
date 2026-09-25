@@ -151,9 +151,11 @@ only and returns nil for other moves. Hosts feed it through Gen1Recomp's
 `battle.damage_dealt` event (bryanthaboi/gen1recomp `8d1e155`: Gen 1
 src/battle/EffectRegistry.lua and Gen 2 src/battle/gen2/Battle.lua emit
 crit and the x10 type multiplier per landed hit while the turn resolves).
+OHKO comes from the move's effect name (EFFECT_OHKO, Gen 1 OHKO_EFFECT) and
+effect 0x75 is EFFECT_ROLLOUT (pret/pokecrystal `e058e4f`,
+constants/move_effect_constants.asm).
 main.lua forwards it to `Adapter.recordHit`; `playMoveAndImpact` takes the
-attacker's first recorded hit for that move. The payload has no OHKO flag,
-so OHKO hits are built from crit/type (approximate). Presented misses do
+attacker's first recorded hit for that move. Presented misses do
 not reach the adapter, and status moves stay nil. With the current
 consumers (841087B8 only distinguishes 1 and 6) this changes nothing on
 screen yet; it is the input the result-gated behaviour above needs. Implemented: the adapter calls the host's

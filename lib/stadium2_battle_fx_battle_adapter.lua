@@ -668,8 +668,11 @@ end
 -- (Gen 1 EffectRegistry and Gen 2 Battle:dealDamage emit it per landed hit
 -- while the turn resolves, before the move animation is presented). Kept per
 -- attacking side in arrival order; a move start takes the oldest entry for
--- its move and drops older entries for other moves. OHKO is not in the
--- payload, so an OHKO hit is built from its crit/type fields.
+-- its move and drops older entries for other moves. A landed hit of an OHKO
+-- move (EFFECT_OHKO / Gen 1 OHKO_EFFECT) is 8412A804's D_841951E4 = 2, and
+-- EFFECT_ROLLOUT is effect 0x75 (pokecrystal move_effect_constants).
+local OHKO_EFFECTS = {EFFECT_OHKO = true, OHKO_EFFECT = true}
+local EFFECT_IDS = {EFFECT_ROLLOUT = 0x75}
 local hitFacts = {player = {}, enemy = {}}
 
 local function payloadMoveId(ev)
@@ -696,8 +699,11 @@ function Adapter.recordHit(ev)
   -- Later hits of one multi-hit move add nothing: 84124A7C runs per hit
   -- but the record presented at the hit frame is the first one.
   if last and last.moveId == moveId then return true end
+  local effect = type(ev.move) == "table" and ev.move.effect or nil
   list[#list + 1] = {moveId = moveId, damaging = true,
-    critical = ev.crit == true, typeModifier = tonumber(ev.effectiveness or ev.typeMult)}
+    critical = ev.crit == true, ohko = OHKO_EFFECTS[effect] == true,
+    moveEffect = EFFECT_IDS[effect],
+    typeModifier = tonumber(ev.effectiveness or ev.typeMult)}
   -- Entries nobody presents (FX disabled, cancelled animations) must not pile up.
   while #list > 8 do table.remove(list, 1) end
   return true

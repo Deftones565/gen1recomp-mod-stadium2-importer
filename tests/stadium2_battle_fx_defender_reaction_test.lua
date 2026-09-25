@@ -90,6 +90,12 @@ Adapter.recordHit({side = "enemy", moveId = 20, effectiveness = 5})
 ok(Adapter.takeHitResult("player", 20) == 5, "Bind is 5 and a stale older move is dropped")
 ok(Adapter.takeHitResult("player", 10) == nil, "the dropped entry is gone")
 ok(Adapter.recordHit({side = "enemy"}) == false, "payloads without a move are ignored")
+Adapter.recordHit({side = "enemy", moveId = 12, move = {effect = "EFFECT_OHKO"}, effectiveness = 10})
+ok(Adapter.takeHitResult("player", 12) == 4, "a landed OHKO is 4")
+Adapter.recordHit({user = {isPlayer = true}, move = {index = 32, effect = "OHKO_EFFECT"}, typeMult = 10})
+ok(Adapter.takeHitResult("player", 32) == 4, "Gen 1 OHKO_EFFECT is 4")
+Adapter.recordHit({side = "enemy", moveId = 205, move = {effect = "EFFECT_ROLLOUT"}, crit = true, effectiveness = 20})
+ok(Adapter.takeHitResult("player", 205) == 5, "Rollout (effect 0x75) is 5")
 for i = 1, 20 do Adapter.recordHit({side = "enemy", moveId = i, effectiveness = 10}) end
 ok(Adapter.takeHitResult("player", 15) == 0 and Adapter.takeHitResult("player", 1) == nil,
   "unpresented entries are capped")
