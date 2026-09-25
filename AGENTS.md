@@ -64,6 +64,11 @@ That is allowed when the user explicitly asks for it:
 
 ## Architecture
 
+- Battle mechanics come from Gen1Recomp's Gen 1/Gen 2 engines; the mod is
+  presentation only. Stadium 2's battle engine (fragment79_393CA0) is used
+  only to map battle events to effects, never as game logic. When the two
+  differ, the recomp's outcome wins, and a missing event detail is reported
+  rather than inferred.
 - Keep ROM decoding, runtime simulation, rendering, and battle integration as
   separate layers (see `docs/luna/README.md`).
 - Preserve deterministic 30 Hz stepping. Runtime code must accept injected RNG;
