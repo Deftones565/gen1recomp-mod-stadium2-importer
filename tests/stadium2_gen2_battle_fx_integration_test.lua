@@ -129,6 +129,23 @@ ok(last().id==0xFD and last().owner=="player","Growl's drop -> 0xFD on the targe
 scene:handleEvent({kind="send",side="enemy",mon=battle.enemy})
 ok(last().id==0x122 and last().owner=="enemy","send-out -> 0x122")
 
+-- HandleWrap ticks (84132778) and the AI's withdraw (8411ABAC recall).
+for move,id in pairs({[20]=0x105,[35]=0x105,[83]=0xFF,[128]=0x129,[250]=0x118}) do
+  scene:handleEvent({kind="damage",side="enemy",amount=1,hp=9,anim=false,animMove=move})
+  ok(last().id==id and last().owner=="enemy",("trap tick of move %d -> 0x%X"):format(move,id))
+end
+count=#signals
+scene:handleEvent({kind="damage",side="enemy",amount=1,hp=9,anim=false,animMove=42})
+ok(#signals==count,"a non-trapping animMove signals nothing")
+local Strings=require("src.core.Strings")
+battle.trainer={name="FALKNER"}
+battle.monName=function(_,mon) return mon.nickname or mon.name or mon.species end
+scene:handleEvent({kind="message",text=Strings("%s withdrew %s!","FALKNER","RATTATA")})
+ok(last().id==0x126 and last().owner=="enemy","enemy withdraw -> recall 0x126 on the outgoing mon")
+count=#signals
+scene:handleEvent({kind="message",text=Strings("%s withdrew %s!","FALKNER","PIDGEY")})
+ok(#signals==count,"a withdraw line for another mon signals nothing")
+
 -- Charge turn (animParam 1): variant route and charge clip, not move+impact.
 local charged={}
 scene.actors.player.charge=function(_,entry,start) charged[#charged+1]={entry=entry,start=start} return true end

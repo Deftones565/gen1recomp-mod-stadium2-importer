@@ -37,7 +37,12 @@ Large.
 - Still to pair with Gen1Recomp events: stat up/down, poison, burn and
   confusion damage, Leech Seed, Curse, Nightmare, full paralysis, faint,
   switch-in and recall, item use.
-- Gen 1 battles get none of these yet; only move effects are wired there.
+- Gen 1 has residual damage, faint, send-out and charge turns wired; its
+  stat changes have no host event.
+- 2026-09-25: recall (0x126) and trap ticks wired where the host has a cue
+  (docs/luna/research/battle-event-effects.md). Stadium has no bag items or
+  ball throws, so those keep the Game Boy animations. Gold's player
+  switch has no withdraw step in Gen1Recomp; pairing it needs one there.
 - Some events lack a detail the presentation needs (for example, Gold's
   "fully paralyzed" message has no side). These need a small addition to
   Gen1Recomp's events, not a guess from the text.

@@ -128,4 +128,14 @@ scene:syncPresentationState()
 ok(#charges==count,"an X item's XSTATITEM_ANIM (no charging move) is not a charge turn")
 battle.animPlaying=false;scene:syncPresentationState()
 
+-- RetreatMon's shrink (host shrinkOut) is the recall cue: 0x126 once.
+count=#signals
+battle.shrinkOut={battler=battle.player,frame=0}
+scene:syncPresentationState()
+ok(#signals==count+1 and signals[#signals].id==0x126 and signals[#signals].owner=="player",
+  "the player's retreat signals recall 0x126")
+battle.shrinkOut.frame=3;scene:syncPresentationState()
+ok(#signals==count+1,"a running retreat does not signal again")
+battle.shrinkOut=nil;scene:syncPresentationState()
+
 print(("%d checks passed (Stadium 2 Gen 1 battle FX integration)"):format(checks))

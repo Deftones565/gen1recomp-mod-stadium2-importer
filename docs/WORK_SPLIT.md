@@ -129,6 +129,10 @@ Local session: move them to "Verified" with the result.
   the translucent copies look with depth writes on. With the ROM, the
   sine table replaces the test's math.sin; nothing else is ROM-backed.
 
+- 2026-09-25 (this commit) recall 0x126 and trap ticks 0x105/0xFF/0x118/
+  0x129: viewer check that those entries draw (J/L); battle retest of a
+  Gen 1 switch, a Gen 2 trainer switch and a Gen 2 Wrap/Fire Spin tick.
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,

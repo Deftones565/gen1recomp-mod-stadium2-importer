@@ -263,6 +263,18 @@ function Scene:syncPresentationState()
     end
     self.lastGrow[side]=grow and true or false
 
+    -- Red's switch-out: RetreatMon's text, then AnimateRetreatingPlayerMon
+    -- (host shrinkOut) before the swap. Stadium's recall (8411ABAC) signals
+    -- 0x126 on the outgoing mon; the host's retreat is its only cue.
+    if side=="player" then
+      local shrink=battle.shrinkOut
+      local recalling=type(shrink)=="table" and shrink.battler==battle.player
+      if recalling and not self.lastRecall and self.battleFx and self.battleFx.signalEffect then
+        pcall(self.battleFx.signalEffect,self.battleFx,FxSequence.RECALL_ENTRY,"player")
+      end
+      self.lastRecall=recalling or false
+    end
+
     local b=self:shownBattler(side)
     local fainted=b and b.fainted and true or false
     local faintFx=b and safeCall(battle,"fxFaintActive",b) or false

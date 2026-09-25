@@ -84,3 +84,57 @@ Not wired, missing event detail: Leftovers heals (no source on Gold's heal
 event), Spikes (a plain damage event after a message), full paralysis and
 Attract (messages without a side), Gen 1 stat changes (no stat event or
 hook). Gen 2 has no Nightmare tick.
+
+## Switching, trapping, items, balls (2026-09-25)
+
+Same sources; fork C `7fc529e5`, US assembly for the GLOBAL_ASM functions.
+Matches the assembly by reading; not visually confirmed.
+
+**Recall.** 841334D8 is the switch-out routine (callers: 84133ACC switch,
+84133C10 after a faint). It prints its "come back" text, then 84124C10
+queues 0x1E (normal), 0x1F (asleep, status & 7) or 0x20 (frozen, 0x20),
+or 0x37 when the mon's HP is 0. 0x1E-0x20 select family 18:
+
+- 8411AB5C sets +0x618 = 1 and preloads entry 0x126 (84113560).
+- 8411ABAC (once 84113430 is ready): counter reset, camera shot
+  D_84183C7C[rand & 3] and program 0x1B (84111348), then by code: 0x20 ->
+  shot 0x11, 84108A10, frozen hold (84112464); 0x1E -> 84111D64 restarts the
+  idle row's body clip (dispatch +0x139C = row 251 byte 0); 0x1F -> 84108A10,
+  the same restart, sleep pose (84112324). Then 84112564 and entry 0x126 on
+  the outgoing mon.
+- 8411ACE8 ends the state at counter 0x46 (70 frames), clearing +0x7F4
+  bits 0-1 and the afterimage slots (841206D0).
+
+No model hide or scale happens in family 18 itself; whatever 0x126 does to
+the model comes from the entry's own effect data (not traced).
+
+Family 32 (code 0x37, fainted mon) plays no entry; 8411A76C hides the model
+(8411EE74) for 0x37.
+
+**Trapping.** 84132778 is HandleWrap. Per battler with a wrap count
+(+0x1B > 0) and not +0x10 bit 0x10: count -1; if still > 0, 1/16 damage,
+text 0xA1, then by the trapping move (+0x1C): 0x53 Fire Spin -> 0x4C,
+0x80 Clamp -> 0x58, 0xFA Whirlpool -> 0x50, else (Bind, Wrap) -> 0x45; at 0
+text 0xA2 and 84124594 (codes 2-4). Entries via 84118DD4: 0x45 -> 0x105,
+0x4C -> 0xFF, 0x50 -> 0x118, 0x58 -> 0x129, on the trapped mon.
+
+**Destiny Bond.** 84124768 sets move 0xC2 and queues 0x55 -> 0x123 (on the
+battler passed in; not wired, no matching host event checked yet).
+
+**Items and balls.** Stadium 2 battles have no bag items and no wild
+catching, so there is no Stadium presentation for bag item use or ball
+throws. Held items are what Stadium shows: berries and Leftovers (0x4A ->
+0x10D). Other held-item codes (0x49/0x57 from 8413293C, 0x4D from 84132B9C,
+0x4E, 0x4F) are not named yet.
+
+Host pairing:
+
+| Stadium | Gen 2 (Gold) | Gen 1 (Red) |
+| --- | --- | --- |
+| 0x126 recall | enemy: the AI's "<trainer> withdrew <mon>!" message (Battle:switchEnemy), matched with the engine's Strings call against the shown mon; player: none, the engine skips Gold's withdraw step | player: the host's retreat (`shrinkOut`) rising edge, 7 frames before the swap; enemy AI switch: no withdraw step |
+| 0x105/0xFF/0x118/0x129 trap tick | damage event with `anim = false` and `animMove` = trapping move (Battle:tickWrap) | none (Red has no end-of-turn wrap damage) |
+
+Timing differs from Stadium, where the recall state runs 70 frames before
+the send-out: Gen 1's cue is 7 frames before the swap, so 0x126 keeps
+playing on the player's slot into the new mon's send-out. Gen 2's cue is
+the message line, before the send-out animation.

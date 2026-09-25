@@ -490,6 +490,25 @@ local DRAIN_EFFECTS = {EFFECT_LEECH_HIT = true, EFFECT_DREAM_EATER = true}
 
 local function sideOk(side) return side == "player" or side == "enemy" end
 
+-- Gold's AI switch prints "<trainer> withdrew <mon>!" (Battle:switchEnemy)
+-- before the send event, while the outgoing mon is still shown. Rebuilt
+-- with the engine's own Strings call so only that line matches. Gold's
+-- player switch has no withdraw step, so Stadium's recall has nothing to
+-- pair with there.
+function Scene:isEnemyWithdraw(text)
+  if type(text) ~= "string" or not text:find("withdrew", 1, true) then return false end
+  local battle = self.battle or (self.screen and self.screen.battle)
+  -- The shown mon, not battle.enemy: the engine has already swapped it in.
+  local mon = self:shownMon("enemy")
+  if not (battle and mon and battle.monName) then return false end
+  local okS, Strings = pcall(require, "src.core.Strings")
+  if not okS then return false end
+  local trainerName = (battle.trainer and battle.trainer.name) or "TRAINER"
+  local okN, name = pcall(battle.monName, battle, mon)
+  local ok, shown = pcall(Strings, "%s withdrew %s!", trainerName, okN and name or "?")
+  return ok and shown == text
+end
+
 -- Stadium's non-move effects for presented Gold events (Sequence tables).
 -- Damage events name their cause with Gold's own anim constant; heal and
 -- stage events are attributed to the move being presented. Leftovers heals
@@ -512,6 +531,9 @@ function Scene:signalEventFx(event)
       local volatile = self:volatileFor(event.side)
       entry = (volatile and volatile.cursed) and FxSequence.RESIDUAL_ENTRIES.curse
         or FxSequence.RESIDUAL_ENTRIES.nightmare
+    elseif anim == false and event.animMove then
+      -- HandleWrap's tick names the trapping move (Sequence.TRAP_ENTRIES).
+      entry = FxSequence.TRAP_ENTRIES[tonumber(event.animMove)]
     end
   elseif event.kind == "heal" and sideOk(event.side) then
     owner = event.side
@@ -537,6 +559,10 @@ function Scene:signalEventFx(event)
   end
   if entry then
     pcall(fx.signalEffect, fx, entry, owner)
+    return
+  end
+  if event.kind == "message" and self:isEnemyWithdraw(event.text) then
+    pcall(fx.signalEffect, fx, FxSequence.RECALL_ENTRY, "enemy")
     return
   end
   if event.kind == "message" then

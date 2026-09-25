@@ -11,6 +11,18 @@ Battle follow-up (2026-09-25, moves with no effect data, web session):
   blur / clones); decoded where they live, not implemented yet.
 - Needs your retest.
 
+Battle follow-up (2026-09-25, switching and trapping, web session):
+- Withdrawing a Pokemon now plays Stadium's recall effect (0x126) on it:
+  Gen 1 when your Pokemon starts its retreat, Gen 2 when the opponent's
+  "withdrew" line shows. Gen 2's own switch-out skips the withdraw step
+  entirely, so your switches there have nothing to attach it to yet.
+- Bind, Wrap, Fire Spin, Clamp and Whirlpool's end-of-turn damage (Gen 2)
+  now plays Stadium's trap effect for that move on the trapped Pokemon.
+- Ball throws and bag items: Stadium 2 has neither (no wild battles, no
+  bag in battle), so they keep Gold/Red's own animations.
+- Needs your retest (recall effect over the send-out in Gen 1: the host
+  swaps the Pokemon 7 frames after the retreat starts).
+
 Battle follow-up (2026-09-25, Agility and Double Team, web session):
 - Agility (97): from the hit frame the Pokemon sways sideways, building up
   to 50 Stadium units and settling back home (about 80 frames), trailed by

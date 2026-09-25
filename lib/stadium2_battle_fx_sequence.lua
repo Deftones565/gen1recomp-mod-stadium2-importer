@@ -122,6 +122,16 @@ Sequence.STAT_DOWN_MOVES = {[28] = true, [45] = true, [81] = true, [103] = true,
   [108] = true, [148] = true, [178] = true, [204] = true, [230] = true}
 Sequence.SEND_OUT_ENTRY = 0x122      -- 8411BCC8 (family 12) at state start
 Sequence.FAINT_ENTRIES = {first = 0x119, second = 0x11A} -- 8411A620
+-- Recall: 841334D8 (switch-out) -> 84124C10 queues 0x1E/0x1F/0x20 (normal,
+-- asleep, frozen; 0x37 without an effect when the mon has fainted), family
+-- 18 -> 8411ABAC signals 0x126 on the outgoing mon, which keeps its pose;
+-- 8411ACE8 ends the state 70 frames later.
+Sequence.RECALL_ENTRY = 0x126
+-- 84132778 (HandleWrap): each turn a trapped mon is hurt, the trapping move
+-- (battle mon +0x1C) picks the code: Fire Spin 0x4C, Clamp 0x58, Whirlpool
+-- 0x50, any other (Bind, Wrap) 0x45; signalled on the trapped mon.
+Sequence.TRAP_ENTRIES = {[20] = 0x105, [35] = 0x105, [83] = 0xFF, [128] = 0x129,
+  [250] = 0x118}
 
 -- 84124DEC / 84128CB8: a raised stat signals 0xFC when it belongs to the
 -- side using the move (8412FC9C) or comes from Rage; raising the foe's stat
