@@ -334,6 +334,66 @@ local function colorAt(fragment, base, pointer, alphaOverride)
   }
 end
 
+-- Builds the renderer's combiner record from the sixteen gDPSetCombineLERP
+-- selectors, ordered colour0 a/b/c/d, alpha0, colour1, alpha1.
+function Phase5Geometry.combinerFromSelectors(mux)
+  local combiner = {
+    color0 = { mux[1], mux[2], mux[3], mux[4] },
+    alpha0 = { mux[5], mux[6], mux[7], mux[8] },
+    color1 = { mux[9], mux[10], mux[11], mux[12] },
+    alpha1 = { mux[13], mux[14], mux[15], mux[16] },
+    selectors = mux,
+  }
+  local function colorZero(selector, role)
+    if role == 3 then return selector == 31 or selector == 7 end
+    return selector == 31 or selector >= 7
+  end
+  local function alphaZero(selector) return selector == 7 or selector == 31 end
+  combiner.cycles = colorZero(combiner.color1[1], 1)
+    and colorZero(combiner.color1[2], 2)
+    and colorZero(combiner.color1[3], 3)
+    and colorZero(combiner.color1[4], 4)
+    and alphaZero(combiner.alpha1[1]) and alphaZero(combiner.alpha1[2])
+    and alphaZero(combiner.alpha1[3]) and alphaZero(combiner.alpha1[4])
+    and 1 or 2
+  local finalAlpha = combiner.cycles == 1 and combiner.alpha0
+    or combiner.alpha1
+  -- Opaque field submissions commonly leave the combiner's alpha equation
+  -- as (0 - 0) * 0 + 0. The N64 opaque blender ignores that value and still
+  -- writes RGB; a host alpha blend would instead discard the entire surface.
+  -- Retain this fact separately from the colour-cycle classification so the
+  -- renderer can restore texture/vertex coverage only for opaque/cutout
+  -- queues. Translucent and shadow queues must keep the authored equation.
+  combiner.alphaOutputZero = alphaZero(finalAlpha[1])
+    and alphaZero(finalAlpha[2]) and alphaZero(finalAlpha[3])
+    and alphaZero(finalAlpha[4])
+  local function uses(eq, selector)
+    return eq[1] == selector or eq[2] == selector
+      or eq[3] == selector or eq[4] == selector
+  end
+  combiner.alphaUsesPrimitive = uses(finalAlpha, 3)
+    or (combiner.cycles == 2 and uses(finalAlpha, 0)
+      and uses(combiner.alpha0, 3))
+  combiner.coverage = colorZero(combiner.color1[1], 1)
+    and colorZero(combiner.color1[2], 2)
+    and colorZero(combiner.color1[3], 3)
+    and colorZero(combiner.color1[4], 4)
+  return combiner
+end
+
+-- Unpacks a G_SETCOMBINE (0xFC) command into the same selector order.
+function Phase5Geometry.combinerFromWords(w0, w1)
+  local function bits(value, shift, width)
+    return math.floor(value / 2 ^ shift) % 2 ^ width
+  end
+  return Phase5Geometry.combinerFromSelectors({
+    bits(w0, 20, 4), bits(w1, 28, 4), bits(w0, 15, 5), bits(w1, 15, 3),
+    bits(w0, 12, 3), bits(w1, 12, 3), bits(w0, 9, 3), bits(w1, 9, 3),
+    bits(w0, 5, 4), bits(w1, 24, 4), bits(w0, 0, 5), bits(w1, 6, 3),
+    bits(w1, 21, 3), bits(w1, 3, 3), bits(w1, 18, 3), bits(w1, 0, 3),
+  })
+end
+
 -- Mode 1 in func_810024E0 sources RGB from the callback color block and the
 -- live model alpha. Mode 2, used by Stadium fields, submits all four authored
 -- color bytes directly. Battle/field fades remain applied later through
@@ -357,48 +417,8 @@ function Phase5Geometry.materialSpec(fragment, sourceBase, argumentOffset, submi
     -- func_810020E0 packs these sixteen selectors into gDPSetCombineLERP.
     -- Preserve the ROM's two cycle equations instead of approximating them
     -- as texture * primitive colour.
-    combiner = {
-      color0 = { mux[1], mux[2], mux[3], mux[4] },
-      alpha0 = { mux[5], mux[6], mux[7], mux[8] },
-      color1 = { mux[9], mux[10], mux[11], mux[12] },
-      alpha1 = { mux[13], mux[14], mux[15], mux[16] },
-      selectors = mux,
-      offset = combinerOffset,
-    }
-    local function colorZero(selector, role)
-      if role == 3 then return selector == 31 or selector == 7 end
-      return selector == 31 or selector >= 7
-    end
-    local function alphaZero(selector) return selector == 7 or selector == 31 end
-    combiner.cycles = colorZero(combiner.color1[1], 1)
-      and colorZero(combiner.color1[2], 2)
-      and colorZero(combiner.color1[3], 3)
-      and colorZero(combiner.color1[4], 4)
-      and alphaZero(combiner.alpha1[1]) and alphaZero(combiner.alpha1[2])
-      and alphaZero(combiner.alpha1[3]) and alphaZero(combiner.alpha1[4])
-      and 1 or 2
-    local finalAlpha = combiner.cycles == 1 and combiner.alpha0
-      or combiner.alpha1
-    -- Opaque field submissions commonly leave the combiner's alpha equation
-    -- as (0 - 0) * 0 + 0. The N64 opaque blender ignores that value and still
-    -- writes RGB; a host alpha blend would instead discard the entire surface.
-    -- Retain this fact separately from the colour-cycle classification so the
-    -- renderer can restore texture/vertex coverage only for opaque/cutout
-    -- queues. Translucent and shadow queues must keep the authored equation.
-    combiner.alphaOutputZero = alphaZero(finalAlpha[1])
-      and alphaZero(finalAlpha[2]) and alphaZero(finalAlpha[3])
-      and alphaZero(finalAlpha[4])
-    local function uses(eq, selector)
-      return eq[1] == selector or eq[2] == selector
-        or eq[3] == selector or eq[4] == selector
-    end
-    combiner.alphaUsesPrimitive = uses(finalAlpha, 3)
-      or (combiner.cycles == 2 and uses(finalAlpha, 0)
-        and uses(combiner.alpha0, 3))
-    combiner.coverage = colorZero(combiner.color1[1], 1)
-      and colorZero(combiner.color1[2], 2)
-      and colorZero(combiner.color1[3], 3)
-      and colorZero(combiner.color1[4], 4)
+    combiner = Phase5Geometry.combinerFromSelectors(mux)
+    combiner.offset = combinerOffset
   end
   if not primitive and not environment and not combiner then return nil end
   return {

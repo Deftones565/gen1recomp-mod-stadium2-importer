@@ -1,5 +1,18 @@
 Move bug list
 
+Viewer follow-up (2026-09-25, moves 11, 12, 13, 16, 18, 44, local session):
+- The jaw (Vice Grip, Guillotine, Bite) and wind-sheet (Razor Wind, Gust,
+  Whirlwind) models now use the combiner and colours their own display
+  lists set, plus the per-node table combiner Stadium applies (layout 0x23
+  byte 1). Before, they had no combiner and drew black or flat white.
+- Static FX shapes were being drawn as arena geometry (opaque "replace"
+  blending), which made the wind sheet a black wall. They now blend, and
+  follow their node layer's render mode (no depth writes).
+- The jaws still draw white: their colour depends on an environment colour
+  the model never sets and inherits from earlier draws, which is not
+  decoded yet.
+- Needs your retest.
+
 Battle follow-up (2026-09-25, moves with no effect data, web session):
 - Growth, Metronome and Splash: in Stadium these are just the species'
   own move animation, which the mod already plays. Nothing was missing.

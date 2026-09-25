@@ -1016,6 +1016,22 @@ local function sendTextureWrapMode(shader, uniform, wrapS, wrapT)
     {Sampler.wrapCode(wrapS), Sampler.wrapCode(wrapT)})
 end
 
+function Renderer.combinerUsesShade(combiner)
+  if type(combiner) ~= "table" then return true end
+  local SHADE, SHADE_ALPHA = 4, 11
+  for index, equation in ipairs({ combiner.color0, combiner.color1 }) do
+    if index == 1 or combiner.cycles ~= 1 then
+      for position = 1, 4 do
+        local source = equation[position]
+        if source == SHADE or (position == 3 and source == SHADE_ALPHA) then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
 local function sendN64Combiner(shader, material)
   if not (shader and shader.send) then return false end
   local combiner = material and material.phase5 and material.combiner
@@ -1113,15 +1129,19 @@ end
 
 -- Direct battle-FX shape entries carry the 84102E84 render-mode selector.
 local function battleFxRenderMode(prim)
-  if not prim or prim.battleFxRenderState == nil then return nil end
+  if not prim or (prim.battleFxRenderState == nil
+      and prim.battleFxNodeLayer == nil) then return nil end
   if prim.battleFxRenderModeDecoded == nil then
-    prim.battleFxRenderModeDecoded = BattleFxRenderMode.decode(prim.battleFxRenderState) or false
+    prim.battleFxRenderModeDecoded = (prim.battleFxRenderState ~= nil
+      and BattleFxRenderMode.decode(prim.battleFxRenderState)
+      or BattleFxRenderMode.fromNodeLayer(prim.battleFxNodeLayer)) or false
   end
   return prim.battleFxRenderModeDecoded or nil
 end
 
 local function isArenaModel(model)
   return model and model.staticPose == true and tonumber(model.species) == 0
+    and model.battleFx ~= true
 end
 
 function Renderer.arenaCombinerCoveragePassthrough(model, prim, material)
@@ -2016,6 +2036,24 @@ function Renderer:currentMaterial(prim)
     -- retains its display-list material.
     material = nil
   end
+  local listState = prim and prim.material
+  if material and listState and listState.displayListState
+      and material.combiner == nil then
+    -- A phase-5 callback without a colour block submits only colours
+    -- (810024E0 path 81002A7C); the combiner set earlier by the node's
+    -- display list stays in effect.
+    self.displayListMaterialCache = self.displayListMaterialCache
+      or setmetatable({}, { __mode = "k" })
+    local cached = self.displayListMaterialCache[material]
+    if not (cached and cached.base == listState) then
+      local merged = {}
+      for key, value in pairs(listState) do merged[key] = value end
+      for key, value in pairs(material) do merged[key] = value end
+      cached = { base = listState, merged = merged }
+      self.displayListMaterialCache[material] = cached
+    end
+    return cached.merged
+  end
   return material or (prim and prim.material)
 end
 
@@ -2425,6 +2463,10 @@ function Renderer:drawScene(pass, model, options)
         local color = attribute and attribute.color or
           (material and material.primitiveColor) or {1,1,1,1}
         local fxColors=options.battleFxColors
+        -- Node display lists and phase-5 callbacks submit their primitive and
+        -- environment colours after the object state, so they take precedence.
+        local listState=material and material.displayListState
+        if listState then fxColors=nil end
         if fxColors and fxColors.primaryColor then
           local c=fxColors.primaryColor
           color={c[1]/255,c[2]/255,c[3]/255,1}
@@ -2435,8 +2477,10 @@ function Renderer:drawScene(pass, model, options)
           part.prim.effect == "fire" and 2
             or (material and material.intensity and 1 or 0))
         pcall(self.shader.send, self.shader, "primitiveColor", color)
+        -- A list-authored combiner lights the surface only through SHADE.
         pcall(self.shader.send, self.shader, "lightingEnabled",
-          renderState.lightingEnabled and 1 or 0)
+          renderState.lightingEnabled and not (listState
+            and not Renderer.combinerUsesShade(material.combiner)) and 1 or 0)
         if g.setDepthMode then
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
           if fxMode and fxMode.depthCompare ~= nil then
