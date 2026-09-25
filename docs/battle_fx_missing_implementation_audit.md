@@ -1,5 +1,55 @@
 # Battle FX missing implementation audit — 2026-09-23
 
+## Remaining-gap inventory (2026-09-25, code vs. decomp cross-reference)
+
+Method: every fragment-79 address cited in `lib/` (497) and in docs/bug log
+(1,194 incl. code) was matched against michiiik/pokestadiumgs `7fc529e5`
+(1,729 of 1,785 fragment-79 functions located; 674 still GLOBAL_ASM). A call
+graph was walked through the fork's C from those functions plus the FX entry
+points (8410580C, 8410545C, 84108728, 8410874C, 841087B8, 841088CC,
+8410890C, 841089D8, 84108A10..84109118, 84103478, 84103394, 84102B3C).
+It reached 281 functions: 223 cited in `lib/`, 26 cited only in docs, 32 not
+cited. GLOBAL_ASM functions are opaque in this walk (their callees need the
+US assembly), so this complements, and does not replace, the pret-asm call
+graph used for the 528-function audit in `battle_FX_bugs.md`. No ROM was
+available; the ROM sweep above has not been regenerated.
+
+Most of the 32 uncited functions are not gaps: 841094F8/84109590/841095DC/
+84109848/84109884/84109B1C and their 841569xx wrappers are lifecycle-slot
+accessors whose sibling accessors (84109544, 841098C0) and callee families
+are implemented or run under the ROM VM; ParticleGfx_Build* (84103EA8,
+84103FF0, 8410413C) are the bodies of the implemented billboard modes
+84104528/84104590/84104668; 84109B9C is an empty function.
+
+Implemented since the 2026-09-23 per-move table (rows there are stale):
+84107998 secondary/all-marker emission (54, 73, 108, 114, 123, 139, 207, 223,
+234-236), 84105930 camera-ray anchor (37 moves), 8411E244 context marker
+(240), the dynamic-anchor rows (audit stub artifact), wave-grid finish
+signal, 841089D8 failure path, 84108A10 held release, move-then-impact
+sequencing, 84102B3C billboards and 84102E84 render modes.
+
+Still missing. "Blocked" names what is needed to implement it from evidence.
+
+| # | Gap | Affects | Decomp status | Blocked on |
+|---:|---|---|---|---|
+| 1 | Status visuals: 84119630/841193E0 choose entries 0x106/0x107/0x10C/0x113/0x11F/0x120/0x121 per status branch | sleep, poison, paralysis, burn, freeze, confusion | asm | US asm; status-byte encoding |
+| 2 | Host triggers for non-move entries 252-301 (`Adapter:signalEffect` exists, no host calls it) | stat changes, faint, switch, weather, etc. | callers in C: 841176E0 (0xFD at hit frame when result&0x10), 84118138/841182E0 (0xFE at state counter 8), 8411862C/8411A3D4 (0x100), BattleAnim_Dispatch_143 (0x104), 8411ABAC (0x126), BattleAnim_Dispatch_177 (0x12C), BattleAnim_Dispatch_184 (0x112); selectors 84118DD4/841189EC asm | which battle event selects each actor state; result-byte bit meanings |
+| 3 | Host battle inputs: `nativeResult` (D_84193DD0+9), `resultFlags`, `sourceStatus`, `ownerStatusPattern` are never supplied by gen1/gen2 hosts | result-1 impact rule, misses, opcode-16 moves 168, 173, 217 and contexts 274/290/292/298/299 | writer of D_84193DD0+9 not found in C | battle-engine encoding of those bytes |
+| 4 | Two-turn variant route (`Adapter:playVariant` exists, no host calls it) | 13, 19, 76, 91, 130, 143 | callers 84115B34/841156D0/84116248 asm | US asm |
+| 5 | Exact hit timing (impact starts at move start + hit frame; ROM restarts the counter after the approach phase) | every move with an impact bank | attack states partly C; approach phase asm | US asm |
+| 6 | Status-shape release variants 84108AF8/84108CE8/84108E00/84108F88/84109118 | shapes 0x12/0xD3/0x13D; entry 0x11F | asm (behaviour summarised in bug log) | US asm for exact conditions |
+| 7 | 300-slot particle pool, allocator 84100260 and pool-origin spawn 8410668C | 55, 140, 188, 190; cap on all moves | asm | US asm: allocation cursor, no-match behaviour |
+| 8 | Second draw pass 84103394 (runtime flag 0x1000, D_80094910+0x18) | unknown; no retail setter of 0x1000 identified | C (84103394 matched) | who sets flag 0x1000 |
+| 9 | Moves with both banks empty (74, 97, 104, 107, 118, 150, 156): visuals live in actor code (Rest: 841153DC) | those 7 moves | asm | US asm |
+| 10 | 810024E0 path without a colour block (inherits previous RDP combiner) | Swords Dance and likely other compiled-layout FX | asm | US asm + submission-order state |
+| 11 | Frame-loop helpers not cited: 84105120, 84105630 (from 8410580C), 84108654, 8410922C (from 841051D8), 84109394 (from 84109460), 841037A0 | unknown | asm | US asm review |
+| 12 | Lag on moves with 20-40 live particles (7, 9, 37, 52, 53) | many | n/a | profiling on the target machine |
+| 13 | Visual retests, moves 57-251 | all | n/a | user retest |
+
+Out of scope, checked: fragment79_393CA0 (`BattleAnim_Table_84185F10_*`, battle
+mechanics on per-party-member records) and 379450/379E90 (scene setup, main
+loop).
+
 251 moves; 1004 scenarios (both banks and both source sides); 360 ticks each; draw samples every 15 ticks; finish signal at tick 120.
 395 programs inspected, 343 referenced by move dispatch; 30 lifecycle table rows; 0 execution failures.
 Real Koffing/Croconaw ROM skeletons, bind-pose markers, dispatch profiles and FX resource extraction. Renderer is a CPU validation stub: GPU shaders, animated poses, timing between draw samples, other species, arenas and every battle-state combination are not verified.
