@@ -12,6 +12,7 @@ end
 -- importer mocks.
 local importer={}
 local adapterNew,adapterTrigger,adapterUpdates,finishes=0,{},{},0
+local signals={}
 local adapter={
   new=function(received,options)
     adapterNew=adapterNew+1
@@ -22,6 +23,7 @@ local adapter={
       end,
       update=function(_,dt) adapterUpdates[#adapterUpdates+1]=dt end,
       finish=function() finishes=finishes+1 end,
+      signalEffect=function(_,id,owner) signals[#signals+1]={id=id,owner=owner} end,
     }
   end,
 }
@@ -72,5 +74,31 @@ ok(finishes==0,"active animation keeps lifecycle effects alive")
 battle.animPlaying=false
 scene:syncPresentationState();scene:syncPresentationState()
 ok(finishes==1,"animation falling edge finishes lifecycle effects once")
+
+-- Red's residual rows -> Stadium entries on the suffering side.
+battle.data.moves.ABSORB={index=71}
+battle.player.mon.status="PSN"
+battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="BURN_PSN_ANIM",true,true
+scene:syncPresentationState()
+ok(signals[#signals].id==0x101 and signals[#signals].owner=="player","BURN_PSN_ANIM on a poisoned mon -> 0x101")
+battle.animPlaying=false;scene:syncPresentationState()
+battle.enemy.mon.status="BRN"
+battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="BURN_PSN_ANIM",false,true
+scene:syncPresentationState()
+ok(signals[#signals].id==0x102 and signals[#signals].owner=="enemy","BURN_PSN_ANIM on a burned mon -> 0x102")
+battle.animPlaying=false;scene:syncPresentationState()
+local triggers=#adapterTrigger
+battle.pendingHit=nil
+battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="ABSORB",true,true
+scene:syncPresentationState()
+ok(signals[#signals].id==0x103 and signals[#signals].owner=="enemy" and #adapterTrigger==triggers,
+  "Leech Seed's ABSORB row -> 0x103 on the seeded side, no Absorb move FX")
+battle.animPlaying=false;scene:syncPresentationState()
+battle.pendingHit={animType=4}
+battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="ABSORB",true,true
+scene:syncPresentationState()
+ok(#adapterTrigger==triggers+1 and adapterTrigger[#adapterTrigger][1]==71,
+  "a real Absorb (with hit data) still plays its move FX")
+battle.animPlaying=false;scene:syncPresentationState()
 
 print(("%d checks passed (Stadium 2 Gen 1 battle FX integration)"):format(checks))

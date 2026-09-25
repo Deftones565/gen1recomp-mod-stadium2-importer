@@ -92,6 +92,41 @@ ok(signals[2].id==0x113,"sandstorm rages -> entry 0x113")
 ok(signals[3].id==0x121,"sunlight faded -> entry 0x121")
 ok(signals[4].id==0x125 and signals[4].owner=="enemy","sandstorm hit -> entry 0x125 on that side")
 
+-- Non-move effects paired with Gold events.
+signals={}
+local function last() return signals[#signals] end
+scene:handleEvent({kind="damage",side="player",amount=2,hp=10,anim="ANIM_PSN"})
+ok(last().id==0x101 and last().owner=="player","poison damage -> 0x101 on the sufferer")
+scene:handleEvent({kind="damage",side="enemy",amount=2,hp=10,anim="ANIM_BRN"})
+ok(last().id==0x102 and last().owner=="enemy","burn damage -> 0x102")
+scene:handleEvent({kind="damage",side="enemy",amount=2,hp=8,anim="ANIM_SAP"})
+ok(last().id==0x103 and last().owner=="enemy","Leech Seed -> 0x103 on the seeded side")
+local count=#signals
+scene:handleEvent({kind="heal",side="player",amount=2,hp=12})
+ok(#signals==count,"Leech Seed's heal (no presented drain move) signals nothing")
+scene:handleEvent({kind="damage",side="player",amount=5,hp=5,anim="ANIM_IN_NIGHTMARE"})
+ok(last().id==0x10A,"ANIM_IN_NIGHTMARE without a curse -> Nightmare 0x10A")
+scene:handleEvent({kind="heal",side="enemy",amount=5,hp=15,anim="RECOVER"})
+ok(last().id==0x10D and last().owner=="enemy","berry heal -> 0x10D")
+battle.data.moves[202]={index=202,effect="EFFECT_LEECH_HIT"}
+battle.data.moves[138]={index=138,effect="EFFECT_DREAM_EATER"}
+battle.data.moves[14]={index=14,effect="EFFECT_ATTACK_UP_2"}
+battle.data.moves[45]={index=45,effect="EFFECT_ATTACK_DOWN"}
+scene:handleEvent({kind="move",side="player",move=202,missed=true})
+scene:handleEvent({kind="heal",side="player",amount=4,hp=14})
+ok(last().id==0x116,"Giga Drain's heal -> 0x116")
+scene:handleEvent({kind="move",side="enemy",move=138,missed=true})
+scene:handleEvent({kind="heal",side="enemy",amount=4,hp=14})
+ok(last().id==0x10D,"another drain (Dream Eater) -> 0x10D")
+scene:handleEvent({kind="move",side="player",move=14,missed=true})
+scene:handleEvent({kind="stage",side="player",stat="attack",stages=2})
+ok(last().id==0xFC and last().owner=="player","Swords Dance's raise -> 0xFC")
+scene:handleEvent({kind="move",side="enemy",move=45,missed=true})
+scene:handleEvent({kind="stage",side="player",stat="attack",stages=-1})
+ok(last().id==0xFD and last().owner=="player","Growl's drop -> 0xFD on the target")
+scene:handleEvent({kind="send",side="enemy",mon=battle.enemy})
+ok(last().id==0x122 and last().owner=="enemy","send-out -> 0x122")
+
 -- Resting-pose condition follows presented status events, not live status.
 battle.player.status="sleep"
 ok(not scene:restCondition("player").asleep,"live status alone does not start the sleep pose")

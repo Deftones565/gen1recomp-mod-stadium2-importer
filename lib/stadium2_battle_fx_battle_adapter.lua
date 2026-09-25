@@ -736,6 +736,43 @@ function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult)
   return effect, err
 end
 
+-- Queue 8410890C(entry) for `owner`, `ticks` 30 Hz ticks from now.
+function Adapter:scheduleSignal(entry, owner, ticks)
+  if not self.player then return nil, "battle FX player is unavailable" end
+  self.pendingSignals = self.pendingSignals or {}
+  self.pendingSignals[#self.pendingSignals + 1] = {entry = entry, owner = owner,
+    frame = (self.player.runtime and self.player.runtime.frame or 0) + math.max(0, math.floor(tonumber(ticks) or 0))}
+  return true
+end
+
+-- Faint effects on the fainting side, timed from its context-253 row
+-- (Sequence.faintFrames). The counter starts with the host's faint clip.
+function Adapter:playFaint(side, actor)
+  local model = actor and actor.renderer and actor.renderer.model
+  local first, second = Sequence.faintFrames(model and model.fxDispatch)
+  if not first then
+    self:_warn({code = "unresolved-faint-frames", message = "faint row 253 is unavailable; faint effects not played"})
+    return false
+  end
+  local marker = Dispatch.contextMarker(Sequence.FAINT_ENTRIES.first,
+    model.fxContextScales, model.fxDispatch)
+  if marker ~= 0xFF then self:scheduleSignal(Sequence.FAINT_ENTRIES.first, side, first) end
+  self:scheduleSignal(Sequence.FAINT_ENTRIES.second, side, second)
+  return true
+end
+
+function Adapter:_firePendingSignals()
+  local pending = self.pendingSignals
+  if not pending or #pending == 0 then return end
+  local frame = self.player and self.player.runtime and self.player.runtime.frame or 0
+  local kept = {}
+  for _, item in ipairs(pending) do
+    if frame >= item.frame then self:signalEffect(item.entry, item.owner)
+    else kept[#kept + 1] = item end
+  end
+  self.pendingSignals = kept
+end
+
 function Adapter:_firePendingImpacts()
   local pending = self.pendingImpacts
   if not pending or #pending == 0 then return end
@@ -763,6 +800,7 @@ function Adapter:update(dt)
   if self.player then
     local frame = self.player:update(dt)
     self:_firePendingImpacts()
+    self:_firePendingSignals()
     return frame
   end
 end

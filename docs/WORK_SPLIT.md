@@ -106,6 +106,11 @@ Local session: move them to "Verified" with the result.
   context 261 (sleep), 262 (Fly) and 258 (Diglett/Dugtrio Dig) clips for a
   few species; confirm no species lacks them (the actor warns once if so).
 
+- 2026-09-25 (this commit) battle-event effects 0x101-0x103, 0x109,
+  0x10A, 0x10D, 0x114-0x117, 0xFC, 0xFD, 0x122, 0x119/0x11A: viewer check of
+  those entries (J/L) that they draw; battle retest of poison, burn, Leech
+  Seed, a stat move, a drain move, a switch and a faint.
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,

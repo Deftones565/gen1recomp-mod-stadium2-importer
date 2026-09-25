@@ -111,4 +111,38 @@ ok(scheduled == 3, "the impact is scheduled with the built result byte")
 adapter:playMoveAndImpact(1, "enemy", nil)
 ok(scheduled == nil, "without facts the impact keeps the ordinary (nil) result")
 
+-- Scheduled signals and faint timing.
+local signalled = {}
+adapter.signalEffect = function(_, id, owner) signalled[#signalled + 1] = {id = id, owner = owner} end
+player.runtime.frame = 100
+adapter:scheduleSignal(0x122, "enemy", 3)
+adapter:_firePendingSignals()
+ok(#signalled == 0, "a scheduled signal waits for its frame")
+player.runtime.frame = 103
+adapter:_firePendingSignals()
+ok(#signalled == 1 and signalled[1].id == 0x122 and signalled[1].owner == "enemy",
+  "the signal fires at its frame for its owner")
+local Dispatch = require(prefix .. "animation_dispatch")
+local row = {}
+for i = 1, 271 * 20 do row[i] = "\0" end
+row[253 * 20 + 0x0B + 1] = string.char(12)
+row[253 * 20 + 0x0A + 1] = string.char(30)
+local faintActor = {renderer = {model = {fxDispatch = table.concat(row)}}}
+local oldMarker = Dispatch.contextMarker
+Dispatch.contextMarker = function() return 0x0B end
+signalled = {}
+player.runtime.frame = 0
+ok(adapter:playFaint("player", faintActor), "faint effects are scheduled")
+player.runtime.frame = 12; adapter:_firePendingSignals()
+player.runtime.frame = 30; adapter:_firePendingSignals()
+ok(#signalled == 2 and signalled[1].id == 0x119 and signalled[2].id == 0x11A,
+  "0x119 at the row's 0x0B frame, 0x11A at its 0x0A frame")
+Dispatch.contextMarker = function() return 0xFF end
+signalled = {}
+adapter:playFaint("player", faintActor)
+player.runtime.frame = 60; adapter:_firePendingSignals()
+ok(#signalled == 1 and signalled[1].id == 0x11A, "a 0xFF marker skips 0x119 (8411E244)")
+Dispatch.contextMarker = oldMarker
+ok(adapter:playFaint("player", {}) == false, "no dispatch rows: faint effects are reported, not guessed")
+
 print(("%d checks passed (battle FX defender reaction)"):format(checks))

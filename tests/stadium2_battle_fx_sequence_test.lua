@@ -49,6 +49,26 @@ ok(Sequence.resultByte({damaging = true}) == nil, "a missing type modifier stays
 ok(Sequence.resultByte({damaging = false}) == nil, "status-move results are not guessed")
 ok(Sequence.resultByte(nil) == nil, "absent facts stay unresolved")
 
+-- Stat changes (8412FC9C/84124DEC, 84128CB8, 8412FD24).
+ok(Sequence.statChangeEntry({side = "player", stages = 1, moveSide = "player", moveId = 14}) == 0xFC,
+  "the user's own raised stat is 0xFC")
+ok(Sequence.statChangeEntry({side = "enemy", stages = 2, moveSide = "player", moveId = 207}) == nil,
+  "raising the foe's stat (Swagger) signals nothing")
+ok(Sequence.statChangeEntry({side = "enemy", stages = 1, moveSide = "player", rage = true}) == 0xFC,
+  "Rage building is 0xFC")
+ok(Sequence.statChangeEntry({side = "enemy", stages = -1, moveSide = "player", moveId = 45}) == 0xFD,
+  "Growl's lowered stat is 0xFD")
+ok(Sequence.statChangeEntry({side = "enemy", stages = -1, moveSide = "player", moveId = 39}) == nil,
+  "Tail Whip signals no stat entry")
+ok(Sequence.statChangeEntry({side = "enemy", stages = -1, moveSide = "player", moveId = 62}) == nil,
+  "a damaging move's stat-down side effect signals nothing")
+
+-- Faint timing from context 253's row (8411A3D4).
+local faintRow = string.rep("\0", 253 * 20) .. string.rep("\0", 0x0A) .. "\30\12" .. string.rep("\0", 8)
+local first, second = Sequence.faintFrames(faintRow)
+ok(first == 12 and second == 30, "0x119 at row byte 0x0B, 0x11A at byte 0x0A")
+ok(Sequence.faintFrames(nil) == nil, "no dispatch rows, no faint timing")
+
 -- Router variant channel.
 local move = {primaryDispatch = {{kind = "program", programId = 1}},
   alternateDispatch = {{kind = "program", programId = 2}},

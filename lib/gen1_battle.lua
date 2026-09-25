@@ -17,6 +17,7 @@ local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
 local BattleFxAdapter = require(
   "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
 local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
+local FxSequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
 
 local Gen1={COUNT=251}
 local modRef,installed,session
@@ -255,6 +256,10 @@ function Scene:syncPresentationState()
     local activeGrow=grow~=nil and grow>0 and grow<1
     if grow and not self.lastGrow[side] then
       self.actors[side]:play("entrance",false)
+      -- 8411BCC8: the send-out state signals entry 0x122 as it starts.
+      if self.battleFx and self.battleFx.signalEffect then
+        pcall(self.battleFx.signalEffect,self.battleFx,FxSequence.SEND_OUT_ENTRY,side)
+      end
     end
     self.lastGrow[side]=grow and true or false
 
@@ -263,7 +268,9 @@ function Scene:syncPresentationState()
     local faintFx=b and safeCall(battle,"fxFaintActive",b) or false
     if (faintFx or fainted) and not self.lastFainted[side]
         and self.actors[side].renderer then
-      self.actors[side]:faint()
+      if self.actors[side]:faint() and self.battleFx and self.battleFx.playFaint then
+        pcall(self.battleFx.playFaint,self.battleFx,side,self.actors[side])
+      end
     end
     self.lastFainted[side]=fainted or faintFx or false
 
@@ -283,6 +290,26 @@ function Scene:syncPresentationState()
   if playing and not self.animWasPlaying then
     local name=battle.animName
     local def=battle.data and battle.data.moves and battle.data.moves[name]
+    local rowSide=battle.animAttackerIsPlayer and "player" or "enemy"
+    -- Red's residual rows (core.asm:490-517): BURN_PSN_ANIM on the suffering
+    -- side, and Leech Seed's drain as an ABSORB row from the healing side
+    -- with no hit data (a real Absorb carries its hit row). Stadium signals
+    -- 0x101/0x102 and 0x103 on the suffering (seeded) side instead.
+    local residual
+    if name=="BURN_PSN_ANIM" then
+      local b=self:shownBattler(rowSide)
+      local status=b and b.mon and b.mon.status
+      residual=status=="BRN" and FxSequence.RESIDUAL_ENTRIES.burn
+        or status=="PSN" and FxSequence.RESIDUAL_ENTRIES.poison or nil
+      if residual then residual={entry=residual,side=rowSide} end
+    elseif name=="ABSORB" and battle.pendingHit==nil then
+      residual={entry=FxSequence.RESIDUAL_ENTRIES.leechSeed,
+        side=rowSide=="player" and "enemy" or "player"}
+      def=nil
+    end
+    if residual and self.battleFx and self.battleFx.signalEffect then
+      pcall(self.battleFx.signalEffect,self.battleFx,residual.entry,residual.side)
+    end
     if def then
       local side=battle.animAttackerIsPlayer and "player" or "enemy"
       local moveId=tonumber(def.index or def.number)

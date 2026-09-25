@@ -453,7 +453,7 @@ function Scene:handleEvent(event)
     self.actors[side]:load(data, event.mon, dexOf(data, event.mon))
     self.actors[side]:play("entrance", false)
   end
-  self:signalWeatherFx(event)
+  self:signalEventFx(event)
 end
 
 -- Stadium's weather entries (Sequence.WEATHER_ENTRIES). Gold emits the
@@ -474,10 +474,60 @@ local function weatherFrom(tableName, text)
   return nil
 end
 
-function Scene:signalWeatherFx(event)
+-- Gold's DRAIN effects (pokecrystal EFFECT_LEECH_HIT / EFFECT_DREAM_EATER).
+local DRAIN_EFFECTS = {EFFECT_LEECH_HIT = true, EFFECT_DREAM_EATER = true}
+
+local function sideOk(side) return side == "player" or side == "enemy" end
+
+-- Stadium's non-move effects for presented Gold events (Sequence tables).
+-- Damage events name their cause with Gold's own anim constant; heal and
+-- stage events are attributed to the move being presented. Leftovers heals
+-- carry no source and are not signalled.
+function Scene:signalEventFx(event)
   local fx = self.battleFx
   if not fx or not fx.signalEffect then return end
+  if event.kind == "move" and sideOk(event.side) then
+    self.presentedMove = {side = event.side, move = tonumber(event.move)}
+  end
   local entry, owner
+  if event.kind == "damage" and sideOk(event.side) then
+    local anim = event.anim
+    owner = event.side
+    if anim == "ANIM_PSN" then entry = FxSequence.RESIDUAL_ENTRIES.poison
+    elseif anim == "ANIM_BRN" then entry = FxSequence.RESIDUAL_ENTRIES.burn
+    elseif anim == "ANIM_SAP" then entry = FxSequence.RESIDUAL_ENTRIES.leechSeed
+    elseif anim == "ANIM_IN_NIGHTMARE" then
+      -- Gold's Curse arm borrows ANIM_IN_NIGHTMARE; the cursed flag decides.
+      local volatile = self:volatileFor(event.side)
+      entry = (volatile and volatile.cursed) and FxSequence.RESIDUAL_ENTRIES.curse
+        or FxSequence.RESIDUAL_ENTRIES.nightmare
+    end
+  elseif event.kind == "heal" and sideOk(event.side) then
+    owner = event.side
+    local moving = self.presentedMove
+    if event.anim == "RECOVER" then
+      entry = FxSequence.HEAL_ENTRY -- held berry (ItemRecoveryAnim)
+    elseif moving and moving.side == event.side then
+      local data = self.screen and self.screen.game and self.screen.game.data
+      local def = data and data.moves and data.moves[moving.move]
+      if def and DRAIN_EFFECTS[def.effect] then
+        entry = FxSequence.DRAIN_ENTRIES[moving.move] or FxSequence.HEAL_ENTRY
+      end
+    end
+  elseif event.kind == "stage" and sideOk(event.side) then
+    local moving = self.presentedMove or {}
+    local volatile = self:volatileFor(event.side)
+    owner = event.side
+    entry = FxSequence.statChangeEntry({side = event.side, stages = event.stages,
+      moveSide = moving.side, moveId = moving.move, rage = volatile and volatile.rage})
+  elseif (event.kind == "send" or event.kind == "sendout") then
+    owner = sideOk(event.side) and event.side or "player"
+    entry = FxSequence.SEND_OUT_ENTRY
+  end
+  if entry then
+    pcall(fx.signalEffect, fx, entry, owner)
+    return
+  end
   if event.kind == "message" then
     local weather = weatherFrom("WEATHER_TURN_TEXT", event.text)
     entry = weather and FxSequence.WEATHER_ENTRIES[weather].turn
@@ -538,7 +588,11 @@ function Scene:update(dt)
     if actor.pendingFaint then
       local shown=self.screen and self.screen.shownHp and self.screen.shownHp[side]
       local slide=self.screen and self.screen.faintSlide
-      if (shown==nil or shown<=0) and slide and slide.side==side then actor:faint() end
+      if (shown==nil or shown<=0) and slide and slide.side==side then
+        if actor:faint() and self.battleFx and self.battleFx.playFaint then
+          pcall(self.battleFx.playFaint,self.battleFx,side,actor)
+        end
+      end
     end
   end
   self:stepArena(dt)

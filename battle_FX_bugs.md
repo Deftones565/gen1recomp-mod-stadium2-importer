@@ -1,5 +1,17 @@
 Move bug list
 
+Battle follow-up (2026-09-25, status and battle-event effects, web session):
+- Stadium's effects now play for: poison/toxic and burn damage, Leech Seed,
+  Curse, stat raises (your own, Rage, Belly Drum) and drops (Sand-Attack,
+  Growl, String Shot, Screech, Smokescreen, Flash, Cotton Spore, Charm,
+  Sweet Scent, exactly as in Stadium), drain heals (Absorb, Mega Drain,
+  Giga Drain, Leech Life, others), berries, send-out, and fainting (timed
+  per species). Gen 2 gets all of these; Gen 1 gets poison/burn, Leech Seed,
+  send-out and faint. Needs your retest.
+- Leech Seed in Gen 1 no longer plays Absorb's move effect for the drain.
+- Not yet: Leftovers, Spikes, full paralysis, Attract, and Gen 1 stat
+  changes (the recomp's events don't carry enough to identify them).
+
 Battle follow-up (2026-09-25, resting poses, web session):
 - Pokemon now hold Stadium's resting poses between actions: asleep loops
   its sleep clip, frozen holds its hit clip, a Pokemon up in the air during

@@ -97,6 +97,57 @@ Sequence.SANDSTORM_HIT_ENTRY = 0x125
 -- below 0x3F queues code 0x36 for the battler -> entry 0x10C.
 Sequence.FULLY_PARALYZED_ENTRY = 0x10C
 
+-- Non-move entries for battle events, from the event-code tables of
+-- 84118DD4 (family 9) and the battle-engine call sites that queue each code
+-- (fragment79_393CA0; see docs/luna/research/battle-event-effects.md).
+-- 84131AF8 residual damage: poison/toxic 0x3C/0x3D, burn 0x3E, Leech Seed
+-- 0x3F (on the seeded mon), Nightmare 0x40, Curse 0x43.
+Sequence.RESIDUAL_ENTRIES = {
+  poison = 0x101, toxic = 0x101, burn = 0x102, leechSeed = 0x103,
+  nightmare = 0x10A, curse = 0x109,
+}
+Sequence.SPIKES_ENTRY = 0x10B        -- 84131EAC, code 0x46
+Sequence.ATTRACT_ENTRY = 0x108       -- 84127194, code 6 (in love)
+Sequence.HEAL_ENTRY = 0x10D          -- code 0x4A: drain, Leftovers, berries
+-- 84129180: the drain heal picks a per-move code.
+Sequence.DRAIN_ENTRIES = {[71] = 0x114, [72] = 0x115, [141] = 0x117, [202] = 0x116}
+Sequence.STAT_UP_ENTRY = 0xFC        -- code 0x41
+Sequence.STAT_DOWN_ENTRY = 0xFD      -- code 0x42
+-- 8412FD24 queues 0x42 only for these moves (Sand-Attack, Growl, String
+-- Shot, Screech, Smokescreen, Flash, Cotton Spore, Charm, Sweet Scent).
+Sequence.STAT_DOWN_MOVES = {[28] = true, [45] = true, [81] = true, [103] = true,
+  [108] = true, [148] = true, [178] = true, [204] = true, [230] = true}
+Sequence.SEND_OUT_ENTRY = 0x122      -- 8411BCC8 (family 12) at state start
+Sequence.FAINT_ENTRIES = {first = 0x119, second = 0x11A} -- 8411A620
+
+-- 84124DEC / 84128CB8: a raised stat signals 0xFC when it belongs to the
+-- side using the move (8412FC9C) or comes from Rage; raising the foe's stat
+-- (Swagger, Flatter) signals nothing. A lowered stat signals 0xFD only for
+-- STAT_DOWN_MOVES. `change`: side, stages, moveSide, moveId, rage.
+function Sequence.statChangeEntry(change)
+  change = type(change) == "table" and change or {}
+  local stages = tonumber(change.stages) or 0
+  if stages > 0 then
+    if change.rage or (change.side ~= nil and change.side == change.moveSide) then
+      return Sequence.STAT_UP_ENTRY
+    end
+  elseif stages < 0 then
+    if Sequence.STAT_DOWN_MOVES[tonumber(change.moveId)] then return Sequence.STAT_DOWN_ENTRY end
+  end
+  return nil
+end
+
+-- 8411A3D4 copies context 253's row bytes 0x0B/0x0A to actor+0x619/+0x61A;
+-- 8411A620 signals 0x119 when the faint counter reaches +0x619 (unless the
+-- species' 8411E244 marker for 0x119 is 0xFF) and 0x11A at +0x61A.
+function Sequence.faintFrames(dispatchBytes)
+  if type(dispatchBytes) ~= "string" then return nil end
+  local base = 253 * 20
+  local first, second = dispatchBytes:byte(base + 0x0B + 1), dispatchBytes:byte(base + 0x0A + 1)
+  if not first or not second then return nil end
+  return first, second
+end
+
 -- Returns the dispatch hit frame for `moveId`, or nil when the row is absent.
 function Sequence.hitFrame(dispatchBytes, moveId)
   moveId = math.floor(tonumber(moveId) or 0)
