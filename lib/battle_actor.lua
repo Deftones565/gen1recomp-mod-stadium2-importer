@@ -6,6 +6,8 @@
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
 local Sequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
+local Special = require("mods.STADIUM2_IMPORTER.lib.battle_special_moves")
+local Dispatch = require("mods.STADIUM2_IMPORTER.lib.animation_dispatch")
 
 local Actor = {}
 Actor.__index = Actor
@@ -13,10 +15,11 @@ Actor.__index = Actor
 -- 84114804 sets a per-move behaviour kind at actor+0x61F; 8411845C runs its
 -- start routine (84123F60) at the move's hit frame and its update routine
 -- (84124104) every later frame of the attack state. Kind 9 (Minimize) is
--- 84122998: uniform scale Math_StepToF(scale, 0.8, 0.01, 0.01). Other kinds
--- (6 Agility, 7 Double Team, 4/8/0xA/0xC/0xD/0xE/0x13/0x18/0x19/0x1A) are
--- not decoded yet and do nothing here.
-Actor.SPECIAL_KINDS = {[107] = 9}
+-- 84122998: uniform scale Math_StepToF(scale, 0.8, 0.01, 0.01). Kinds 6
+-- (Agility) and 7 (Double Team) move the battler and draw two translucent
+-- copies (lib/battle_special_moves.lua). Other kinds (4/8/0xA/0xC/0xD/0xE/
+-- 0x13/0x18/0x19/0x1A) are not decoded yet and do nothing here.
+Actor.SPECIAL_KINDS = Special.KINDS
 Actor.MINIMIZE_TARGET, Actor.MINIMIZE_STEP = 0.8, 0.01
 
 local STATE_RANK = { idle=0, entrance=1, attack=2, attack_default=2, hit=2, faint=3 }
@@ -77,6 +80,34 @@ function Actor:release()
   self.pendingFaint=false
   self.rest,self.restKey,self.restHold,self.restHidden=nil,nil,nil,false
   self.sizeScale,self.special=1,nil
+  self:clearNative()
+end
+
+-- Presentation left behind by kinds 6/7: the sway offset (Stadium units,
+-- relative to the home slot), the afterimage copies and the model alpha.
+function Actor:clearNative()
+  self.nativeOffset,self.afterimages=nil,nil
+  self.modelAlphaByte=255
+end
+
+-- ROM trig tables (D_80087E50/D_80088E50) for the native routines; tests
+-- inject Actor.trigTables.
+function Actor:nativeTrig()
+  if Actor.trigTables then return Actor.trigTables end
+  local catalog=Importer.battleFxCatalog and Importer.battleFxCatalog()
+  return catalog and catalog.trigTables
+end
+
+function Actor:startNative(kind)
+  local model=self.renderer and self.renderer.model
+  local profile=Dispatch.battleProfile(model and model.fxBattleProfile)
+  local state,err=Special.new({kind=kind,yaw=Special.facing(self.side),
+    trig=self:nativeTrig(),bodyHeight=profile and profile.bodyHeight})
+  if not state and self.warn then
+    pcall(self.warn,("%s species %s: %s; move shown without it")
+      :format(self.label,tostring(self.dex),tostring(err)))
+  end
+  return state
 end
 
 function Actor:retire(reason)
@@ -205,6 +236,7 @@ function Actor:attack(moveIndex, strict)
   if not ok then ok=self:play("attack",false) end
   if ok then
     self.context="attack"
+    self:clearNative()
     local kind=Actor.SPECIAL_KINDS[tonumber(moveIndex)]
     local model=self.renderer.model
     local hit=kind and Sequence.hitFrame(model and model.fxDispatch,moveIndex)
@@ -275,12 +307,21 @@ end
 function Actor:stepSpecial(dt)
   local special=self.special
   if not special then return end
-  if self.context~="attack" then self.special=nil;return end
+  if self.context~="attack" then self.special=nil;self:clearNative();return end
   special.clock=special.clock+(tonumber(dt) or 0)*30
   while special.clock>=1 do
     special.clock=special.clock-1
     special.ticks=special.ticks+1
-    if special.ticks>=special.at and special.kind==9 then
+    if special.ticks>=special.at and (special.kind==Special.AGILITY
+        or special.kind==Special.DOUBLE_TEAM) then
+      if special.native==nil then special.native=self:startNative(special.kind) or false end
+      if special.native then
+        Special.step(special.native)
+        self.nativeOffset=special.native.offset
+        self.afterimages=special.native.afterimages
+        self.modelAlphaByte=special.native.alpha or 255
+      end
+    elseif special.ticks>=special.at and special.kind==9 then
       local s=self.sizeScale or 1
       local target,step=Actor.MINIMIZE_TARGET,Actor.MINIMIZE_STEP
       if s<target then s=math.min(target,s+step) else s=math.max(target,s-step) end
@@ -321,6 +362,7 @@ function Actor:update(dt)
     elseif self.context~="idle" then
       self.context="idle"
       self.special=nil
+      self:clearNative()
       self.restKey,self.restHold=nil,nil
       self:applyRest()
     end

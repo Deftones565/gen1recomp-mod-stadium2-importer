@@ -340,17 +340,25 @@ function Scene:picScale()
   return 1
 end
 
-function Scene:modelMatrix(side,actor)
+-- `image` (optional) is one of actor.afterimages: its offset and scale
+-- replace the battler's own (lib/battle_special_moves.lua).
+function Scene:modelMatrix(side,actor,image)
   actor=actor or self.actors[side]
   local metrics=actor.renderer:worldMetrics()
   if self.arenaMode then
-    local k=self.arenaScale*actor:scale()*self:picScale(side)
+    -- Agility copies the battler's scale (84120E7C); Double Team sets 1.0
+    -- (84121CAC), taken here as the battler's base scale.
+    local size=image and image.scale or actor:scale()
+    local k=self.arenaScale*size*self:picScale(side)
     local slot,yaw=StadiumBattleLayout.slot(side,actor.dex)
+    -- Native per-move sway (Agility) or afterimage position, Stadium units.
+    local o=image and image.offset or actor.nativeOffset or {0,0,0}
     -- Stadium model bounds and field vertices use the same source units.
     -- Fragment 79 authors X/Z and facing globally for every field. Ground the
     -- extracted model's real floor to reproduce its model-derived Y offset.
-    return mul(translate(slot[1]*self.arenaScale,
-        self.arenaGroundY-metrics.floor*k,slot[3]*self.arenaScale),
+    return mul(translate((slot[1]+o[1])*self.arenaScale,
+        self.arenaGroundY-metrics.floor*k+o[2]*self.arenaScale,
+        (slot[3]+o[3])*self.arenaScale),
       mul(rotateY(yaw),scale(k))),yaw
   end
   local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
@@ -549,21 +557,36 @@ function Scene:render(requestedWidth,requestedHeight)
             and entry and actor.renderer then
           local base=self.environment.modelTint or {1,1,1}
           local nativeColor=ext.nativeModelColors and ext.nativeModelColors[side]
-          local drawn,drawErr=actor.renderer:drawScene(pass,entry[1],{
-            viewProjection=vp,viewMatrix=frame.view,
-            normalMatrix=Renderer.normalMatrix(entry[2],0,false),
-            lightDir=self.environment.light,ambient=self.environment.ambient,
-            diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
-            modernLighting=self.sceneMode==Scene.MODE_ARENA,
-            flipWinding=true,disableCulling=true,
-            tint={base[1],base[2],base[3],nativeColor and nativeColor.opacity
-              and nativeColor.opacity/255 or 1},
-            nativeModelColor=nativeColor and nativeColor.color,
-            flashAmount=actor.flash>0 and .5 or 0,
-            sunMap=shadow and shadow.map,sunVP=shadow and shadow.sunVP,
-            sunDark=shadow and shadow.sunDark,sunBias=shadow and shadow.sunBias,
-            sunTexel=shadow and shadow.sunTexel,
-          })
+          local opacity=nativeColor and nativeColor.opacity
+            and nativeColor.opacity/255 or 1
+          local function drawModel(matrix,alphaByte)
+            return actor.renderer:drawScene(pass,matrix,{
+              viewProjection=vp,viewMatrix=frame.view,
+              normalMatrix=Renderer.normalMatrix(entry[2],0,false),
+              lightDir=self.environment.light,ambient=self.environment.ambient,
+              diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
+              modernLighting=self.sceneMode==Scene.MODE_ARENA,
+              flipWinding=true,disableCulling=true,
+              -- Stadium model materialAlpha (+0x1D), 255 unless a native
+              -- routine (Double Team) sets it.
+              tint={base[1],base[2],base[3],opacity*(alphaByte or 255)/255},
+              nativeModelColor=nativeColor and nativeColor.color,
+              flashAmount=actor.flash>0 and .5 or 0,
+              sunMap=shadow and shadow.map,sunVP=shadow and shadow.sunVP,
+              sunDark=shadow and shadow.sunDark,sunBias=shadow and shadow.sunBias,
+              sunTexel=shadow and shadow.sunTexel,
+            })
+          end
+          local drawn,drawErr=drawModel(entry[1],actor.modelAlphaByte)
+          -- Afterimage copies (Agility, Double Team): same pose, own
+          -- position and alpha, drawn after the battler.
+          if drawn and self.arenaMode and actor.afterimages then
+            for _,image in ipairs(actor.afterimages) do
+              if (image.alpha or 0)>0 then
+                drawModel((self:modelMatrix(side,actor,image)),image.alpha)
+              end
+            end
+          end
           if not drawn then
             if self.warn then
               pcall(self.warn,self.label.." "..side.." "..pass
