@@ -2477,10 +2477,13 @@ function Renderer:drawScene(pass, model, options)
           part.prim.effect == "fire" and 2
             or (material and material.intensity and 1 or 0))
         pcall(self.shader.send, self.shader, "primitiveColor", color)
-        -- A list-authored combiner lights the surface only through SHADE.
+        -- An FX surface drawn through an N64 combiner is lit only through
+        -- SHADE; a combiner without SHADE ignores the RSP lighting state.
+        local fxCombiner = (listState or self.model.battleFx == true)
+          and material and material.phase5 and material.combiner
         pcall(self.shader.send, self.shader, "lightingEnabled",
-          renderState.lightingEnabled and not (listState
-            and not Renderer.combinerUsesShade(material.combiner)) and 1 or 0)
+          renderState.lightingEnabled and not (fxCombiner
+            and not Renderer.combinerUsesShade(fxCombiner)) and 1 or 0)
         if g.setDepthMode then
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
           if fxMode and fxMode.depthCompare ~= nil then
