@@ -149,6 +149,13 @@ ok(not carrierState.castsShadow,
 local colorState = Renderer.primitiveRenderState({}, { lighting = false, cull = true })
 ok(not colorState.lightingEnabled and colorState.cullEnabled,
   "source vertex-colour geometry disables lighting without disabling culling")
+-- Battle-FX shapes keep the smooth sampling they had as arena models.
+ok(Renderer.smoothSampled({ staticPose = true, species = 0, battleFx = true }),
+  "static battle-FX shapes are smooth-sampled")
+ok(Renderer.smoothSampled({ staticPose = true, species = 0 }),
+  "arena fields are smooth-sampled")
+ok(not Renderer.smoothSampled({ species = 25 }),
+  "Pokemon models keep the 3-point filter")
 -- FX combiners without SHADE ignore lighting (sandstorm shape 147).
 local lit = { lightingEnabled = true }
 local sandstorm = { phase5 = true, combiner = { cycles = 2,

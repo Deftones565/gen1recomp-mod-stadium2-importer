@@ -1041,6 +1041,11 @@ function Renderer.threePoint(t00, t10, t01, t11, fx, fy)
   return t11 * (fx + fy - 1) + t01 * (1 - fx) + t10 * (1 - fy)
 end
 
+function Renderer.smoothSampled(model)
+  return type(model) == "table" and model.staticPose == true
+    and tonumber(model.species) == 0 or false
+end
+
 function Renderer.combinerUsesShade(combiner)
   if type(combiner) ~= "table" then return true end
   local SHADE, SHADE_ALPHA = 4, 11
@@ -1298,7 +1303,11 @@ function Renderer.new(model, options)
   if type(model) ~= "table" or not model.prims then return nil, "model required" end
   options = type(options) == "table" and options or {}
   model = RapidashCut.augment(model)
-  local smoothArenaTextures = isArenaModel(model)
+  -- Static field and battle-FX shapes keep ordinary filtered sampling.
+  -- 3429234 took battle-FX shapes off the arena blend path; their texture
+  -- filtering was not meant to change with it (the 3-point path draws
+  -- creases through magnified full-screen FX such as Sandstorm).
+  local smoothArenaTextures = Renderer.smoothSampled(model)
     and options.arenaTextureFilter ~= "nearest"
   local idleIndex = Pack.contextIndex(model, "idle") or (model.anims[1] and 1 or nil)
   local self = setmetatable({
