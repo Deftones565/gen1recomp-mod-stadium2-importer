@@ -62,6 +62,9 @@ Medium; spread across many moves.
   84115B34/841156D0/84116248 need decoding).
 - Moves with no effect data, whose visuals live in Stadium's battle code:
   Growth, Agility, Double Team, Minimize, Metronome, Splash, Rest.
+  All seven are now handled (2026-09-25); the other behaviour kinds (Surf,
+  Seismic Toss, Meditate, Withdraw, Waterfall, Feint Attack, Rapid Spin,
+  Belly Drum, Destiny Bond, move 0x42) are not decoded yet.
 - Draw passes: every mode-1 particle carries flag 0x1000 and is drawn in a
   separate Stadium pass the mod does not model. Possibly behind some "not
   visible" reports; untested.

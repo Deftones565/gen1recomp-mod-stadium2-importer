@@ -70,7 +70,7 @@ message.
 
 | Owner | Files |
 | --- | --- |
-| Web | `lib/gen1_battle.lua`, `lib/gen2_battle.lua`, `lib/battle_actor.lua`, `lib/battle_camera.lua`, `lib/battle_presentation.lua`, `lib/animation_dispatch.lua`, `lib/stadium2_battle_fx_sequence.lua`, `lib/stadium2_battle_fx_battle_state.lua`, `main.lua`, new event/reaction/camera modules, `docs/stadium2_presentation_roadmap.md` |
+| Web | `lib/gen1_battle.lua`, `lib/gen2_battle.lua`, `lib/battle_actor.lua`, `lib/battle_camera.lua`, `lib/battle_presentation.lua`, `lib/battle_rest_pose.lua`, `lib/battle_special_moves.lua`, `lib/animation_dispatch.lua`, `lib/stadium2_battle_fx_sequence.lua`, `lib/stadium2_battle_fx_battle_state.lua`, `main.lua`, new event/reaction/camera modules, `docs/stadium2_presentation_roadmap.md` |
 | Local | `lib/fragment.lua`, `lib/renderer.lua`, `lib/pack.lua`, `lib/materials.lua`, `lib/model_handlers.lua`, `lib/render_callbacks/*`, `lib/stadium2_battle_fx_resources.lua`, `lib/stadium2_battle_fx_draw_packets.lua`, `lib/stadium2_battle_fx_render_mode.lua`, `lib/stadium2_battle_fx_material.lua`, `lib/stadium2_battle_fx_motion.lua`, `lib/stadium2_battle_fx_runtime.lua`, `tests/stadium2_koffing_croconaw_visual/*` |
 | Shared (small, focused edits; pull first) | `lib/stadium2_battle_fx_battle_adapter.lua`, `lib/stadium2_battle_fx_player.lua`, `lib/stadium2_battle_fx_rom.lua`, `AGENTS.md`, `docs/battle_fx_missing_implementation_audit.md`, `docs/luna/research/*` (add new files rather than rewriting the other session's) |
 
@@ -121,6 +121,14 @@ Local session: move them to "Verified" with the result.
   treats Minimize's 0.8 as relative to normal size). Viewer check of
   entry 0x100 (Rest).
 
+- 2026-09-25 (this commit) Agility (97) and Double Team (104),
+  `lib/battle_special_moves.lua`, hooks in `lib/battle_scene.lua`
+  (`modelMatrix` offset, afterimage draws, model alpha): viewer/battle
+  check that the sway goes sideways and not into the camera, that the two
+  copies trail (Agility) or fan out to both sides (Double Team), and how
+  the translucent copies look with depth writes on. With the ROM, the
+  sine table replaces the test's math.sin; nothing else is ROM-backed.
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,
@@ -159,6 +167,17 @@ Local session: move them to "Verified" with the result.
   entries 255-260 are used too (255 Razor Wind, 256 Fly, 257 SolarBeam,
   258 Dig, 259 Skull Bash, 260 Sky Attack). Only 263-270 are unused. When
   you rename contexts in pack.lua, these are the evidence-backed names.
+
+- web -> local (2026-09-25): Agility and Double Team need the battler drawn
+  off its slot and two translucent copies of it. `lib/battle_scene.lua` is
+  in neither ownership list, so I made a small hook there:
+  `Scene:modelMatrix(side, actor, image)` adds `actor.nativeOffset` (or an
+  afterimage's offset) in Stadium units, and the model draw loop draws
+  `actor.afterimages` with the same renderer after the battler and
+  multiplies the tint alpha by `actor.modelAlphaByte` (255 unless Double
+  Team sets it). If you would rather own that drawing (depth, sorting, a
+  proper materialAlpha render mode), move it and I'll keep the actor side
+  (`actor.nativeOffset`, `actor.afterimages[i].offset/.alpha/.scale`).
 
 ## Verified
 

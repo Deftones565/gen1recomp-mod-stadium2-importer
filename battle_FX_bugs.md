@@ -24,6 +24,17 @@ Battle follow-up (2026-09-25, moves with no effect data, web session):
   blur / clones); decoded where they live, not implemented yet.
 - Needs your retest.
 
+Battle follow-up (2026-09-25, Agility and Double Team, web session):
+- Agility (97): from the hit frame the Pokemon sways sideways, building up
+  to 50 Stadium units and settling back home (about 80 frames), trailed by
+  two half-transparent copies of itself, as Stadium's 84121920/84120F5C do.
+- Double Team (104): two half-transparent copies fade in and swing out to
+  each side (a quarter of the species' body height) while the Pokemon
+  itself flickers, as Stadium's 84121DE8 does.
+- Both end when the move's clip ends. Arena mode only. Ported from the
+  assembly; not visually checked. Needs your retest (see the side of the
+  sway, and whether the copies look right with depth).
+
 Battle follow-up (2026-09-25, two-turn moves, web session):
 - The charge turn of Razor Wind, Fly, SolarBeam, Dig, Skull Bash and Sky
   Attack now plays Stadium's charge clip for the species and the move's
