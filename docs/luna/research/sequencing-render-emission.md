@@ -244,3 +244,32 @@ Implemented: the Gen 2 host signals the weather entries (matching Gold's
 own WEATHER_TURN_TEXT/WEATHER_END_TEXT through Strings, and damage events
 tagged ANIM_IN_SANDSTORM). Full paralysis is not wired: the host's message
 carries no side. The remaining codes are not named yet.
+
+## Owner markers and spawn scale for non-move entries (2026-09-25)
+
+Web session; US assembly, fork C `7fc529e5`. Matches the assembly by
+reading; not checked against ROM execution.
+
+84107998's primary/secondary markers are the owner's +61C/+61D, and the
+common constructor scale is +661. Only the dispatch-row loaders write them:
+
+- 841146D4 (from 84114804 and the charge-turn states): row bytes 2/3 ->
+  +61C/+61D, byte 0x0F -> +661;
+- 8411AF6C (from 8411B070): the move row, same bytes;
+- 84116BC0 (from 841170A0, defender hit): +61C/+61D from row 254 bytes 2/3
+  (dispatch +0x13DA/+0x13DB), +661 from the received move's row byte 0x13.
+
++0x2D4 is the start of the battler's copy of its species record
+(8411275C: D_84191210 + side * 0x1530). A non-move entry (weather, residual,
+stat, faint, send-out, recall, trap) runs no loader, so it uses whatever the
+owner loaded last. The adapter used to index row (entry - 1), which is past
+the table for entries above 0x10F (0x125 reported
+"owner dispatch markers are unavailable") and gave row 251's bytes for 0xFC/
+0xFD. It now uses `Adapter.markerRow`: the move's own row for ids 1-251, else
+the actor's last loaded row (`nativeMarkerRow`, `nativeScaleSource`), and
+still reports the diagnostic before any load.
+
+Open: 84114804 passes +0x618 (the 1-based move id) to 841146D4 as the row
+index, while 84116BC0 and 8411AF6C read row (+0x618 - 1). The mod's
+convention (move M at row M - 1) agrees with the latter two; check the
+former against ROM execution.

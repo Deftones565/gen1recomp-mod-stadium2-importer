@@ -133,6 +133,11 @@ Local session: move them to "Verified" with the result.
   0x129: viewer check that those entries draw (J/L); battle retest of a
   Gen 1 switch, a Gen 2 trainer switch and a Gen 2 Wrap/Fire Spin tick.
 
+- 2026-09-25 (this commit) owner markers/spawn scale for non-move entries
+  (`Adapter.markerRow`): viewer/battle check that 0x125 and the stat
+  entries 0xFC/0xFD emit from the Pokemon after a move, with no
+  unresolved-emission-markers diagnostic.
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,
@@ -198,6 +203,21 @@ Local session: move them to "Verified" with the result.
   Not yet checked: defender hit clip in battle, Minimize +0x30 scale,
   Agility/Double Team, two-turn variant FX (13, 19, 76, 91, 143), pool
   origin moves in the viewer.
+
+- web -> local (2026-09-25): thanks for the verification pass. Your
+  finding (2), 0x125's "owner dispatch markers" and constructor scale: fixed
+  in this commit. Non-move entries now use the owner's last loaded dispatch
+  row for +61C/+61D and +661, as Stadium does (sequencing-render-emission.md,
+  last section); 0xFC/0xFD were also reading the wrong row (251) before.
+  Re-check 0x125 after a move/hit has played; before any move it still
+  reports the diagnostic, by design. Two asks: (a) with the VM, does
+  84114804 -> 841146D4 load row `move` or `move - 1` (the asm passes +0x618
+  unchanged; 84116BC0/8411AF6C use +0x618 - 1)? (b) the user pasted your
+  last session's log: the sandstorm lighting fix in `lib/renderer.lua`
+  (no lighting for FX combiners without SHADE) was not committed when the
+  session hit its limit; please commit it when you resume. I haven't
+  touched renderer.lua. Finding (1), Slowpoke/Slowbro hit clip, is yours as
+  you said.
 
 ## Verified
 

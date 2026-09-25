@@ -80,6 +80,7 @@ function Actor:release()
   self.pendingFaint=false
   self.rest,self.restKey,self.restHold,self.restHidden=nil,nil,nil,false
   self.sizeScale,self.special=1,nil
+  self.nativeMarkerRow,self.nativeScaleSource=nil,nil
   self:clearNative()
 end
 
@@ -236,6 +237,9 @@ function Actor:attack(moveIndex, strict)
   if not ok then ok=self:play("attack",false) end
   if ok then
     self.context="attack"
+    -- 84114804 -> 841146D4 loads the move's row (+61C/+61D markers).
+    self.nativeMarkerRow=tonumber(moveIndex) and tonumber(moveIndex)-1 or nil
+    self.nativeScaleSource=self.nativeMarkerRow and {row=self.nativeMarkerRow,byte=0xF} or nil
     self:clearNative()
     local kind=Actor.SPECIAL_KINDS[tonumber(moveIndex)]
     local model=self.renderer.model
@@ -247,7 +251,7 @@ end
 
 -- Context 254: the species' own hit clip, played once with no generic
 -- fallback. Returns false and a reason when the clip is unavailable.
-function Actor:hit()
+function Actor:hit(moveId)
   if not self.renderer then return false,"actor has no model" end
   if self.context=="faint" then return false,"actor is fainting" end
   if (STATE_RANK[self.context] or 0)>STATE_RANK.hit then
@@ -258,6 +262,9 @@ function Actor:hit()
     return false,("species %s has no hit clip"):format(tostring(self.dex))
   end
   self.context="hit"
+  -- 84116BC0: markers from row 254, +661 from the received move's byte 0x13.
+  self.nativeMarkerRow=254
+  self.nativeScaleSource=tonumber(moveId) and {row=tonumber(moveId)-1,byte=0x13} or nil
   self.renderer.finished=false
   return true
 end
@@ -274,6 +281,8 @@ function Actor:charge(entry, startFrame)
     self.renderer:seekFrame(startFrame)
   end
   self.context="attack"
+  self.nativeMarkerRow=tonumber(entry) -- 841146D4 with the charge row
+  self.nativeScaleSource=self.nativeMarkerRow and {row=self.nativeMarkerRow,byte=0xF} or nil
   self.renderer.finished=false
   self.restKey,self.restHold=nil,nil
   return true

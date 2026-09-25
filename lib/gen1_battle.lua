@@ -99,10 +99,10 @@ function Scene.new(battle)
   local battleFx,battleFxError=BattleFxAdapter.new(Importer,{warn=warn})
   if battleFx then self.battleFx=battleFx
     -- The defender plays its own hit clip (context 254) at the impact.
-    battleFx.onImpact=function(target)
+    battleFx.onImpact=function(target,_,moveId)
       local actor=self.actors and self.actors[target]
       if not actor or not actor.hit then return false,"no defender actor" end
-      return actor:hit()
+      return actor:hit(moveId)
     end
   elseif battleFxError then warn("Gen 1 battle FX unavailable: "..tostring(battleFxError)) end
   return self

@@ -65,6 +65,17 @@ function Adapter.cameraRayPoint(camera,distance,units)
   return {f32(distance*d[1]+e[1]),f32(distance*d[2]+e[2]),f32(distance*d[3]+e[3])}
 end
 
+-- Dispatch row whose bytes 2/3 are in the owner's +61C/+61D. Only the row
+-- loaders write them (841146D4: move and charge rows, 8411AF6C: move row,
+-- 84116BC0: row 254 on the defender hit), so a move effect sees its own row
+-- and a non-move entry (id > 251) sees the owner's last loaded row
+-- (actor.nativeMarkerRow), or nothing before the first load.
+function Adapter.markerRow(actor,context)
+  local id=tonumber(context and context.moveId) or 0
+  if id>=1 and id<=251 then return id-1 end
+  return actor and tonumber(actor.nativeMarkerRow) or nil
+end
+
 -- 84107998 inputs for the owner that 84107170 stores at object +8. The
 -- placement path resolves markers on the source actor, so the same owner is
 -- used here. Primary/secondary are dispatch bytes 2/3 (owner +61C/+61D),
@@ -81,7 +92,7 @@ function Adapter.emissionMarkers(event,context,markerSelect,sceneContext)
   local model=actor and actor.renderer and actor.renderer.model
   if not model then return nil,"owner model is unavailable" end
   local bytes=model.fxDispatch
-  local row=(tonumber(context.moveId) or 0)-1
+  local row=Adapter.markerRow(actor,context) or -1
   local inputs={}
   if type(bytes)=="string" and row>=0 and #bytes>=(row+1)*20 then
     inputs.primary=bytes:byte(row*20+3)
@@ -143,7 +154,7 @@ function Adapter.commonAnchorInputs(particle,sceneContext)
     particle.material and particle.material.nativeCameraRayDistance
       or event.material and event.material.nativeCameraRayDistance,units)
   local bytes=model and model.fxDispatch
-  local row=(event.context and event.context.moveId or 0)-1
+  local row=Adapter.markerRow(actor,event.context) or -1
   if input.markerLabel==nil and bytes and row>=0 and #bytes>=(row+1)*20 then
     input.markerLabel=bytes:byte(row*20+3)
     input.secondaryMarker=bytes:byte(row*20+4)
@@ -211,9 +222,15 @@ function Adapter.placementContext(particle, sceneContext)
   local actor=host and host.visualActor and host:visualActor(side)
   local model=actor and actor.renderer and actor.renderer.model
   local dispatch=model and model.fxDispatch
-  local moveRow=tonumber(particle and particle.event and particle.event.context
+  -- +661 (spawn scale): a move effect reads its own row's byte 0x0F; a
+  -- non-move entry keeps the owner's last loaded value (Adapter.markerRow).
+  local moveId=tonumber(particle and particle.event and particle.event.context
     and particle.event.context.moveId)
-  moveRow=moveRow and moveRow-1 or nil
+  local moveRow,scaleByte=nil,0x0F
+  if moveId and moveId>=1 and moveId<=251 then moveRow=moveId-1
+  elseif actor and type(actor.nativeScaleSource)=="table" then
+    moveRow,scaleByte=actor.nativeScaleSource.row,actor.nativeScaleSource.byte
+  end
   local nativeSpawnScale
   local diagnostics={}
   local contract=particle and (particle.attachment or particle.event and particle.event.attachment)
@@ -242,7 +259,7 @@ function Adapter.placementContext(particle, sceneContext)
   if type(dispatch)=="string" and moveRow and moveRow>=0
       and #dispatch>=(moveRow+1)*20 then
     local f32=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
-    nativeSpawnScale=f32(dispatch:byte(moveRow*20+16)*f32(.01))
+    nativeSpawnScale=f32(dispatch:byte(moveRow*20+scaleByte+1)*f32(.01))
   end
   if host and actor and host.modelMatrix then
     local ok,matrix=pcall(host.modelMatrix,host,side,actor)
