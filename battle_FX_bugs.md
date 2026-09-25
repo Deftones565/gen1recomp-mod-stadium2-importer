@@ -24,6 +24,19 @@ Battle follow-up (2026-09-25, moves with no effect data, web session):
   blur / clones); decoded where they live, not implemented yet.
 - Needs your retest.
 
+Battle follow-up (2026-09-25, lines through screen effects, web session):
+- The dashed diagonal lines and regular stripes across Sandstorm (201) and
+  other screen effects came from a bug in the N64-style 3-point texture
+  filter: in half of every texel two weights were swapped, so the image
+  jumped along each texel's diagonal. Effect shapes only started using
+  that filter in 3429234 (they were smooth-sampled as arena models before),
+  which is why it appeared on many effects at once. Fixed; the same filter
+  is used on Pokemon models, where the error was small but present.
+- The near-black colour in your 201 screenshot is not explained by this.
+  If the screenshot was taken before restarting the viewer on 8f05e6e,
+  retest; otherwise the local session will dump 201's shader inputs.
+- Needs your retest.
+
 Battle follow-up (2026-09-25, sandstorm colour, local session's fix,
 finished by the web session):
 - Sandstorm (0x113/0x120, shape 147) drew as a near-black screen layer. Its

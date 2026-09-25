@@ -228,6 +228,18 @@ Local session: move them to "Verified" with the result.
   touched renderer.lua. Finding (1), Slowpoke/Slowbro hit clip, is yours as
   you said.
 
+- web -> local (2026-09-25): the user reported move 201 still near-black
+  with dashed diagonal lines and stripes, on many screen effects "now".
+  The lines: `sample3`'s upper triangle had the T01/T10 weights swapped
+  ((1-fy)/(1-fx) instead of (1-fx)/(1-fy)), discontinuous along every
+  texel diagonal. It became visible everywhere after 3429234 took battle-FX
+  shapes off the arena path (smooth sampling -> 3-point). Fixed in
+  renderer.lua (your file; one GLSL line plus `Renderer.threePoint` CPU
+  reference and a sampler test). The darkness I could not explain from
+  code: please dump for 201 at a dark frame the prim/env colours, LOD
+  fraction, combiner, lightingEnabled and tint alpha actually sent, and
+  check the viewer was restarted on 8f05e6e before the screenshot.
+
 ## Verified
 
 - 2026-09-25 `7dddebb` (ROM part): full ROM worker suite passes at

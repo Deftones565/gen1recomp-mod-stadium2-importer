@@ -170,10 +170,13 @@ vec4 sample3(Image image, STADIUM_FLOAT vec2 uv, vec2 size, vec2 wrapMode) {
       + Texel(image, o + vec2(texel.x,0.0)) * f.x
       + Texel(image, o + vec2(0.0,texel.y)) * f.y;
   }
+  // Upper triangle: T11 + (1-fx)(T01-T11) + (1-fy)(T10-T11). T01 is the
+  // texel left of T11 and T10 the one above it, so they take (1-fx) and
+  // (1-fy); swapped weights break continuity along every texel diagonal.
   vec2 o = (base + vec2(1.5)) * texel;
   return Texel(image, o) * (f.x+f.y-1.0)
-    + Texel(image, o - vec2(texel.x,0.0)) * (1.0-f.y)
-    + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.x);
+    + Texel(image, o - vec2(texel.x,0.0)) * (1.0-f.x)
+    + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.y);
 }
 vec3 n64ColorAB(float source, vec4 combined, vec4 texel0, vec4 texel1,
     vec4 primitive, vec4 shade, vec4 environment) {
@@ -1026,6 +1029,16 @@ function Renderer.surfaceLit(renderState, model, material)
   local fxCombiner = (listState or (model and model.battleFx == true))
     and material and material.phase5 and material.combiner
   return not (fxCombiner and not Renderer.combinerUsesShade(fxCombiner))
+end
+
+-- CPU reference for the shader's sample3 (RDP 3-point filter) at texel
+-- fraction (fx, fy): t00 at the base texel, t10 one right, t01 one down,
+-- t11 diagonal.
+function Renderer.threePoint(t00, t10, t01, t11, fx, fy)
+  if fx + fy < 1 then
+    return t00 * (1 - fx - fy) + t10 * fx + t01 * fy
+  end
+  return t11 * (fx + fy - 1) + t01 * (1 - fx) + t10 * (1 - fy)
 end
 
 function Renderer.combinerUsesShade(combiner)

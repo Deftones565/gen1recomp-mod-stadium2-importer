@@ -31,4 +31,22 @@ assert(pineco.masks == 6 and pineco.maskt == 5,
   "Pineco eye render tile keeps its ROM-authored 64x32 masks")
 assert(pineco.shifts == 0 and pineco.shiftt == 0,
   "Pineco eye render tile has no coordinate shift")
-print("10 checks passed (Stadium 2 sampler semantics)")
+-- RDP 3-point filter: continuous across each texel's diagonal and exact
+-- at the four texel centres.
+local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
+local tp = Renderer.threePoint
+local t00, t10, t01, t11 = 0.1, 0.9, 0.3, 0.6
+for _, fx in ipairs({ 0, 0.25, 0.5, 0.7, 1 }) do
+  local fy = 1 - fx
+  local lower = t00 * (1 - fx - fy) + t10 * fx + t01 * fy
+  assert(math.abs(tp(t00, t10, t01, t11, fx, fy) - lower) < 1e-9,
+    "3-point filter is continuous on the texel diagonal at fx=" .. fx)
+end
+assert(tp(t00, t10, t01, t11, 1, 0) == t10 and tp(t00, t10, t01, t11, 0, 1) == t01
+    and tp(t00, t10, t01, t11, 1, 1) == t11,
+  "3-point filter hits the neighbouring texel centres")
+local source = io.open("mods/STADIUM2_IMPORTER/lib/renderer.lua"):read("*a")
+assert(source:find("o - vec2(texel.x,0.0)) * (1.0-f.x)", 1, true)
+    and source:find("o - vec2(0.0,texel.y)) * (1.0-f.y)", 1, true),
+  "the shader's sample3 uses the reference weights")
+print("13 checks passed (Stadium 2 sampler semantics)")
