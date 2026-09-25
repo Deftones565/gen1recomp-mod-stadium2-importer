@@ -10,7 +10,11 @@ end
 -- importer with no betaBattleFxEnabled method. The Gen 1 scene must delegate
 -- construction to the adapter boundary and remain compatible with older
 -- importer mocks.
-local importer={}
+-- environmentStyle/betaArenaEnabled: the scene's environment selection
+-- (main's battle environments) calls them unconditionally.
+local importer={environmentStyle=function() return "classic" end,
+  betaArenaEnabled=function() return false end,
+  modelsEnabled=function() return true end}
 local adapterNew,adapterTrigger,adapterUpdates,finishes=0,{},{},0
 local signals={}
 local charges={}

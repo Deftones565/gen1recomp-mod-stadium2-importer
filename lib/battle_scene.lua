@@ -15,6 +15,13 @@ local AA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
 local Extensions = require("mods.STADIUM2_IMPORTER.lib.battle_scene_extensions")
 local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 
+local Watercolor = require("mods.STADIUM2_IMPORTER.lib.battle_watercolor")
+local Nature = require("mods.STADIUM2_IMPORTER.lib.battle_nature")
+local Cave = require("mods.STADIUM2_IMPORTER.lib.battle_cave")
+local Lake = require("mods.STADIUM2_IMPORTER.lib.battle_freshwater")
+local Town = require("mods.STADIUM2_IMPORTER.lib.battle_town")
+local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
+
 local Scene = {}
 Scene.__index = Scene
 Scene.MODE_CLASSIC="classic"
@@ -111,6 +118,10 @@ function Scene:release()
   if battleFx and type(battleFx.release)=="function" then
     pcall(battleFx.release,battleFx)
   end
+  if self.weather then self.weather:release();self.weather=nil end
+  if self.visitors then self.visitors:release();self.visitors=nil end
+  if self.statusOverlay and self.statusOverlay.release then self.statusOverlay:release() end
+  self.statusOverlay,self.statusOverlayReady=nil,nil
   for _,actor in pairs(self.actors or {}) do
     if actor and actor.release then actor:release() end
   end
@@ -121,6 +132,9 @@ function Scene:release()
   if self.arena and self.arena.release then pcall(self.arena.release,self.arena) end
   self.arena,self.arenaRenderer=nil,nil
   self.providerBattlerModes=nil
+  Watercolor.release()
+  -- Scenery belongs to the session cache, even across presentation toggles.
+  Nature.endBattle();Cave.endBattle();Lake.endBattle();Town.endBattle()
   Stage.invalidate()
   Shadow.release()
   Hud.invalidate()
@@ -340,11 +354,16 @@ function Scene:picScale()
   return 1
 end
 
+-- Vertical displacement in model-height units, supplied by the host's
+-- animation timeline. Apply in world space so scaling cannot cancel it.
+function Scene:picElevation() return 0 end
+
 -- `image` (optional) is one of actor.afterimages: its offset and scale
 -- replace the battler's own (lib/battle_special_moves.lua).
 function Scene:modelMatrix(side,actor,image)
   actor=actor or self.actors[side]
   local metrics=actor.renderer:worldMetrics()
+  local elevation=self:picElevation(side)
   if self.arenaMode then
     -- Agility copies the battler's scale (84120E7C); Double Team sets 1.0
     -- (84121CAC), taken here as the battler's base scale.
@@ -357,7 +376,8 @@ function Scene:modelMatrix(side,actor,image)
     -- Fragment 79 authors X/Z and facing globally for every field. Ground the
     -- extracted model's real floor to reproduce its model-derived Y offset.
     return mul(translate((slot[1]+o[1])*self.arenaScale,
-        self.arenaGroundY-metrics.floor*k+o[2]*self.arenaScale,
+        self.arenaGroundY-metrics.floor*k+o[2]*self.arenaScale
+          +elevation*metrics.height*self.arenaScale,
         (slot[3]+o[3])*self.arenaScale),
       mul(rotateY(yaw),scale(k))),yaw
   end
@@ -366,7 +386,7 @@ function Scene:modelMatrix(side,actor,image)
   local p=Stage.positions[side]
   local yaw=side=="player" and math.pi or 0
   local hover=math.min(math.max(metrics.floor,0),metrics.height*.5)
-  return mul(translate(p[1],p[2],p[3]),
+  return mul(translate(p[1],p[2]+elevation*worldHeight,p[3]),
     mul(rotateY(yaw),mul(scale(k),translate(0,-(metrics.floor-hover),0)))),yaw
 end
 
@@ -413,6 +433,34 @@ function Scene:render(requestedWidth,requestedHeight)
   local ok,err=pcall(function()
     g.setCanvas(sceneTarget(self))
     self.environment=self:resolveEnvironment()
+    local selection=self.environmentSelection or require('mods.STADIUM2_IMPORTER.lib.battle_environment').select(
+      self.battleContext,Importer.environmentStyle(),false,nil,
+      Importer.environmentTest and Importer.environmentTest(),
+    Importer.arenaTest and Importer.arenaTest())
+    local environmentScene=selection.scene
+    local natureActive=self.sceneMode==Scene.MODE_CLASSIC and selection.mode=='environment'
+    self.environmentId=selection.id
+    local visitorMode=Importer.visitorMode and Importer.visitorMode() or 'off'
+    local now=love.timer and love.timer.getTime and love.timer.getTime() or 0
+    if natureActive and visitorMode~='off' then
+      if self.visitors and (self.visitors.environment~=selection.id or self.visitors.mode~=visitorMode) then self.visitors:release();self.visitors=nil end
+      if not self.visitors then self.visitors=require('mods.STADIUM2_IMPORTER.lib.battle_visitors').new(selection.id,visitorMode) end
+      self.pendingVisitorDT=self.visitorTime and now-self.visitorTime or 0
+    elseif self.visitors then self.visitors:release();self.visitors=nil end
+    self.visitorTime=now
+    self.natureActive=natureActive
+    if natureActive then self.environment=environmentScene.lighting(self.environment) end
+    local weatherMode=Importer.weatherStyle()
+    local outdoors=natureActive and (selection.id=='grass' or selection.id=='town' or selection.id=='freshwater')
+    if self.weather and (not outdoors or weatherMode=='off' or self.weather.mode~=weatherMode or self.weather.id~=selection.id) then
+      self.weather:release();self.weather=nil
+    end
+    if outdoors and weatherMode~='off' then
+      self.weather=self.weather or require('mods.STADIUM2_IMPORTER.lib.battle_weather').new(selection.id,weatherMode)
+      self.weatherDT=self.weatherTime and math.max(0,now-self.weatherTime) or 0
+      self.environment=self.weather:lighting(self.environment,self.weatherDT)
+    end
+    self.weatherTime=now
     local defaultFrame
     if self.arenaMode then
       defaultFrame=Camera.sceneFrame(width,height,{
@@ -422,11 +470,16 @@ function Scene:render(requestedWidth,requestedHeight)
     else
       defaultFrame=Camera.sceneFrame(width,height)
     end
+    if natureActive then defaultFrame=environmentScene.frame(defaultFrame) end
     local initialMarks=projectedMarks(self,defaultFrame,width,height)
     local cameraCtx=extensionContext(self,g,defaultFrame,width,height,renderWidth,renderHeight,initialMarks)
     cameraCtx.cameraPhase="select"
     local selectedFrame=Extensions.camera(cameraCtx,function() return defaultFrame end)
     local frame=normalizeFrame(selectedFrame,defaultFrame)
+    if self.visitors then
+      self.visitors:update(self.pendingVisitorDT or 0,frame)
+      self.visitors:prune(frame)
+    end
     local marks=projectedMarks(self,frame,width,height)
     local ext=extensionContext(self,g,frame,width,height,renderWidth,renderHeight,marks)
     ext.cameraPhase=nil
@@ -452,7 +505,9 @@ function Scene:render(requestedWidth,requestedHeight)
       -- Outdoor field geometry omits the parent battle cyclorama, so paint
       -- only an explicitly attached arena backdrop. Enclosed arenas retain
       -- their authored clear colour and never inherit the Gen 1/2 world sky.
-      if self.sceneMode==Scene.MODE_CLASSIC then
+      if natureActive then
+        environmentScene.sky(g,renderWidth,renderHeight,self.environment,frame)
+      elseif self.sceneMode==Scene.MODE_CLASSIC then
         Sky.paint(g,renderWidth,renderHeight,self.environment,frame)
       elseif self.environment.backdrop==true then
         Sky.paint(g,renderWidth,renderHeight,self.environment,frame)
@@ -482,6 +537,8 @@ function Scene:render(requestedWidth,requestedHeight)
 
     local lightVP=Shadow.begin(self.environment.light,self.environment.shadowStrength)
     if lightVP then
+      if natureActive then environmentScene.castShadow(g,lightVP) end
+      if self.visitors then self.visitors:castShadow(lightVP) end
       ext.shadowPhase="cast"
       ext.shadow={viewProjection=lightVP}
       Extensions.shadow(ext)
@@ -497,11 +554,20 @@ function Scene:render(requestedWidth,requestedHeight)
       end
     end
     local shadow=lightVP and Shadow.finish() or nil
+    if natureActive then
+      local a,m,b=candidateActors,matrices,battlerModes
+      if self.visitors then a,m,b=self.visitors:shadowActors(a,m,b) end
+      environmentScene.updateTorchShadows(g,a,m,b,self.environment)
+    end
     ext.shadow=shadow
     g.setCanvas(sceneTarget(self))
 
     local providerMarks,stageErr=Extensions.environment(ext,function()
       if self.sceneMode==Scene.MODE_ARENA then return self:drawArena(ext,marks) end
+      if natureActive then
+        environmentScene.draw(g,frame,self.environment,shadow)
+        return marks
+      end
       return Stage.draw(g,width,height,frame,self.actors,shadow,self.environment)
     end)
     if type(providerMarks)=="table" and providerMarks.player and providerMarks.enemy then
@@ -563,6 +629,8 @@ function Scene:render(requestedWidth,requestedHeight)
             return actor.renderer:drawScene(pass,matrix,{
               viewProjection=vp,viewMatrix=frame.view,
               normalMatrix=Renderer.normalMatrix(entry[2],0,false),
+              bindTorchLighting=natureActive and environmentScene.bindTorchLighting or nil,
+              sceneWatercolor=natureActive,
               lightDir=self.environment.light,ambient=self.environment.ambient,
               diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
               modernLighting=self.sceneMode==Scene.MODE_ARENA,
@@ -603,6 +671,15 @@ function Scene:render(requestedWidth,requestedHeight)
     end
 
     restoreWorldTarget(self,g)
+    if natureActive then
+      if self.visitors then self.visitors:draw(g,frame,self.environment,environmentScene,shadow) end
+      if environmentScene.drawEffects then environmentScene.drawEffects(g,frame)
+      else require("mods.STADIUM2_IMPORTER.lib.battle_torches").draw(g,frame) end
+    end
+    if self.weather then
+      self.weather:draw(g,frame,self.weatherDT or 0)
+    end
+    restoreWorldTarget(self,g)
     if ext.nativeOverlayDraw then ext.nativeOverlayDraw();restoreWorldTarget(self,g) end
     Extensions.overlay(ext)
     restoreWorldTarget(self,g)
@@ -625,6 +702,7 @@ function Scene:render(requestedWidth,requestedHeight)
   end
 
   self.presentCanvas=AA.resolve(self.canvas,pixelWidth,pixelHeight)
+  if self.natureActive then self.presentCanvas=Watercolor.resolve(self.presentCanvas,Importer.shaderStyle()) end
   Hud.build(self.presentCanvas)
   self.readyFrame=true
   self.defect=nil

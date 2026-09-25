@@ -5,7 +5,7 @@ local Flame = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.flame")
 local Palette = require("mods.STADIUM2_IMPORTER.lib.palette")
 
 local Pack = {}
-Pack.SUBSTITUTE_SPECIES = 253
+Pack.SUBSTITUTE_SPECIES = 252
 Pack.UNOWN_FORM_FIRST = 254
 Pack.UNOWN_FORM_LAST = 278
 
@@ -324,6 +324,31 @@ local function attachMoveMetadata(m)
   end
 end
 
+-- The Pokédoll is a sparse special-purpose pose bank, not a Pokemon bank.
+-- Its only exported motion is the 94-frame reaction; ROM selector zero means
+-- the model's bind pose, while selector three selects that reaction. Older
+-- S2IMP53 packs compacted the bank to one clip and mislabeled it as idle.
+-- Repair at load time as well as for new imports, without requiring another
+-- ROM import or changing any ordinary species' animation routing.
+local function restoreSubstituteIdle(m)
+  if m.species~=Pack.SUBSTITUTE_SPECIES or #m.anims~=1
+      or m.context[1]~=0 or m.context[4]~=2 then return end
+  local hit=m.anims[1]
+  hit.name="hit"
+  m.anims[2]={name="idle",frames=1,loopStart=0,tracks={},aux=-1}
+  m.animCount=2
+  m.animByName={hit=1,idle=2}
+  for i,selector in ipairs(m.context) do
+    if selector==0 then m.context[i]=1
+    elseif selector==2 then m.context[i]=0 end
+  end
+  for i,selector in ipairs(m.moveAnim) do
+    if selector==0 then m.moveAnim[i]=1
+    elseif selector==2 then m.moveAnim[i]=0 end
+  end
+  m.staticPose=false
+end
+
 function Pack.parse(bytes)
   local magic = type(bytes) == "string" and bytes:sub(1, 4) or nil
   if magic ~= "DSM4" and magic ~= "DSM5" then return nil, "not a DSM pack" end
@@ -345,6 +370,7 @@ function Pack.parse(bytes)
     normalizeFlameTextures(m)
     readAnimations(r, m)
     readAux(r, m)
+    restoreSubstituteIdle(m)
     attachMoveMetadata(m)
     if r.p - 1 ~= baseEnd then error("unexpected DSM4 base payload length", 0) end
     m.handlers = Handlers.readExtension(bytes)

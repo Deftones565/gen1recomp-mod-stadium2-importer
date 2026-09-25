@@ -125,6 +125,10 @@ function Actor:play(context, loop)
   local nowRank=STATE_RANK[self.context] or 0
   local wantRank=STATE_RANK[wanted] or 0
   if self.context=="faint" or wantRank<nowRank then return false end
+  if wanted~="attack" and self.renderer.lockTravel then
+    self.renderer.lockTravel=false
+    self.renderer.anchorX,self.renderer.anchorY,self.renderer.anchorZ=0,0,0
+  end
   local actual=wanted
   local ok=self.renderer.setContext
     and self.renderer:setContext(actual,loop and true or false) or false
@@ -281,7 +285,8 @@ end
 -- fallback. Returns false and a reason when the clip is unavailable.
 function Actor:hit(moveId)
   if not self.renderer then return false,"actor has no model" end
-  if self.context=="faint" then return false,"actor is fainting" end
+  if self.pendingFaint or self.context=="faint" then return false,"actor is fainting" end
+  self.flash=.12
   if (STATE_RANK[self.context] or 0)>STATE_RANK.hit then
     return false,("actor is busy (%s)"):format(tostring(self.context))
   end

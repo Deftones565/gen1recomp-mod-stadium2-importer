@@ -1,4 +1,5 @@
 local scene
+local makeScene
 local Importer
 local Presentation
 local Camera
@@ -15,10 +16,20 @@ local root
 local loadError
 local paused = false
 local selectedSide = "enemy"
-local enemyDex = math.max(1, math.min(251,
-  math.floor(tonumber(os.getenv("STADIUM2_VISUAL_ENEMY")) or 109)))
-local playerDex = math.max(1, math.min(251,
-  math.floor(tonumber(os.getenv("STADIUM2_VISUAL_PLAYER")) or 159)))
+local MODEL_COUNT = 251 * 2 + 2 + 25 -- normal/shiny plus Substitute, Egg, Unown B-Z
+local function initialEntry(default)
+  local value = tonumber(os.getenv(default[1]))
+  -- Keep the existing environment-variable contract (a species number),
+  -- while internally addressing the expanded normal/shiny/special list.
+  if value then
+    value = math.floor(value)
+    if value >= 1 and value <= 251 then return value * 2 - 1 end
+    return value
+  end
+  return default[2]
+end
+local enemyDex = math.max(1, math.min(MODEL_COUNT, initialEntry({"STADIUM2_VISUAL_ENEMY", 109 * 2 - 1})))
+local playerDex = math.max(1, math.min(MODEL_COUNT, initialEntry({"STADIUM2_VISUAL_PLAYER", 159 * 2 - 1})))
 local help = true
 local screenshotMessage
 local screenshotTimer = 0
@@ -294,6 +305,7 @@ local function bindPlaythroughStorage(base)
     -- Retain legacy enumeration so an S2IMP38 cache is recognized as stale
     -- and can be rebuilt into the current sharded representation.
     add("cache/battle/substitute")
+    add("cache/battle/egg")
     for byte = string.byte("b"), string.byte("z") do
       local form = "cache/battle/unown_" .. string.char(byte)
       add(form)
@@ -368,7 +380,61 @@ local function warn(message)
 end
 
 local function wrapSpecies(value)
-  return ((math.floor(tonumber(value) or 1) - 1) % 251) + 1
+  return ((math.floor(tonumber(value) or 1) - 1) % MODEL_COUNT) + 1
+end
+
+-- Viewer entries cover both palette variants and the special records emitted
+-- by the importer (Substitute and Unown's B-Z forms).  The latter are real
+-- Stadium pose/model archives and must be loaded through newSpecialRenderer.
+local function modelInfo(entry)
+  entry = wrapSpecies(entry)
+  if entry <= 251 * 2 then
+    local species = math.floor((entry + 1) / 2)
+    return { entry=entry, species=species, variant=entry % 2 == 0 and "shiny" or "normal",
+      label=(entry % 2 == 0 and "shiny" or "normal") }
+  end
+  if entry == 251 * 2 + 1 then
+    return { entry=entry, species=252, variant="normal", special="substitute", label="substitute" }
+  end
+  if entry == 251 * 2 + 2 then
+    return { entry=entry, species=253, variant="normal", special="egg", label="egg" }
+  end
+  local letter = string.char(string.byte("B") + entry - (251 * 2 + 3))
+  return { entry=entry, species=254 + entry - (251 * 2 + 3), variant="normal",
+    special="unown_" .. letter:lower(), label="Unown " .. letter }
+end
+
+local function modelLabel(entry)
+  local info = modelInfo(entry)
+  if info.special then return info.label end
+  return ("%03d %s"):format(info.species, info.label)
+end
+
+local function toggleSelectedShiny()
+  local entry = selectedSide == "enemy" and enemyDex or playerDex
+  local info = modelInfo(entry)
+  if info.special then
+    showMessage("special models do not have a shiny toggle")
+    return false
+  end
+  entry = info.species * 2 - (info.variant == "shiny" and 1 or 0)
+  if selectedSide == "enemy" then enemyDex = entry else playerDex = entry end
+  makeScene(false)
+  return true
+end
+
+local function cycleModelEntry(entry, delta)
+  local info = modelInfo(entry)
+  local modelIndex
+  if info.special then
+    modelIndex = info.species - 251 -- 252=Substitute, 253=Egg, 254+=Unown
+  else
+    modelIndex = info.species
+  end
+  local total = 251 + 2 + 25
+  modelIndex = ((modelIndex - 1 + (tonumber(delta) or 0)) % total) + 1
+  if modelIndex <= 251 then return modelIndex * 2 - 1 end
+  return 502 + (modelIndex - 251)
 end
 
 local function actorForSide(side)
@@ -689,7 +755,7 @@ end
 local function syncTagCount(actor)
   local renderer = actor and actor.renderer
   local animations = renderer and renderer.model and renderer.model.anims
-  if tagData and actor and type(animations) == "table" then
+  if tagData and actor and not actor.form and type(animations) == "table" then
     TagFile.setCount(tagData, actor.dex, #animations)
   end
 end
@@ -699,7 +765,8 @@ local function currentTagSelection()
   local renderer = actor and actor.renderer
   local animations = renderer and renderer.model and renderer.model.anims
   local luaIndex = renderer and renderer.animIndex or nil
-  if not (actor and type(animations) == "table" and luaIndex and animations[luaIndex]) then
+  if not (actor and not actor.form and type(animations) == "table"
+      and luaIndex and animations[luaIndex]) then
     return nil
   end
   local animation = animations[luaIndex]
@@ -883,7 +950,7 @@ local function printGasSnapshot()
   end
 end
 
-local function makeScene(resetView)
+function makeScene(resetView)
   if scene then scene:release() end
   if resetView ~= false then
     Camera.recentre()
@@ -903,6 +970,9 @@ local function makeScene(resetView)
     arenaGroundY = arenaYOffset,
     arenaEnvironment = arenaModel and arenaModel.arenaLighting
       and arenaModel.arenaLighting.environment or nil,
+    actorOptions = {
+      formFor = function(mon) return mon and mon.special end,
+    },
   })
   nextScene.game = {
     world = {
@@ -911,10 +981,13 @@ local function makeScene(resetView)
       daytime = "DAY",
     },
   }
+  local enemyInfo, playerInfo = modelInfo(enemyDex), modelInfo(playerDex)
   local enemyOk = Presentation.setBattler(nextScene, "enemy", nil,
-    { species = enemyDex, shiny = false }, enemyDex)
+    { species = enemyInfo.species, shiny = enemyInfo.variant == "shiny",
+      special = enemyInfo.special }, enemyInfo.species)
   local playerOk = Presentation.setBattler(nextScene, "player", nil,
-    { species = playerDex, shiny = false }, playerDex)
+    { species = playerInfo.species, shiny = playerInfo.variant == "shiny",
+      special = playerInfo.special }, playerInfo.species)
   if not enemyOk or not playerOk then
     nextScene:release()
     scene = nil
@@ -957,15 +1030,20 @@ local function toggleSceneMode()
 end
 
 local function setSelectedSpecies(value)
-  if selectedSide == "enemy" then enemyDex = wrapSpecies(value)
-  else playerDex = wrapSpecies(value) end
+  local entry = wrapSpecies(value)
+  local info = modelInfo(entry)
+  -- Navigation addresses one model identity at a time; shiny is selected
+  -- only by the explicit button, never as an adjacent LEFT/RIGHT entry.
+  if not info.special then entry = info.species * 2 - 1 end
+  if selectedSide == "enemy" then enemyDex = entry
+  else playerDex = entry end
   isolatePrimitive = 0
   return makeScene(false)
 end
 
 local function cycleSelectedSpecies(delta)
   local current = selectedSide == "enemy" and enemyDex or playerDex
-  return setSelectedSpecies(current + (tonumber(delta) or 0))
+  return setSelectedSpecies(cycleModelEntry(current, delta))
 end
 
 local function cycleSelectedAnimation(delta)
@@ -1066,6 +1144,23 @@ local function drawRapidashButton(g)
   g.setColor(.9, .93, 1, 1)
   g.printf("RAPIDASH CUT FX: " .. (rapidashCutEffect and "ON" or "OFF"),
     x, y + 9, width, "center")
+end
+
+local function shinyButtonBounds()
+  local width = love.graphics.getWidth()
+  -- Below the FX move buttons (battleFxButtonBounds, y 100).
+  return width - 252, 144, 240, 36
+end
+
+local function drawShinyButton(g)
+  local x, y, width, height = shinyButtonBounds()
+  local info = modelInfo(selectedSide == "enemy" and enemyDex or playerDex)
+  local enabled = not info.special
+  g.setColor(enabled and .25 or .12, enabled and .30 or .14, enabled and .55 or .19, .94)
+  g.rectangle("fill", x, y, width, height, 6, 6)
+  g.setColor(.9, .93, 1, 1)
+  g.printf(enabled and ("SHINY: " .. (info.variant == "shiny" and "ON" or "OFF"))
+      or "SHINY: N/A", x, y + 9, width, "center")
 end
 
 local function arenaButtonBounds()
@@ -1251,8 +1346,8 @@ local function drawText(g)
   local panelHeight = help and (debugPanel and 400 or 260) or (debugPanel and 264 or 124)
   g.rectangle("fill", 12, 12, 430, panelHeight, 6, 6)
   g.setColor(1, 1, 1, 1)
-  g.print(enemyMark .. "Enemy species #" .. string.format("%03d", enemyDex), 24, 22)
-  g.print(playerMark .. "Player species #" .. string.format("%03d", playerDex), 24, 40)
+  g.print(enemyMark .. "Enemy " .. modelLabel(enemyDex), 24, 22)
+  g.print(playerMark .. "Player " .. modelLabel(playerDex), 24, 40)
   g.print(("NOW %s  %d/%d  %s  frame:%s/%s"):format(
     playbackState, renderer and renderer.animIndex or 0, #animations,
     tostring(animation and animation.name or "bind pose"),
@@ -1272,16 +1367,17 @@ local function drawText(g)
   if help then
     g.print("T edit tag   A accept suggested + next   DELETE clear tag", 24, 122)
     g.print("CTRL+S or F6 export tags   ENTER saves edits + next", 24, 140)
-    g.print("TAB select side   LEFT/RIGHT species   UP/DOWN +/-10", 24, 158)
+    g.print(("TAB select side   LEFT/RIGHT model   UP/DOWN +/-10   (1-%d)"):format(MODEL_COUNT), 24, 158)
     g.print("Drag mouse orbit/pitch   Wheel zoom", 24, 176)
     g.print("Q/E animation   R recenter   SPACE pause", 24, 194)
-    g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 212)
-    g.print("0 all primitives   1-9 isolate   ,/. arena   B scene   C camera   V shader   S shot", 24, 230)
-    g.print("J/L move FX   K replay   O route   N step (paused)   Y finish FX   M stop",24,248)
+    g.print("Y or SHINY button toggles the selected Pokemon's shiny (Y finishes FX while one plays)", 24, 212)
+    g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 230)
+    g.print("0 all primitives   1-9 isolate   ,/. arena   B scene   C camera   V shader   S shot", 24, 248)
+    g.print("J/L move FX   K replay   O route   N step (paused)   Y finish FX   M stop",24,266)
   end
   if debugPanel then
     local d = gasSnapshot()
-    local y = help and 272 or 134
+    local y = help and 290 or 134
     g.print(("Selected %s #%03d  bones:%d prims:%d textures:%d"):format(
       selectedSide, selected and selected.dex or 0, #(model.bones or {}),
       #(model.prims or {}), #(model.textures or {})), 24, y)
@@ -1313,6 +1409,7 @@ local function drawText(g)
   drawArenaButtons(g)
   drawCameraButtons(g)
   drawBattleFxButtons(g)
+  drawShinyButton(g)
   drawRapidashButton(g)
 end
 
@@ -1437,7 +1534,7 @@ function love.keypressed(key)
   elseif key == "home" and scene then
     setSelectedSpecies(1)
   elseif key == "end" and scene then
-    setSelectedSpecies(251)
+    setSelectedSpecies(MODEL_COUNT)
   elseif key == "q" or key == "pageup" then
     cycleSelectedAnimation(-1)
   elseif key == "e" or key == "pagedown" then
@@ -1494,6 +1591,8 @@ function love.keypressed(key)
     printGasSnapshot()
   elseif key == "f" then
     toggleRapidashCutEffect()
+  elseif key == "y" then
+    toggleSelectedShiny()
   elseif key == "[" then
     forceGasAge = math.max(0, forceGasAge - 1)
     printGasSnapshot()
@@ -1529,6 +1628,11 @@ end
 
 function love.mousepressed(x, y, button)
   if button ~= 1 then return end
+  local sx, sy, sw, sh = shinyButtonBounds()
+  if x >= sx and x <= sx + sw and y >= sy and y <= sy + sh then
+    toggleSelectedShiny()
+    return
+  end
   local ax, ay, previousWidth, labelWidth, nextWidth, arenaHeight = arenaButtonBounds()
   if y >= ay and y <= ay + arenaHeight then
     if x >= ax and x <= ax + previousWidth then

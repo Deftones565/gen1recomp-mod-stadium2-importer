@@ -18,8 +18,11 @@ local BattleFxAdapter = require(
   "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
 local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
 local FxSequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
+local UILayers = require("mods.STADIUM2_IMPORTER.lib.battle_ui_layers")
 
 local Gen1={COUNT=251}
+local PatchScope=require("mods.STADIUM2_IMPORTER.lib.patch_scope")
+local patches
 local modRef,installed,session
 local configured=151
 local originals={}
@@ -37,7 +40,20 @@ local function clamp(v,lo,hi)
   return math.max(lo,math.min(hi,tonumber(v) or lo))
 end
 
+local lastDiagnostic={}
+local function diagnostic(message)
+  message=tostring(message)
+  local category=message:sub(1,3)=="UI:" and "ui" or "error"
+  if lastDiagnostic[category]==message then return end
+  lastDiagnostic[category]=message
+  local storage=modRef and modRef.storage
+  if storage and storage.write then
+    pcall(storage.write,storage,gameRef,"battle-art-render-diagnostic-"..category,{message=message})
+  end
+end
+
 local function warn(message)
+  diagnostic("render error: "..tostring(message))
   local log=modRef and modRef.log
   if log and log.warn then pcall(log.warn,log,"%s",tostring(message)) end
 end
@@ -79,14 +95,25 @@ local function actorOptions()
   return {warn=warn,dexOf=dexOf,label="Gen 1 battle"}
 end
 
-function Scene.new(battle)
+function Scene.new(battle,context)
   local opts=actorOptions()
   local self=setmetatable({},Scene)
+  local selection=require('mods.STADIUM2_IMPORTER.lib.battle_environment').select(
+    context,Importer.environmentStyle(),Importer.betaArenaEnabled(),nil,
+    Importer.environmentTest and Importer.environmentTest(),
+    Importer.arenaTest and Importer.arenaTest())
+  local arena,err
+  if selection.mode=='arena' then
+    arena,err=ArenaRuntime.load(selection.arena,Importer)
+    if not arena then warn('Environment arena fallback failed; using classic: '..tostring(err)) end
+  end
   Presentation.init(self,{
     actors={player=Actor.new("player",opts),enemy=Actor.new("enemy",opts)},
-    warn=warn,label="Gen 1 battle",
+    warn=warn,label="Gen 1 battle",arena=arena,arenaMode=arena~=nil,
   })
   self.battle=battle
+  self.environmentSelection=selection
+  self.battleContext=context
   self.game=battle and battle.game
   self.substituteActors={player=Actor.new("player",opts),enemy=Actor.new("enemy",opts)}
   self.lastGrow={player=false,enemy=false}
@@ -129,8 +156,15 @@ function Scene:sync()
   for _,side in ipairs({"player","enemy"}) do
     local actor=self.actors[side]
     local mon=self:shownMon(side)
-    if mon then actor:load(data,mon,dexOf(data,mon))
-    else actor:release() end
+    if mon and Importer.modelsEnabled() then
+      local battler=self:shownBattler(side)
+      local copied=self.transformSprites and self.transformSprites[battler.sprite]
+      actor:load(data,mon,copied or dexOf(data,mon))
+    else
+      actor:release()
+      actor.failedFor,actor.failedForm=nil,nil
+      self.substituteActors[side]:release()
+    end
   end
 end
 
@@ -150,8 +184,16 @@ function Scene:hostHidden(side)
   local battle,b=self.battle,self:shownBattler(side)
   if not (battle and b) then return true end
   if side=="enemy" and battle.enemyHidden then return true end
+  local pf=battle.picFx and battle.picFx[b]
+  if pf and pf.hidden then return true end
   if safeCall(battle,"fxHidden",b) then return true end
   return false
+end
+
+function Scene:substituteVisible(side)
+  local b=self:shownBattler(side)
+  return b and ((b.substituteHP and not b.substitutePending)
+    or (self.heldSubstitutes and self.heldSubstitutes[b])) or false
 end
 
 function Scene:ownsSlot(side)
@@ -166,11 +208,12 @@ function Scene:ownsSlot(side)
   if side=="player" and (battle.safari or battle.demo) then return false end
   local b=self:shownBattler(side)
   if not b then return false end
-  if b.substituteHP then return self:ensureSubstitute(side)~=nil end
+  if self:substituteVisible(side) then return self:ensureSubstitute(side)~=nil end
   return self.actors[side] and self.actors[side].renderer~=nil
 end
 
 function Scene:ensureSubstitute(side)
+  if not Importer.modelsEnabled() then return nil end
   local actor=self.substituteActors[side]
   if actor.renderer then return actor end
   local renderer,err=Importer.newSpecialRenderer("substitute",{
@@ -181,8 +224,8 @@ function Scene:ensureSubstitute(side)
     return nil
   end
   actor.renderer=renderer
-  actor.mon={hp=1,species=253}
-  actor.dex,actor.variant=253,"normal"
+  actor.mon={hp=1,species=252}
+  actor.dex,actor.variant=252,"normal"
   actor.callbackFrame=side=="enemy" and 4 or 0
   actor:play("idle",true)
   return actor
@@ -210,7 +253,6 @@ function Scene:visualState(side)
   local battle,b=self.battle,self:shownBattler(side)
   if not self:ownsSlot(side) then return "native" end
   if not b then return "empty" end
-  if b.substituteHP then return "substitute" end
 
   local actor=self.actors[side]
   if b.fainted then
@@ -225,6 +267,7 @@ function Scene:visualState(side)
   if side=="player" and battle.sendingOut and not grow then return "empty" end
   if self:hostHidden(side) then return "hidden" end
   if (battle.introSlide or 0)>0 and side=="player" then return "empty" end
+  if self:substituteVisible(side) then return "substitute" end
   -- 8411EE74: Stadium hides a species underground unless it has a dig pose.
   if RestPose.select(self:restCondition(side),self.actors[side].dex).hidden then
     return "hidden"
@@ -241,7 +284,27 @@ end
 
 function Scene:picScale(side)
   local grow=self:hostGrow(side)
-  return grow and clamp(grow,0,1) or 1
+  if grow then return clamp(grow,0,1) end
+  local battler=self:shownBattler(side)
+  local fx=battler and self.battle.picFx and self.battle.picFx[battler]
+  -- With battle FX on, Stadium's Minimize routine (sizeScale 0.8) applies.
+  return fx and fx.minimized and not self.battleFx
+    and not self:substituteVisible(side) and .35 or 1
+end
+
+function Scene:picElevation(side)
+  local b=self:shownBattler(side)
+  local pf=b and self.battle.picFx and self.battle.picFx[b]
+  if not pf then return 0 end
+  local t=tonumber(pf.t) or 0
+  local charging=b.charging
+  local move=type(charging)=="table" and charging.id or charging
+  if move=="FLY" and pf.kind=="squish" then
+    return 3*clamp(t/24,0,1)
+  end
+  if pf.kind=="slideDown" then return -clamp(t/21,0,1) end
+  if pf.kind=="slideUp" then return -(1-clamp(t/14,0,1)) end
+  return 0
 end
 
 function Scene:syncPresentationState()
@@ -299,7 +362,9 @@ function Scene:syncPresentationState()
   -- Stadium move clip. Special host animations (ball toss, faint, send-out)
   -- have no move definition and therefore do not trigger an attack clip.
   local playing=battle.animPlaying and true or false
-  if playing and not self.animWasPlaying then
+  if playing and not self.moveStartHooked and (not self.animWasPlaying
+      or battle.animName~=self.lastAnimName
+      or battle.animAttackerIsPlayer~=self.lastAnimAttacker) then
     local name=battle.animName
     local def=battle.data and battle.data.moves and battle.data.moves[name]
     local rowSide=battle.animAttackerIsPlayer and "player" or "enemy"
@@ -372,6 +437,8 @@ function Scene:syncPresentationState()
     self.battleFx:finish()
   end
   self.animWasPlaying=playing
+  self.lastAnimName=battle.animName
+  self.lastAnimAttacker=battle.animAttackerIsPlayer
 end
 
 function Scene:update(dt)
@@ -472,7 +539,10 @@ function Scene:captureHud(slide)
   local had=rawget(battle,"colorMode")
   battle.colorMode=function() return false end
   local ok,layer=pcall(UIOwnership.withNativeStatus,battle,function()
-    return Hud.hudLayer(function() originals.drawHUDs(battle,slide) end)
+    return Hud.hudLayer(function()
+      originals.drawHUDs(battle,slide)
+      UIOwnership.drawStatusOverlay(battle)
+    end)
   end)
   battle.colorMode=had
   if not ok then error(layer,0) end
@@ -489,8 +559,48 @@ function Scene:composeWorld()
   end
   local battle=self.battle
   local slide=(battle.introSlide or 0)*4
+  self.battleArtUI=false
+  -- Battle Art owns presentation when installed; keep this an exported,
+  -- optional handoff so standalone Stadium retains its own HUD and glass.
+  local handle=modRef and modRef.find and modRef.find("BATTLE_ART_VOXEL_FORK")
+  local ui=handle and handle.exports and handle.exports.battlePresentation
+  if ui and type(ui.drawHostedUI)=="function" then
+    local statusAvailable=UIOwnership.claimStatus(battle)
+    local target,sx,sy=self:copyForComposite()
+    if target then
+      local handled=ui.drawHostedUI({battle=battle,canvas=target,box=self.hudBox,
+        width=self.width,sx=sx,sy=sy,statusAvailable=statusAvailable,
+        report=function(message)
+          diagnostic("UI: "..tostring(message).."; scene defect="..tostring(self.defect))
+        end,
+        drawHUDs=function()
+          return UIOwnership.withNativeStatus(battle,function()
+            local had=rawget(battle,"colorMode")
+            local shot=rawget(battle,"dramaticShapeShot")
+            local hosted=rawget(battle,"stadium2ImporterGen1Shot")
+            battle.dramaticShapeShot=nil
+            battle.stadium2ImporterGen1Shot=nil
+            battle.colorMode=function() return false end
+            local ok,result=pcall(function()
+              originals.drawHUDs(battle,slide)
+              UIOwnership.drawStatusOverlay(battle)
+            end)
+            battle.colorMode=had
+            battle.dramaticShapeShot=shot
+            battle.stadium2ImporterGen1Shot=hosted
+            if not ok then error(result,0) end
+            return result
+          end)
+        end})
+      if handled then
+        self.battleArtUI=true
+        self.statusHudOwned=statusAvailable
+        return target
+      end
+    end
+  end
   local statusOwned=UIOwnership.claimStatus(battle)
-  local bottomVisible=UIOwnership.bottomVisible(battle)
+  local bottomVisible=UIOwnership.bottomVisible(battle) and UIOwnership.hudEnabled()
   self.statusHudOwned=statusOwned
   self.bottomUiVisible=bottomVisible
   local hudLayer=statusOwned and self:captureHud(slide) or nil
@@ -583,6 +693,92 @@ local function installHooks()
   if BattleState.stadium2ImporterGen1 then return true end
   BattleState.stadium2ImporterGen1=true
 
+  -- Observe actual playback calls, not a sampled boolean: consecutive moves
+  -- can start between Stadium updates without an observable stopped frame.
+  local AnimPlayer=require("src.battle.AnimPlayer")
+  local start=AnimPlayer.start
+  function AnimPlayer:start(move,player,...)
+    local result=pack(start(self,move,player,...))
+    local scene=session
+    if scene and scene.battle.animPlayer==self then
+      scene.moveStartHooked=true
+      scene:sync()
+      local battler=scene.battle[player and "player" or "enemy"]
+      local charge=battler and battler.charging
+      local chargeId=type(charge)=="table" and charge.id or charge
+      local shownMove=move
+      if (chargeId=="FLY" and move=="TELEPORT")
+          or (chargeId=="DIG" and move=="SLIDE_DOWN_ANIM") then shownMove=chargeId end
+      local def=scene.battle.data and scene.battle.data.moves[shownMove]
+      if def then scene.actors[player and "player" or "enemy"]:attack(tonumber(def.index or def.number)) end
+    end
+    return unpack(result,1,result.n)
+  end
+
+  if BattleState.applyHitFx then
+    local applyHit=BattleState.applyHitFx
+    function BattleState:applyHitFx(hit,...)
+      local result=pack(applyHit(self,hit,...))
+      local scene=active(self)
+      if scene and hit and hit.blink then
+        local side=hit.blink==self.player and "player" or hit.blink==self.enemy and "enemy"
+        if side then
+          local actor
+          if scene:substituteVisible(side) then actor=scene:ensureSubstitute(side)
+          else actor=scene.actors[side] end
+          if actor then actor:hit() end
+        end
+      end
+      return unpack(result,1,result.n)
+    end
+  end
+
+  if BattleState.applyDamage and BattleState.startMessage then
+    local damage,startMessage=BattleState.applyDamage,BattleState.startMessage
+    function BattleState:applyDamage(target,...)
+      local scene=active(self)
+      local hadSub=scene and target.substituteHP
+      local result=pack(damage(self,target,...))
+      if hadSub and not target.substituteHP then
+        -- applyDamage queues its break message after the impact. Retain the
+        -- doll until that exact row is presented, irrespective of its text.
+        local row=self.queue and self.queue[self.nextInsert]
+        if row and row.text then
+          scene.heldSubstitutes=scene.heldSubstitutes or setmetatable({},{__mode="k"})
+          scene.substituteBreaks=scene.substituteBreaks or setmetatable({},{__mode="k"})
+          scene.heldSubstitutes[target]=true
+          scene.substituteBreaks[row]=target
+        end
+      end
+      return unpack(result,1,result.n)
+    end
+    function BattleState:startMessage(item,...)
+      local scene=active(self)
+      local target=scene and scene.substituteBreaks and scene.substituteBreaks[item]
+      if target then
+        scene.heldSubstitutes[target]=nil
+        scene.substituteBreaks[item]=nil
+      end
+      return startMessage(self,item,...)
+    end
+  end
+
+  -- Transform leaves Gen 1's mon.species unchanged. Follow the sprite that
+  -- the host commits at its animation/queued-action boundary instead of
+  -- mutating battle data or swapping models at move selection time.
+  if BattleState.speciesSprite then
+    local speciesSprite=BattleState.speciesSprite
+    function BattleState:speciesSprite(species,...)
+      local result=pack(speciesSprite(self,species,...))
+      local scene=active(self)
+      if scene and result[1] then
+        scene.transformSprites=scene.transformSprites or setmetatable({},{__mode="k"})
+        scene.transformSprites[result[1]]=dexOf(self.data,{species=species})
+      end
+      return unpack(result,1,result.n)
+    end
+  end
+
   originals.isWideBattleLayout=BattleState.isWideBattleLayout
   function BattleState:isWideBattleLayout()
     if active(self) then return false end
@@ -627,6 +823,15 @@ local function installHooks()
     self.colorMode=hadColor
     self.stadium2ImporterGen1Shot=nil
     if not ok then error(result,0) end
+    -- Instance wrappers (including QoL) append native-coordinate HUD ink
+    -- after this class method. The outer scope installed below collects it
+    -- exactly once before the final render.compose pass.
+    if scene.collectLateStatus and not scene.battleArtUI
+        and (scene.statusHudOwned or self:statusHUDVisible()==false) then
+      UILayers.begin(scene)
+      scene.closeLateStatus=UIOwnership.beginNativeStatus(self)
+      scene.lateStatusStarted=true
+    end
     return result
   end
 
@@ -666,7 +871,11 @@ local function installHooks()
   originals.drawTextArea=BattleState.drawTextArea
   function BattleState:drawTextArea(...)
     local args={...}
-    if not active(self) then return originals.drawTextArea(self,unpack(args)) end
+    local scene=active(self)
+    if not scene or scene.battleArtUI or not UIOwnership.hudEnabled()
+        or not UIOwnership.bottomVisible(self) then
+      return originals.drawTextArea(self,unpack(args))
+    end
     return withBoxPaperRemoved(function()
       return originals.drawTextArea(self,unpack(args))
     end)
@@ -920,33 +1129,88 @@ end
 
 function Gen1.install()
   if installed then return true end
-  local ok,err=pcall(installHooks)
+  patches=PatchScope.new()
+  local ok,err=pcall(function()
+    patches:capture({require("src.battle.BattleState"),require("src.battle.AnimPlayer")},installHooks)
+  end)
   if not ok then warn(err); return false end
   local composeOk,composeErr=pcall(installComposeHook)
   if not composeOk or not composeErr then
+    patches:restore()
     warn(composeOk and "render.compose hook unavailable" or composeErr)
     return false
   end
-  local controlsOk,controlsErr=pcall(installControls)
-  if not controlsOk then warn(controlsErr) end
+  local controlsOk,controlsErr=pcall(function()
+    patches:capture({gameRef or modRef.game},installControls)
+  end)
+  if not controlsOk then warn(controlsErr);return false end
   installed=true
   return true
 end
 
-function Gen1.ensure(battle)
-  if not (installed and battle and Importer.modelsEnabled()
-      and Importer.battleEnabled() and Importer.available(configured)) then
+function Gen1.ensure(battle,context)
+  if not (installed and battle and Importer.battleEnabled() and Importer.available(configured)) then
     return false
   end
   if session and session.battle==battle then return true end
   Gen1.finish()
-  session=Scene.new(battle)
+  session=Scene.new(battle,context)
   session:sync()
   return true
 end
 
 function Gen1.update(dt)
   if not session then return false end
+  local scene=session
+  local battle=scene.battle
+  local qos=modRef and modRef.find and modRef.find("quality_of_life")
+  if qos and battle and rawget(battle,"draw") and battle.draw~=scene.lateStatusWrapper then
+    local original=battle.draw
+    local wrapper
+    wrapper=function(self,...)
+      if not active(self) or scene.collectLateStatus then return original(self,...) end
+      scene.collectLateStatus=true
+      local result=pack(pcall(original,self,...))
+      scene.collectLateStatus=nil
+      if scene.lateStatusStarted then
+        scene.lateStatusStarted=nil
+        scene.closeLateStatus()
+        scene.closeLateStatus=nil
+        local rects={HUD_RECT.enemy,HUD_RECT.player}
+        UILayers.finish(scene,rects)
+        local g=love.graphics
+        g.push("all")
+        local ok,err=pcall(function()
+          -- Replacement status providers must not acquire late native ink.
+          if not scene.statusHudOwned then return end
+          g.setCanvas(scene.composedWorld)
+          g.origin();g.setScissor();g.setShader()
+          g.setColor(1,1,1,1)
+          g.setBlendMode("alpha","premultiplied")
+          local width,height=scene.composedWorld:getDimensions()
+          g.scale(width/scene.width,height/scene.height)
+          local box=scene.hudBox
+          local panels=BattleViewport.statusPanels(
+            BattleViewport.resolve(scene.width,scene.height,self.game),
+            box,box.scale,HUD_RECT.enemy,HUD_RECT.player)
+          local ps=panels.scale or box.scale
+          for _,side in ipairs({"enemy","player"}) do
+            local r=HUD_RECT[side]
+            local q=g.newQuad(r[1],r[2],r[3],r[4],160,144)
+            g.draw(scene.statusOverlay,q,panels[side.."X"],panels[side.."Y"],0,ps,ps)
+            if q.release then q:release() end
+          end
+        end)
+        g.pop()
+        if not ok then error(err,0) end
+      end
+      if not result[1] then error(result[2],0) end
+      return unpack(result,2,result.n)
+    end
+    scene.lateStatusWrapper=wrapper
+    scene.lateStatusOriginal=original
+    battle.draw=wrapper
+  end
   return session:update(math.min(math.max(tonumber(dt) or 0,0),.1))
 end
 
@@ -954,6 +1218,9 @@ function Gen1.finish(battle)
   if battle and session and session.battle~=battle then return false end
   if session then
     if session.battle then
+      if session.battle.draw==session.lateStatusWrapper then
+        session.battle.draw=session.lateStatusOriginal
+      end
       session.battle.stadium2ImporterGen1Shot=nil
     end
     session:release()
@@ -964,7 +1231,7 @@ function Gen1.finish(battle)
 end
 
 function Gen1.enabled()
-  return Importer.modelsEnabled() and Importer.battleEnabled()
+  return Importer.battleEnabled()
 end
 
 function Gen1.ready()
@@ -992,8 +1259,15 @@ function Gen1.currentScene()
   return session
 end
 
-function Gen1.resetForTests()
+function Gen1.uninstall()
+  if patches then patches:restore();patches=nil end
+  installed=false
+  pointerHookInstalled=false
   Gen1.finish()
+end
+
+function Gen1.resetForTests()
+  Gen1.uninstall()
   ArenaRuntime.resetForTests()
   installed=false
   modRef=nil

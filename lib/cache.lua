@@ -4,7 +4,8 @@
 -- does not rewrite and verify hundreds of separate records during import.
 local Cache = {}
 
-Cache.FORMAT = "S2IMP57"
+-- S2IMP58: merge of main (S2IMP54) and codex/battle-fx-parity (S2IMP57).
+Cache.FORMAT = "S2IMP58"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"
@@ -398,6 +399,8 @@ function Cache.clear(count)
   if not ok then return false, err end
   ok, err = removeKnown(Cache.specialPath("substitute"))
   if not ok then return false, err end
+  ok, err = removeKnown(Cache.specialPath("egg"))
+  if not ok then return false, err end
   for i = 2, #Cache.UNOWN_FORMS do
     local letter = Cache.UNOWN_FORMS:sub(i, i)
     ok, err = removeKnown(Cache.unownPath(letter, "normal"))
@@ -581,6 +584,19 @@ function Cache.inspect(count)
     return {
       state = "incomplete", code = "missing_blob",
       message = "missing " .. specials, marker = marker, context = context,
+    }
+  end
+  -- Special archives are packed inside `specials.dsm`; they are not
+  -- individually enumerable storage keys.  Read the logical Egg entry from
+  -- that shard instead of checking for a nonexistent `cache/battle/egg` key.
+  -- The old check made every otherwise-valid S2IMP54 cache look incomplete,
+  -- preventing both Gen 1 and Gen 2 from entering Battle.ensure.
+  local eggBytes, eggCode, eggMessage = Cache.readSpecial("egg")
+  if not eggBytes then
+    return {
+      state = "incomplete", code = "missing_blob",
+      message = eggMessage or ("missing " .. storageKey(Cache.specialPath("egg"))),
+      marker = marker, context = context,
     }
   end
 

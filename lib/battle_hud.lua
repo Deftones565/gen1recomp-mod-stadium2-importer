@@ -192,7 +192,10 @@ function Hud.layer(draw,opts)
       local crystalMovePaper=opts and opts.crystalMovePane
         and crystalMovePaperRect(x,y,w,h)
       local paper=keyedPaperRect(x,y,w,h) or crystalMovePaper
+      local foreign=opts and ((y>=96 and opts.bottomOwned==false)
+        or (y<96 and opts.statusOwned==false and not crystalMovePaper))
       if not (opts and opts.preservePaper)
+          and not foreign
           and mode=="fill" and paper and r>.94 and gg>.94 and b>.94
           and (a or 1)>.94 then return end
       return rectangle(mode,x,y,w,h,...)
@@ -313,7 +316,7 @@ function Hud.layout(scene,screen,options)
   -- Trainer pictures now live in the 3-D scene and no longer share either
   -- HUD band. Their intro/return flags must not pull the player's detached
   -- status card back into the centred Game Boy frame.
-  local snap=true
+  local snap=scene.statusHudOwned~=false
   local er,pr=Hud.HUD_RECT.enemy,Hud.HUD_RECT.player
   local viewport=BattleViewport.resolve(scene.width,scene.height,
     (screen and screen.game) or scene.game)

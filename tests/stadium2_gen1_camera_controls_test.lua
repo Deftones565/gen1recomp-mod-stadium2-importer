@@ -51,6 +51,9 @@ local Gen1=require("mods.STADIUM2_IMPORTER.lib.gen1_battle")
 local Camera=require("mods.STADIUM2_IMPORTER.lib.battle_camera")
 Camera.recentre()
 
+local originalHost,originalGame={},{}
+for k,v in pairs(Host) do originalHost[k]=v end
+for k,v in pairs(game) do originalGame[k]=v end
 Gen1.bind(mod)
 Gen1.configureGame(game)
 ok(Gen1.install(),"Gen 1 camera/control hooks install")
@@ -132,3 +135,13 @@ game:wheelmoved(0,1)
 ok(calls.wheel==wheelCalls+1,"camera wrappers fall through after the Stadium battle ends")
 
 print(("%d checks passed (Stadium 2 Gen 1 camera controls)"):format(checks))
+
+Gen1.uninstall()
+for k,v in pairs(Host) do assert(originalHost[k]==v,'Gen1 patch leaked: '..k) end
+for k,v in pairs(originalHost) do assert(Host[k]==v) end
+for k,v in pairs(game) do assert(originalGame[k]==v,'Gen1 control leaked: '..k) end
+for k,v in pairs(originalGame) do assert(game[k]==v) end
+assert(Gen1.install(),'Gen1 could not reinstall')
+Gen1.uninstall()
+assert(not Host.stadium2ImporterGen1 and not game.stadium2ImporterGen1Controls)
+print('Gen1 method and control restoration/reinstall passed')

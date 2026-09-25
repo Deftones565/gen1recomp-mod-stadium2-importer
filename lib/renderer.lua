@@ -86,6 +86,7 @@ uniform vec4 nativeModelColor;
 uniform float flashAmount;
 uniform Image sunMap;
 uniform float sunEnabled;
+uniform float prelitShadowEnabled;
 uniform float sunDark;
 uniform float sunBias;
 uniform vec2 sunTexel;
@@ -336,7 +337,10 @@ void effect() {
   float washShade=floor(styleShade*3.0+0.5)/3.0;
   vec3 authoredLighting=mix(vec3(litShade),modernShade,modernLightingEnabled);
   authoredLighting=mix(authoredLighting,vec3(washShade),mangaAmount);
-  vec3 lighting=mix(vec3(1.0),authoredLighting,lightingEnabled);
+  // Arena vertex colours already contain lighting, but still receive the
+  // battlers' cast shadows. Preserve an ambient floor without relighting RGB.
+  float prelitShade=mix(1.0,0.30+0.70*shadowVisibility,prelitShadowEnabled);
+  vec3 lighting=mix(vec3(prelitShade),authoredLighting,lightingEnabled);
   vec3 shaded=combined * lighting * sceneTint.rgb;
   if (mangaAmount > 0.001) {
     // Watercolor-manga mode stays in the existing material pass. A warm paper
@@ -378,6 +382,7 @@ void effect() {
 local MOBILE_SHADER = [[
 #define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
 varying STADIUM_FLOAT vec3 vNormal;
+varying STADIUM_FLOAT float vMangaEyeZ;
 varying STADIUM_FLOAT vec2 vGeneratedUV;
 #ifdef VERTEX
 uniform mat4 mvp;
@@ -399,6 +404,7 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
   }
   vNormal=normalize(normalMatrix*VertexNormal);
   vec3 eyeNormal=normalize((viewMatrix*vec4(vNormal,0.0)).xyz);
+  vMangaEyeZ=eyeNormal.z;
   vGeneratedUV=(eyeNormal.xy*0.5+vec2(0.5))*textureGenScale;
   vec4 clip=mvp*vertex_position;
   clip.z-=decalDepthBias*clip.w;
@@ -420,6 +426,7 @@ uniform vec4 nativeModelColor;
 uniform float flashAmount;
 uniform float effectIntensityMode;
 uniform float lightingEnabled;
+uniform float celShadingEnabled;
 uniform float modernLightingEnabled;
 uniform vec3 lightDir;
 uniform vec3 ambient;
@@ -531,6 +538,22 @@ void effect() {
   vec3 authoredLighting=mix(vec3(stadiumShade),modernShade,modernLightingEnabled);
   vec3 lighting=mix(vec3(1.0),authoredLighting,lightingEnabled);
   vec3 shaded=combined*lighting*sceneTint.rgb;
+  if (celShadingEnabled*lightingEnabled > 0.001) {
+    // Bounded phases avoid the large hash multipliers that lose precision on
+    // mediump Android GPUs. No extra texture or outline draw is required.
+    STADIUM_FLOAT vec2 paperUV=mod(love_PixelCoord.xy*(720.0/max(1.0,love_ScreenSize.y)),512.0);
+    float grain=sin(paperUV.x*1.71+sin(paperUV.y*.41))*sin(paperUV.y*1.39)*.5;
+    float wash=sin(paperUV.x*.021+paperUV.y*.017)*.5;
+    float lum=dot(shaded,vec3(.299,.587,.114));
+    float band=(floor(lum*7.0)+smoothstep(.18,.82,fract(lum*7.0)))/7.0;
+    vec3 pigment=shaded*mix(1.0,band/max(lum,.015),.32);
+    pigment=mix(vec3(lum),pigment,.88)*vec3(1.0,.98,.93);
+    pigment*=1.0+grain*.055+wash*.025;
+    float rim=1.0-smoothstep(.025,.15,abs(vMangaEyeZ));
+    float hatch=smoothstep(.58,.76,fract((paperUV.x+paperUV.y)*.115+grain*.35));
+    pigment*=1.0-rim*(.22+.50*hatch);
+    shaded=clamp(pigment,0.0,1.0);
+  }
   shaded=mix(shaded,vec3(1.0),flashAmount);
   shaded=mix(shaded,nativeModelColor.rgb,nativeModelColor.a);
   love_PixelColor=vec4(shaded,
@@ -538,6 +561,10 @@ void effect() {
 }
 #endif
 ]]
+
+local TorchLightingShader=require("mods.STADIUM2_IMPORTER.lib.torch_lighting_shader")
+SHADER=TorchLightingShader.apply(SHADER)
+MOBILE_SHADER=TorchLightingShader.apply(MOBILE_SHADER)
 
 local SHADOW_SHADER = [[
 varying float vDepth;
@@ -719,17 +746,17 @@ local function modelMatrix(yaw, pitch, scale, cx, cy, cz, flipY)
   return matMul(ry, matMul(rx, sc))
 end
 
-local function normalMatrix(yaw, pitch, flipY)
+local function normalMatrix(yaw, pitch, flipY, out)
   local y = yaw or 0
   local p = pitch or 0
   local sy, cyaw = sin(y), cos(y)
   local sp, cp = sin(p), cos(p)
   local fy = flipY == false and 1 or -1
-  return {
-    cyaw, sy * sp * fy, sy * cp,
-    0, cp * fy, -sp,
-    -sy, cyaw * sp * fy, cyaw * cp,
-  }
+  out = out or {}
+  out[1], out[2], out[3] = cyaw, sy * sp * fy, sy * cp
+  out[4], out[5], out[6] = 0, cp * fy, -sp
+  out[7], out[8], out[9] = -sy, cyaw * sp * fy, cyaw * cp
+  return out
 end
 
 local function normalize3(x, y, z)
@@ -748,6 +775,23 @@ local function sampleComponent(c, frame, fallback)
   return c[at]
 end
 
+-- A malformed/alternate raw pose decoder can expose signed scale sentinels
+-- (notably in Dig/Diglett clips). Passing those through skinning inverts or
+-- explodes the mesh. Stadium battle poses never need a negative or enormous
+-- bone scale; preserve the authored value when it is physically plausible and
+-- fall back to the bind scale otherwise.
+local function safeScale(value, fallback)
+  value=tonumber(value)
+  if not value or value<=0 or value>4 then return fallback end
+  return value
+end
+
+local function safeTranslation(value, fallback)
+  value=tonumber(value)
+  if not value or math.abs(value)>4096 then return fallback end
+  return value
+end
+
 local function samplePose(model, animIndex, frame)
   local anim = animIndex and model.anims and model.anims[animIndex] or nil
   return function(i)
@@ -756,17 +800,17 @@ local function samplePose(model, animIndex, frame)
     local tr = anim.tracks[i]
     if not tr then return bone.t, bone.r, bone.s end
     return {
-      sampleComponent(tr.t[1], frame, bone.t[1]),
-      sampleComponent(tr.t[2], frame, bone.t[2]),
-      sampleComponent(tr.t[3], frame, bone.t[3]),
+      safeTranslation(sampleComponent(tr.t[1], frame, bone.t[1]),bone.t[1]),
+      safeTranslation(sampleComponent(tr.t[2], frame, bone.t[2]),bone.t[2]),
+      safeTranslation(sampleComponent(tr.t[3], frame, bone.t[3]),bone.t[3]),
     }, {
       sampleComponent(tr.r[1], frame, bone.r[1]),
       sampleComponent(tr.r[2], frame, bone.r[2]),
       sampleComponent(tr.r[3], frame, bone.r[3]),
     }, {
-      sampleComponent(tr.s[1], frame, bone.s[1]),
-      sampleComponent(tr.s[2], frame, bone.s[2]),
-      sampleComponent(tr.s[3], frame, bone.s[3]),
+      safeScale(sampleComponent(tr.s[1], frame, bone.s[1]),bone.s[1]),
+      safeScale(sampleComponent(tr.s[2], frame, bone.s[2]),bone.s[2]),
+      safeScale(sampleComponent(tr.s[3], frame, bone.s[3]),bone.s[3]),
     }
   end
 end
@@ -835,13 +879,15 @@ local function samplePoseInterpolated(model, animIndex, frame, alpha, loop)
     end
 
     return {
-      lerp(at[1], bt[1], moveBlend), lerp(at[2], bt[2], moveBlend),
-      lerp(at[3], bt[3], moveBlend),
+      safeTranslation(lerp(at[1], bt[1], moveBlend),at[1]),
+      safeTranslation(lerp(at[2], bt[2], moveBlend),at[2]),
+      safeTranslation(lerp(at[3], bt[3], moveBlend),at[3]),
     }, {
       ar[1] + rx * rotBlend, ar[2] + ry * rotBlend, ar[3] + rz * rotBlend,
     }, {
-      lerp(as[1], bs[1], alpha), lerp(as[2], bs[2], alpha),
-      lerp(as[3], bs[3], alpha),
+      safeScale(lerp(as[1], bs[1], alpha),as[1]),
+      safeScale(lerp(as[2], bs[2], alpha),as[2]),
+      safeScale(lerp(as[3], bs[3], alpha),as[3]),
     }
   end
 end
@@ -1810,7 +1856,7 @@ function Renderer:updatePose(force)
   local alpha = anim and math.max(0, math.min(0.999999,
     self.time * Pack.FPS - math.floor(self.time * Pack.FPS))) or 0
   if finished then alpha = 0 end
-  local changed = force or frame ~= self.frame or finished ~= self.finished
+  local changed = force or self.visitorLocomotion~=nil or frame ~= self.frame or finished ~= self.finished
     or math.abs(alpha - (self.poseAlpha or -1)) > 0.000001
   self.frame, self.finished = frame, finished
   self.poseAlpha = alpha
@@ -1902,13 +1948,13 @@ function Renderer:updatePose(force)
     local now=self:geometryAnchor()
     local dx,dy,dz=now[1]-self.bindAnchor[1],now[2]-self.bindAnchor[2],now[3]-self.bindAnchor[3]
     local dist=math.sqrt(dx*dx+dy*dy+dz*dz)
-    local allow=math.max(.001,(tonumber(self.model.height) or 1)*.75)
+    local allow=self.lockTravel and 0 or math.max(.001,(tonumber(self.model.height) or 1)*.75)
     local tx,ty,tz=0,0,0
     if dist>allow then
       local k=(dist-allow)/dist;tx,ty,tz=dx*k,dy*k,dz*k
     end
     local dt=self.poseDT
-    local a=dt and dt>0 and (1-.5^(dt/.05)) or 1
+    local a=self.lockTravel and 1 or (dt and dt>0 and (1-.5^(dt/.05)) or 1)
     self.anchorX=(self.anchorX or tx)+(tx-(self.anchorX or tx))*a
     self.anchorY=(self.anchorY or ty)+(ty-(self.anchorY or ty))*a
     self.anchorZ=(self.anchorZ or tz)+(tz-(self.anchorZ or tz))*a
@@ -1923,10 +1969,14 @@ function Renderer:updatePose(force)
       end
     end
   end
+  if self.visitorLocomotion then
+    require("mods.STADIUM2_IMPORTER.lib.visitor_locomotion").apply(self)
+  end
   return true
 end
 
-function Renderer:poseBounds()
+function Renderer:poseBounds(out)
+  out = out or {}
   local minX, minY, minZ = math.huge, math.huge, math.huge
   local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
   local count = 0
@@ -1947,12 +1997,18 @@ function Renderer:poseBounds()
     end
   end
   if count == 0 then
-    return { minX = -0.5, minY = -0.5, minZ = -0.5, maxX = 0.5, maxY = 0.5, maxZ = 0.5, cx = 0, cy = 0, cz = 0, radius = 1 }
+    out.minX, out.minY, out.minZ = -0.5, -0.5, -0.5
+    out.maxX, out.maxY, out.maxZ = 0.5, 0.5, 0.5
+    out.cx, out.cy, out.cz, out.radius = 0, 0, 0, 1
+    return out
   end
   local cx, cy, cz = (minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5
   local rx, ry, rz = (maxX - minX) * 0.5, (maxY - minY) * 0.5, (maxZ - minZ) * 0.5
   local radius = math.max(sqrt(rx * rx + ry * ry + rz * rz), 0.001)
-  return { minX = minX, minY = minY, minZ = minZ, maxX = maxX, maxY = maxY, maxZ = maxZ, cx = cx, cy = cy, cz = cz, radius = radius }
+  out.minX, out.minY, out.minZ = minX, minY, minZ
+  out.maxX, out.maxY, out.maxZ = maxX, maxY, maxZ
+  out.cx, out.cy, out.cz, out.radius = cx, cy, cz, radius
+  return out
 end
 
 function Renderer:fitCamera(width, height, options)
@@ -2159,16 +2215,16 @@ function Renderer.callbackTextureCoordinateScale(model, prim, textureIndex,
     sourceH / targetH * targetVS / vs
 end
 
-function Renderer:worldMetrics()
+function Renderer:worldMetrics(out)
   local model = self.model or {}
   local bounds = self.bindBounds or self:poseBounds()
-  return {
-    height = math.max(0.001, tonumber(model.height) or (bounds.maxY - bounds.minY)),
-    floor = tonumber(model.floor) or bounds.minY,
-    radius = math.max(0.001, tonumber(model.radius) or bounds.radius),
-    rootScale = tonumber(model.rootScale) or 1,
-    bounds = bounds,
-  }
+  out = out or {}
+  out.height = math.max(0.001, tonumber(model.height) or (bounds.maxY - bounds.minY))
+  out.floor = tonumber(model.floor) or bounds.minY
+  out.radius = math.max(0.001, tonumber(model.radius) or bounds.radius)
+  out.rootScale = tonumber(model.rootScale) or 1
+  out.bounds = bounds
+  return out
 end
 
 function Renderer:attachmentPosition(label)
@@ -2449,7 +2505,7 @@ function Renderer:drawScene(pass, model, options)
     pcall(self.shader.send, self.shader, "modernLightingEnabled",
       modernLighting == true and 1 or 0)
     pcall(self.shader.send, self.shader, "celShadingEnabled",
-      self:currentShaderStyle() == "cel" and 1 or 0)
+      not options.sceneWatercolor and self:currentShaderStyle() == "cel" and 1 or 0)
     pcall(self.shader.send, self.shader, "textureGenEnabled", 0)
     pcall(self.shader.send, self.shader, "textureCoordinateScale", {1,1})
     pcall(self.shader.send, self.shader, "textureGenScale", {1,1})
@@ -2460,9 +2516,14 @@ function Renderer:drawScene(pass, model, options)
       self.boundedTextureUV and 1 or 0)
     pcall(self.shader.send, self.shader, "smoothTextureFiltering",
       self.smoothArenaTextures and 1 or 0)
+    pcall(self.shader.send,self.shader,"fireflyEnabled",0)
+    pcall(self.shader.send,self.shader,"localTorchEnabled",0)
+    if options.bindTorchLighting then options.bindTorchLighting(self.shader) end
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
     pcall(self.shader.send, self.shader, "sunEnabled",
       options.sunMap and self.receiveModelSunShadows and 1 or 0)
+    pcall(self.shader.send, self.shader, "prelitShadowEnabled",
+      isArenaModel(self.model) and 1 or 0)
     if options.sunMap then pcall(self.shader.send,self.shader,"sunMap",options.sunMap) end
     pcall(self.shader.send,self.shader,"sunDark",options.sunDark or 0.68)
     pcall(self.shader.send,self.shader,"sunBias",options.sunBias or 0.002)
@@ -2608,8 +2669,12 @@ function Renderer:drawScene(pass, model, options)
             Renderer.callbackSecondaryWrap(set)
           sendTextureWrapMode(self.shader, "secondaryWrapMode",
             secondaryWrapS, secondaryWrapT)
-          if secondary.setWrap and set.wrap then
-            pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
+          -- Phase-5 uses per-axis samplers, without the legacy set.wrap.
+          -- Desktop sampling needs the image state as well as shader modes;
+          -- leaving the default clamp stretches the Poké Ball mask edges.
+          if secondary.setWrap then
+            pcall(secondary.setWrap, secondary, physicalTextureWrap(secondaryWrapS),
+              physicalTextureWrap(secondaryWrapT))
           end
           pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
           local sw, sh = imageDimensions(secondary,self.model.textures[set[2]])
@@ -2757,6 +2822,8 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "textureScroll", { 0, 0, 0, 0 })
       pcall(self.shader.send, self.shader, "alphaCutoff", 0.001)
       pcall(self.shader.send, self.shader, "sceneTint", {1,1,1,1})
+      pcall(self.shader.send, self.shader, "fireflyEnabled", 0)
+      pcall(self.shader.send, self.shader, "localTorchEnabled", 0)
       pcall(self.shader.send, self.shader, "flashAmount", 0)
       pcall(self.shader.send, self.shader, "nativeModelColor", {0,0,0,0})
       pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
@@ -2764,6 +2831,8 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "primaryIntensityAlpha", 0)
       pcall(self.shader.send, self.shader, "secondaryIntensityAlpha", 0)
       pcall(self.shader.send, self.shader, "lightingEnabled", 1)
+      pcall(self.shader.send, self.shader, "sunEnabled", 0)
+      pcall(self.shader.send, self.shader, "prelitShadowEnabled", 0)
       pcall(self.shader.send, self.shader, "modernLightingEnabled",
         modernLighting == true and 1 or 0)
       pcall(self.shader.send, self.shader, "celShadingEnabled",
@@ -2880,8 +2949,9 @@ function Renderer:renderToCanvas(width, height, options)
                 Renderer.callbackSecondaryWrap(set)
               sendTextureWrapMode(self.shader,"secondaryWrapMode",
                 secondaryWrapS,secondaryWrapT)
-              if secondary.setWrap and set.wrap then
-                pcall(secondary.setWrap, secondary, set.wrap, set.wrap)
+              if secondary.setWrap then
+                pcall(secondary.setWrap, secondary, physicalTextureWrap(secondaryWrapS),
+                  physicalTextureWrap(secondaryWrapT))
               end
               pcall(self.shader.send, self.shader, "secondaryTexture", secondary)
               local sw,sh=imageDimensions(secondary,model.textures[set[2]])

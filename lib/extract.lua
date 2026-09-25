@@ -668,7 +668,8 @@ local function decodeAnimationSources(data, sources, bones, dependencies)
   return anims, aux, errors
 end
 
-local SUBSTITUTE_RECORD = 253
+local SUBSTITUTE_RECORD = Layout.SUBSTITUTE_RECORD
+local EGG_RECORD = Layout.EGG_RECORD
 local UNOWN_SPECIES = 201
 local UNOWN_FIRST_FORM_RECORD = 254 -- B; species record 201 is A
 local UNOWN_LAST_FORM_RECORD = 278  -- Z
@@ -718,13 +719,13 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
   local Fx = dependencies.Fx
   local job = {
     phase = "scan", cursor = ASSET_START,
-    total = expectedCount+(includeSpecials and (1+UNOWN_EXTRA_FORMS) or 0), done = 0, species = nil,
+    total = expectedCount+(includeSpecials and (2+UNOWN_EXTRA_FORMS) or 0), done = 0, species = nil,
     built = {}, builtCount = 0, failed = {}, bytes = 0,
     errorSamples = {}, modelSources = {}, animationSources = {},
     modelSpecies = 0, animatedSpecies = 0, animationClips = 0,
     motionFiles = 0, emptyPoseBundles = 0,
     nestedPoseArchives = 0, modelTableCount = 0, poseTableCount = 0,
-    specialAnimationSources={},specialBuilt=not includeSpecials,
+    specialAnimationSources={},specialBuilt=not includeSpecials,specialBuiltCount=includeSpecials and 0 or 2,
     unownModelSources={},unownAnimationSources={},unownBuilt=0,
   }
 
@@ -734,7 +735,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
   end
 
   local function finish()
-    if job.builtCount == expectedCount and job.specialBuilt
+    if job.builtCount == expectedCount and job.specialBuiltCount >= 2
         and (not includeSpecials or job.unownBuilt == UNOWN_EXTRA_FORMS) then
       job.success = true
       job.animationIncomplete = (job.animatedBuilt or 0) < expectedCount
@@ -750,7 +751,7 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
           expectedCount, job.modelTableCount or 0, job.poseTableCount or 0,
           job.modelSpecies or 0, job.animatedSpecies or 0,
           job.motionFiles or 0, job.nestedPoseArchives or 0,
-          job.emptyPoseBundles or 0,tostring(job.specialBuilt),
+          job.emptyPoseBundles or 0,tostring(job.specialBuiltCount >= 2),
           job.unownBuilt or 0,includeSpecials and UNOWN_EXTRA_FORMS or 0,detail)
     end
     job.phase = "done"
@@ -817,16 +818,19 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
               :format(species, tostring(summary.species)) or tostring(sourceOrErr),
           }
         end
-      elseif includeSpecials and self.archiveRole=="model" and fileIndex==SUBSTITUTE_RECORD then
+      elseif includeSpecials and self.archiveRole=="model"
+          and (fileIndex==SUBSTITUTE_RECORD or fileIndex==EGG_RECORD) then
+        local specialName=fileIndex==SUBSTITUTE_RECORD and "substitute" or "egg"
         local summary,sourceOrErr=inspectModelFragment(data,record,StadiumRom,
-          dependencies.V,"stadium2_substitute.bin")
-        if summary and tonumber(summary.species)==SUBSTITUTE_RECORD
+          dependencies.V,"stadium2_"..specialName..".bin")
+        if summary and tonumber(summary.species)==fileIndex
             and (summary.geometry or 0)>0 then
-          self.specialModelSource=sourceOrErr
-          self.specialModelSource.archiveOffset=self.archiveOffset
-          self.specialModelSource.fileIndex=fileIndex
+          sourceOrErr.archiveOffset=self.archiveOffset
+          sourceOrErr.fileIndex=fileIndex
+          if fileIndex==SUBSTITUTE_RECORD then self.specialModelSource=sourceOrErr
+          else self.eggModelSource=sourceOrErr end
         else
-          self.lastError="substitute model record: "..tostring(sourceOrErr)
+          self.lastError=specialName.." model record: "..tostring(sourceOrErr)
         end
       elseif includeSpecials and self.archiveRole=="model" and fileIndex>=UNOWN_FIRST_FORM_RECORD
           and fileIndex<=UNOWN_LAST_FORM_RECORD then
@@ -870,12 +874,15 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
             }
           end
         end
-      elseif includeSpecials and self.archiveRole=="pose" and fileIndex==SUBSTITUTE_RECORD then
-        local label=("pose-table=0x%X substitute file=%d")
-          :format(self.archiveOffset,fileIndex)
+      elseif includeSpecials and self.archiveRole=="pose"
+          and (fileIndex==SUBSTITUTE_RECORD or fileIndex==EGG_RECORD) then
+        local specialName=fileIndex==SUBSTITUTE_RECORD and "substitute" or "egg"
+        local label=("pose-table=0x%X %s file=%d")
+          :format(self.archiveOffset,specialName,fileIndex)
         local sources,poseErrors=poseSourcesForRecord(data,record,dependencies,label)
-        self.specialAnimationSources=sources or {}
-        if #self.specialAnimationSources==0 then
+        if fileIndex==SUBSTITUTE_RECORD then self.specialAnimationSources=sources or {}
+        else self.eggAnimationSources=sources or {} end
+        if #(sources or {})==0 then
           self.lastAnimationError=table.concat(poseErrors or {}," | ")
         end
       elseif includeSpecials and self.archiveRole=="pose" and fileIndex>=UNOWN_FIRST_FORM_RECORD
@@ -901,10 +908,14 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
       self.buildStage=nil
       if not ok then reason,result=result,nil end
       if result then
-        if result.kind=="substitute" then self.specialBuilt=true
-        elseif result.kind=="unown" then self.unownBuilt=self.unownBuilt+1 end
+        if result.kind=="substitute" or result.kind=="egg" then
+          self.specialBuiltCount=(self.specialBuiltCount or 0)+1
+          self.specialBuilt=self.specialBuiltCount>=2
+        elseif result.kind=="unown" then
+          self.unownBuilt=self.unownBuilt+1
+        end
         self.specialBytes=(self.specialBytes or 0)+(result.bytes or 0)
-        self.done=self.builtCount+(self.specialBuilt and 1 or 0)+self.unownBuilt
+        self.done=self.builtCount+(self.specialBuiltCount or 0)+self.unownBuilt
       else
         self.lastError=tostring(reason or "unknown special-model build error")
       end
@@ -958,7 +969,9 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
           {kind="battle_fx_resources",name="battle_fx_resources"},
           {kind="substitute",record=SUBSTITUTE_RECORD,
           name="substitute",source=self.specialModelSource,
-          animations=self.specialAnimationSources}}
+          animations=self.specialAnimationSources},
+          {kind="egg",record=EGG_RECORD,name="egg",source=self.eggModelSource,
+            animations=self.eggAnimationSources}}
         for record=UNOWN_FIRST_FORM_RECORD,UNOWN_LAST_FORM_RECORD do
           local letter=unownLetter(record):lower()
           self.specialQueue[#self.specialQueue+1]={kind="unown",record=record,
@@ -1114,7 +1127,15 @@ local function newBuildJob(data, dependencies, writePack, writeSpecial, options)
             if rare.specialTexture then
               local applied, rareErr = applyDedicatedRareTextures(
                 data, species, model, StadiumRom)
-              if not applied then return nil, rareErr end
+              if not applied then
+                -- A handful of Stadium records contain an authored rare
+                -- texture stream whose byte count does not match the
+                -- deduplicated render metadata (Wigglytuff/record 40 is the
+                -- known case).  Do not abort the entire 251-model import:
+                -- retain the normal texture for that rare variant and let
+                -- every other model continue into the battle presentation.
+                model.stadium2RareTextureWarning = rareErr
+              end
             else
               for _, texture in ipairs(model.textures) do
                 texture.rgba = Palette.applyRare(texture.rgba, rare)

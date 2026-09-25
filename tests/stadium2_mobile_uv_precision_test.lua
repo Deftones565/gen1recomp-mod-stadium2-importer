@@ -120,7 +120,10 @@ check(mobileShader:find("stadiumShade=clamp",1,true)~=nil,
 check(mobileShader:find("paperNoise",1,true)==nil
     and mobileShader:find("sample3",1,true)==nil
     and mobileShader:find("sunMap",1,true)==nil,
-  "Android shader omits procedural Manga, manual filtering and model shadow sampling")
+  "Android shader avoids large noise hashes, manual filtering and model shadow sampling")
+check(mobileShader:find("uniform float celShadingEnabled;",1,true)~=nil
+    and mobileShader:find("if (celShadingEnabled*lightingEnabled > 0.001)",1,true)~=nil,
+  "Android shader honors the live watercolor manga choice")
 check(mobileShader:find("VaryingTexCoord.st",1,true)~=nil,
   "Android simple shader retains precision-safe LOVE texture coordinates")
 

@@ -9,7 +9,16 @@ local ModelApi = require("mods.STADIUM2_IMPORTER.lib.model_api")
 local BattleUIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 
 return function(mod)
+  local lifecycle=require("mods.STADIUM2_IMPORTER.lib.mod_lifecycle").new(mod)
+  lifecycle:add(Battle.uninstall)
+  lifecycle:add(BattleUIOwnership.resetForTests)
+  lifecycle:add(BattleAA.release)
+  lifecycle:add(function() require("mods.STADIUM2_IMPORTER.lib.battle_watercolor").release() end)
   Importer.bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_nature").bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_cave").bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_freshwater").bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_town").bind(mod)
   Fx.bind(mod)
   Battle.bind(mod)
   BattleAA.bind(mod)
@@ -21,6 +30,18 @@ return function(mod)
   end)
   local Models = ModelApi.new(Importer)
   local importScreen
+  local mapContext,pendingEncounter,lastTimeOfDay
+  local EnvironmentCache=require("mods.STADIUM2_IMPORTER.lib.environment_cache")
+  EnvironmentCache.reset()
+  local preparedContext,preparedStyle,preparedTest,preparedArena
+  local function prepareEnvironment()
+    if not (mapContext and Importer.available()) or Battle.currentScene() then return end
+    local style,test,arena=Importer.environmentStyle(),Importer.environmentTest(),Importer.arenaTest()
+    if preparedContext==mapContext and preparedStyle==style and preparedTest==test and preparedArena==arena then return end
+    if not (love and love.graphics and love.graphics.newCanvas) then return end
+    EnvironmentCache.location(love.graphics,mapContext,style,test,arena)
+    preparedContext,preparedStyle,preparedTest,preparedArena=mapContext,style,test,arena
+  end
   local activatedSave
   local pendingAutoImport = false
   local activatePlaythrough
@@ -68,19 +89,52 @@ return function(mod)
     return true
   end
 
+  local arenaChoices={{'AUTOMATIC',-1}}
+  local arenaNames={'FALKNER','BUGSY','WHITNEY','MORTY','JASMINE','CHUCK','PRYCE','CLAIR',
+    'TEAM ROCKET','WILL','KOGA','BRUNO','KAREN','CHAMPION','BROCK','MISTY','LT. SURGE',
+    'ERIKA','JANINE','SABRINA','BLAINE','BLUE','RED'}
+  arenaNames[27]='BATTLE TOWER';arenaNames[28]='INDOOR';arenaNames[29]='FREE BATTLE PARK';arenaNames[30]='RIVAL'
+  for index=0,require('mods.STADIUM2_IMPORTER.lib.layout').STADIUM_MODEL_TABLE_RECORDS-1 do
+    arenaChoices[#arenaChoices+1]={('ARENA %02d%s'):format(index,arenaNames[index+1] and (' - '..arenaNames[index+1]) or ''),index}
+  end
+
   mod.options:define({
     { key="stadium2_models", label="STADIUM 2 MODELS", type="toggle", default=true },
     { key="stadium2_battle", label="STADIUM 2 BATTLE", type="toggle", default=true },
-    { key="stadium2_shader", label="MODEL SHADER", type="choice", default="stadium",
+    { key="stadium2_battle_hud", label="STADIUM 2 BATTLE HUD", type="toggle",
+      default=true,
+      help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
+    { key="stadium2_shader", label="MODEL / SCENE SHADER", type="choice", default="stadium",
       choices={{"STADIUM","stadium"},{"WATERCOLOR MANGA","cel"}},
-      help="Choose authentic Stadium lighting or an inked watercolor-manga treatment for imported Pokemon models." },
+      help="Choose Stadium shading or watercolor manga on desktop and Android. Applies to imported Pokemon and the whole custom battle scene; battle UI stays unchanged." },
+    { key="stadium2_weather", label="SCENE WEATHER", type="choice", default="off",
+      choices={{"OFF","off"},{"RAIN","rain"},{"THUNDERSTORM","storm"}},
+      help="Stylized rain and surface splashes in outdoor custom scenes. Thunderstorm adds occasional lightning and a brief scene illumination. Cosmetic only." },
+    { key="stadium2_environment", label="BATTLE ENVIRONMENT", type="choice", default="classic",
+      choices={{"CLASSIC","classic"},{"KENNEY NATURE","kenney"}},
+      help="Watercolor woodland, cave, freshwater and town scenes for matching wild and trainer encounters. Unbuilt environments use Classic, or a contextual Stadium arena when arenas are enabled." },
+    { key="stadium2_environment_test", label="TEST ENVIRONMENT", type="choice", default="automatic",
+      choices={{"AUTOMATIC","automatic"},{"GRASS / WOODLAND","grass"},{"CAVE","cave"},
+        {"FRESHWATER","freshwater"},{"TOWN","town"},{"OCEAN (FALLBACK)","ocean"},
+        {"MOUNTAIN (FALLBACK)","mountain"},{"ICE CAVE (FALLBACK)","ice_cave"},
+        {"INTERIOR (FALLBACK)","interior"},{"INDUSTRIAL (FALLBACK)","industrial"},
+        {"RUINS / TOWER (FALLBACK)","ruins"},{"SHIP (FALLBACK)","ship"},
+        {"GYM (FALLBACK)","gym"},{"LEAGUE (FALLBACK)","league"},
+        {"CAVE WATER (FALLBACK)","cave_water"},{"INDOOR WATER (FALLBACK)","indoor_water"}},
+      help="Force an environment on your next encounter, regardless of location or the Battle Environment option. Unbuilt scenes test the Classic/arena fallback. Automatic restores normal selection." },
+    { key="stadium2_visitors", label="AMBIENT POKEMON", type="choice", default="natural",
+      choices={{"OFF","off"},{"NATURAL","natural"},{"PREVIEW CAMEOS","preview"}},
+      help="Cosmetic visitors in custom environments. Natural includes rare Mew/Ho-Oh cameos; Preview cycles them regularly. Visitors cannot battle or be caught." },
+    { key="stadium2_arena_test", label="TEST ARENA", type="choice", default=-1,
+      choices=arenaChoices,
+      help="Force any Stadium arena on your next encounter, even with context arenas off. Takes priority over Test Environment. Set both tests to Automatic to restore normal routing." },
     { key="stadium2_battle_aa", label="BATTLE AA", type="choice", default=0,
       choices={{"OFF",0},{"2X",2},{"4X",4}},
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
     { key="stadium2_beta_arena_test", label="BETA CONTEXT ARENAS", type="toggle", default=false,
-      help="Experimental, Gen 2 trainer battles only: select Stadium 2 fields from the current gym, story battle, or indoor/outdoor location. All wild battles keep the classic scene." },
+      help="Select contextual Stadium fields for Gen 2 trainers. With Kenney environments enabled, also provides arena fallback for unbuilt environments in either game." },
     { key="stadium2_beta_arena_tod", label="BETA PARK TIME OF DAY", type="toggle", default=false,
       help="Experimental: when context arenas are enabled, tint Free Battle Park for Gen 2 morning, day, or night. Turn OFF for the arena's normal lighting." },
     { key="stadium2_beta_battle_fx", label="BETA STADIUM 2 MOVE FX", type="toggle", default=false,
@@ -94,6 +148,7 @@ return function(mod)
     levels = { "OFF" },
     update = function(dt)
       Battle.update(dt)
+      prepareEnvironment()
     end,
     -- Satisfy the pipeline record contract without ever entering a render
     -- pass: its only level is OFF, while pipeline updates run unconditionally.
@@ -102,13 +157,37 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.12.1"
+  mod.exports.version = "0.14.5"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
   mod.exports.available = Importer.available
   mod.exports.modelsEnabled = Importer.modelsEnabled
   mod.exports.battleEnabled = Importer.battleEnabled
+  mod.exports.battleHudEnabled = Importer.battleHudEnabled
+  mod.exports.battleUI = {
+    apiVersion=1,
+    statusVisibleHook="battle.status_hud_visible",
+    bottomVisibleHook="battle.bottom_ui_visible",
+    statusOverlayHook="battle.ui.status_overlay.v1",
+  }
+  mod.exports.gen1ModernUi = {apiVersion=1,screens={},battle={
+    native3d=function(_,state)
+      local scene=Battle.currentScene()
+      return scene~=nil and (scene.battle==state or scene.screen==state)
+    end,
+  }}
+  local modernRegistered
+  mod.hooks:wrap("input.step",function(next,game,dt)
+    local handle=mod.find and mod.find("gen1_modern_ui")
+    local api=handle and handle.exports
+    if api and api~=modernRegistered and type(api.registerAdapter)=="function" then
+      local ok,registered=pcall(api.registerAdapter,{owner="STADIUM2_IMPORTER",
+        contract=mod.exports.gen1ModernUi})
+      if ok and registered then modernRegistered=api end
+    end
+    return next(game,dt)
+  end,6)
   mod.exports.shaderStyle = Importer.shaderStyle
   mod.exports.rapidashCutEffectEnabled = Importer.rapidashCutEffectEnabled
   mod.exports.betaArenaEnabled = Importer.betaArenaEnabled
@@ -141,6 +220,16 @@ return function(mod)
   mod.exports.newRenderer = Importer.newRenderer
   mod.exports.newRendererFromModel = Importer.newRendererFromModel
   mod.exports.releaseModels = Importer.releaseModels
+  -- Explicit cache eviction for tools/reloads; the next Nature battle rebuilds it.
+  mod.exports.releaseEnvironment = function()
+    EnvironmentCache.reset()
+    require("mods.STADIUM2_IMPORTER.lib.battle_nature").release()
+    require("mods.STADIUM2_IMPORTER.lib.battle_cave").release()
+    require("mods.STADIUM2_IMPORTER.lib.battle_freshwater").release()
+    require("mods.STADIUM2_IMPORTER.lib.battle_town").release()
+  end
+  lifecycle:add(mod.exports.releaseEnvironment)
+  lifecycle:add(Importer.releaseModels)
   mod.exports.readHandlers = Importer.readHandlers
   mod.exports.handlerInfo = Importer.handlerInfo
   mod.exports.evaluateHandler = Importer.evaluateHandler
@@ -246,18 +335,18 @@ return function(mod)
   end
 
 
-  local mapContext,pendingEncounter,lastTimeOfDay
   mod.events:on("map.entered",function(ev)
     local map=ev and ev.map
     local def=map and map.def
     local environment=def and def.environment
     local outside
     if environment~=nil then
-      outside=environment=="TOWN" or environment=="ROUTE"
+      outside=environment=="TOWN" or environment=="ROUTE" or environment=="FOREST"
     end
     mapContext={mapId=ev and ev.mapId or map and map.id,
-      environment=environment,outside=outside}
+      environment=environment,outside=outside,waterType=def and def.waterType}
     pendingEncounter=nil
+    prepareEnvironment()
   end)
 
   -- Observe the official chains without changing their answers. A successful
@@ -267,7 +356,7 @@ return function(mod)
     local out=next(enc,ctx)
     if out~=nil then
       pendingEncounter={mapId=ctx and ctx.mapId,terrain=ctx and ctx.terrain,
-        environment=ctx and ctx.environment,timeOfDay=ctx and ctx.daytime}
+        environment=ctx and ctx.environment,waterType=ctx and ctx.waterType,timeOfDay=ctx and ctx.daytime}
     end
     return out
   end,95)
@@ -289,6 +378,17 @@ return function(mod)
     local current=mod.world and mod.world.current and mod.world:current() or nil
     local mapId=current and current.mapId or mapContext and mapContext.mapId
     local mapped=mapContext and mapContext.mapId==mapId and mapContext or nil
+    -- Capture the live header as well: a mod enabled after map.entered must
+    -- make the same selection at battle construction as at render time.
+    if not mapped and mod.world and mod.world.overworld then
+      local world=mod.world:overworld()
+      local map=world and world.map
+      local def=map and map.def
+      if map and map.id==mapId and def and def.environment then
+        local e=def.environment
+        mapped={environment=e,outside=e=='TOWN' or e=='ROUTE' or e=='FOREST',waterType=def.waterType}
+      end
+    end
     local encounter=pendingEncounter and pendingEncounter.mapId==mapId
       and pendingEncounter or nil
     local battle=ev and ev.battle
@@ -298,6 +398,7 @@ return function(mod)
       -- Preserve false: indoor is a meaningful classification, not absence.
       outside=mapped and mapped.outside,
       terrain=encounter and encounter.terrain or nil,
+      waterType=(encounter and encounter.waterType) or (mapped and mapped.waterType),
       timeOfDay=lastTimeOfDay or (encounter and encounter.timeOfDay),
       kind=ev and ev.kind,trainerId=ev and ev.trainerId,
       battleType=ev and ev.battleType,

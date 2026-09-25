@@ -145,6 +145,18 @@ affected primitive and callback site (including both transformed battle-area
 copies in arena 11), verifies both formats and dimensions, and requires the
 mesh sampler to match TEXEL0 rather than the final TEXEL1 registration.
 
+The secondary GPU image must also receive that sampler on every draw. The
+renderer previously sent TEXEL1's wrap modes to the shader but only configured
+the image when the legacy `set.wrap` field existed. Phase-5 uses per-axis
+`set.samplers[2]` instead, leaving the host image clamped. On desktop, where
+ordinary repeat/mirror addressing uses the GPU sampler, arena 01's quarter-mask
+stretched into long strips instead of forming a complete Poké Ball. Both shared
+scene and private-canvas rendering now apply the resolved S/T modes to TEXEL1,
+including the clamped physical sampler required by shader-emulated mirror-clamp.
+Before/after GPU captures reproduce and resolve arena 01's broken centre; the
+other seven dual-texture centre arenas were also rendered and inspected.
+Submission-time regression checks cover both draw paths and sampler reuse.
+
 Arenas 01, 02, and 04 additionally use the phase-5 combiner family that adds
 the submitted vertex `SHADE` in its first cycle. LOVE multiplies mesh vertex
 colour by its process-global draw colour, so a colour left behind by viewer or

@@ -255,6 +255,20 @@ Local session: move them to "Verified" with the result.
   `tools/dump_fx_colors.lua <move>` prints emitter materials and shape
   combiners/tracks/texture stats from the ROM.
 
+- web -> local (2026-09-25): merged origin/main (22 commits: battle
+  environments, weather, visitors, HUD/UI layers, Minimize/substitute
+  snapshots) into this branch at the user's request. Decisions: cache
+  format S2IMP58 (main 54 + ours 57; reimport needed); Gen 2 attack clip
+  now starts from main's animForMove hook via `Scene:startMoveClip`
+  (charge turns noted in handleEvent); main's flinch-on-damage runs only
+  with battle FX off (our onImpact plays the Stadium hit clip); Actor:hit
+  merged into one (ours + main's flash); main's 0.35 Minimize applies only
+  with battle FX off (Stadium's 0.8 otherwise); viewer shiny button moved
+  to y 144 below the FX buttons, Y = finish FX while one plays, else shiny.
+  renderer.lua merged automatically (shaders still compile). Still failing
+  on main itself: android_picker (cache marker), independent_switches
+  (shownBattler stub).
+
 ## Verified
 
 - 2026-09-25 `7dddebb` (ROM part): full ROM worker suite passes at

@@ -34,8 +34,8 @@ ok(Extract.unownLetter(254)=="B" and Extract.unownLetter(278)=="Z",
 ok(Cache.unownPath("B","normal")=="stadium2_importer/battle/unown_b.dsm"
   and Cache.unownPath("Z","shiny")=="stadium2_importer/battle/unown_z_shiny.dsm",
   "normal and shiny Unown form packs have stable cache paths")
-ok(Cache.FORMAT=="S2IMP57",
-  "context-scale (FXCS) metadata invalidates incompatible older caches")
+ok(Cache.FORMAT=="S2IMP58",
+  "context-scale (FXCS) and semantic animation metadata invalidate older caches")
 local runtimeFixture = string.rep("\0", 8) .. "FRAGMENT"
   .. string.rep("\0", 4) .. string.char(0,0,0,32, 0,0,0,40, 0,0,0,48)
   .. string.rep("\255", 8)
@@ -45,7 +45,7 @@ ok(#runtimeImage == 48 and runtimeImage:sub(33) == string.rep("\0", 16),
 ok(Extract.runtimeModelFragment("model") == "model",
   "non-fragment payloads retain their original runtime image")
 ok(Pack.validSpecies(254) and Pack.validSpecies(278)
-  and not Pack.validSpecies(252) and not Pack.validSpecies(279),
+  and Pack.validSpecies(252) and not Pack.validSpecies(253) and not Pack.validSpecies(279),
   "DSM parser accepts exactly the Stadium 2 Unown form record range")
 ok(type(Palette.recolour) == "function", "standalone shiny recoloring exists")
 local pidgeyRare = Palette.decodeRare(string.char(0x0A, 0x00, 0xFE, 0x01), 0)

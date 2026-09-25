@@ -103,7 +103,7 @@ Actor.trigTables=nil
 
 -- Scene: offsets are Stadium units scaled like the slot.
 local host={arenaMode=true,arenaScale=2,arenaGroundY=0,
-  picScale=function() return 1 end,actors={}}
+  picScale=function() return 1 end,picElevation=function() return 0 end,actors={}}
 local mon={dex=1,renderer={worldMetrics=function() return {floor=0,height=1} end},
   scale=function() return 1 end}
 local base=Scene.modelMatrix(host,"player",mon)

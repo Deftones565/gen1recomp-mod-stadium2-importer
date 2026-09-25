@@ -51,6 +51,7 @@ ok(records["cache/normal/001"] == nil and records["cache/shiny/001"] == nil,
   "sharded build does not create per-model transactions")
 
 ok(Cache.writeSpecial("substitute", "DSM4substitute"), "stages Substitute")
+ok(Cache.writeSpecial("egg", "DSM4egg"), "stages Egg")
 for byte = string.byte("B"), string.byte("Z") do
   local letter = string.char(byte):lower()
   ok(Cache.writeSpecial("unown_" .. letter, "DSM4normal-unown-" .. letter),

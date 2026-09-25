@@ -22,6 +22,8 @@ local Unown = require("src.core.gen2.Unown")
 local GameVersion = require("src.core.GameVersion")
 
 local Gen2 = { COUNT = 251 }
+local PatchScope=require("mods.STADIUM2_IMPORTER.lib.patch_scope")
+local patches
 local modRef, installed, session
 local configured = 251
 local lastDiagnostic
@@ -106,8 +108,12 @@ function Scene.new(battle,context)
   local actorOpts=gen2ActorOptions()
   local self=setmetatable({},Scene)
   local arena,arenaError
-  if Importer.betaArenaEnabled() then
-    local arenaIndex,reason=ArenaSelector.resolve(context)
+  local selection=require('mods.STADIUM2_IMPORTER.lib.battle_environment').select(
+    context,Importer.environmentStyle(),Importer.betaArenaEnabled(),nil,
+    Importer.environmentTest and Importer.environmentTest(),
+    Importer.arenaTest and Importer.arenaTest())
+  if selection.mode=='arena' then
+    local arenaIndex,reason=selection.arena,selection.reason
     self.arenaSelectionReason=reason
     if arenaIndex~=nil then arena,arenaError=ArenaRuntime.load(arenaIndex,Importer) end
     if arena and arenaIndex==28 and Importer.betaArenaTimeOfDayEnabled() then
@@ -121,12 +127,16 @@ function Scene.new(battle,context)
     actors={player=Actor.new("player",actorOpts),enemy=Actor.new("enemy",actorOpts)},
     warn=warn,label="Gen 2 battle",arena=arena,arenaMode=arena~=nil,
   })
+  self.environmentSelection=selection
+  self.battleContext=context
   self.battle=battle
   self.screen=nil
   self.substituteActors={
     player=Actor.new("player",actorOpts),enemy=Actor.new("enemy",actorOpts),
   }
   self.substituteActive={player=false,enemy=false}
+  self.eventVisuals=setmetatable({},{__mode="k"})
+  self.recordedSubstitute={player=0,enemy=0}
   self.vanish={player={active=false},enemy={active=false}}
   -- Major status as presented so far. Gold resolves the whole turn before
   -- presenting it, so the live mon.status can run ahead of the screen.
@@ -145,6 +155,17 @@ function Scene.new(battle,context)
 end
 
 function Scene:release()
+  if self.screen then
+    self.screen.stadium2ImporterRetainedAnim=nil
+    local images=self.trainerImageOriginals
+    if images then
+      for _,key in ipairs({'enemyTrainerImage','playerBackImage'}) do
+        if self.screen[key]==images.applied[key] then self.screen[key]=images[key] end
+      end
+      self.screen.stadium2ImporterTrainerImagesPrepared=images.prepared
+      self.trainerImageOriginals=nil
+    end
+  end
   UIOwnership.release(self.screen)
   self.substituteActors.player:release()
   self.substituteActors.enemy:release()
@@ -258,9 +279,10 @@ function Scene:visualState(side, screen)
   local actor=self.actors[side]
   if not (actor and actor.mon) then return "empty" end
   local volatile=self:volatileFor(side)
+  local presented=self.presentedVolatile and self.presentedVolatile[side]
+  if presented then volatile=presented end
   local substituted=self.substituteActive and self.substituteActive[side]
-  if substituted==nil then substituted=volatile and volatile.substitute end
-  if substituted then return "substitute" end
+  if substituted==nil then substituted=(tonumber(volatile and volatile.substitute) or 0)>0 end
   if (actor.mon.hp or 0)<=0 then
     if actor.context=="faint" and not actor.faintFinished then return "pokemon" end
     -- Gold resolves the whole turn before presenting its queue, so live HP
@@ -270,6 +292,8 @@ function Scene:visualState(side, screen)
     return "pokemon"
   end
   local state = screen.animPicState and screen:animPicState(side) or nil
+  -- false is an explicit dropsub command, not a missing override.
+  if state and state.pic~=nil then substituted=state.pic=="substitute" end
   -- A successful catch latches picHidden.enemy before ANIM_THROW_POKE_BALL
   -- starts.  That latch describes the state AFTER the ball animation; using it
   -- immediately makes the 3D foe disappear before the ball ever reaches it.
@@ -312,6 +336,7 @@ function Scene:visualState(side, screen)
     if self:restVisible(side) and actor.renderer then return "pokemon" end
     return "hidden"
   end
+  if substituted then return "substitute" end
   if not actor.renderer then return "defect" end
   return "pokemon"
 end
@@ -328,8 +353,8 @@ function Scene:ensureSubstitute(side)
     return nil
   end
   actor.renderer=renderer
-  actor.mon={hp=1,species=253}
-  actor.dex,actor.variant=253,"normal"
+  actor.mon={hp=1,species=252}
+  actor.dex,actor.variant=252,"normal"
   actor.callbackFrame=side=="enemy" and 4 or 0
   actor:play("idle",true)
   return actor
@@ -357,10 +382,41 @@ function Scene:modelVisible(side, screen)
   return self:visualState(side,screen)=="pokemon"
 end
 
+-- Sample at emission, while the engine resolves the turn, then consume only
+-- when the screen reaches that event. Never infer identity from localized text
+-- or read end-of-turn Substitute HP while an earlier move is playing.
+function Scene:recordEvent(event)
+  if not self.eventVisuals then return end
+  local snapshot={}
+  for _,side in ipairs({"player","enemy"}) do
+    local mon=self.battle and self.battle[side]
+    local volatile=mon and self.battle:volatile(mon) or {}
+    local hp=tonumber(volatile.substitute) or 0
+    local previous=self.recordedSubstitute[side] or 0
+    snapshot[side]={substitute=hp>0,substituteHit=previous>hp and previous>0,
+      vanished=volatile.vanished,chargeMove=volatile.chargeMove}
+    self.recordedSubstitute[side]=hp
+  end
+  self.eventVisuals[event]=snapshot
+end
+
 function Scene:handleEvent(event)
   if not event or event._stadium2Gen2Handled then return end
   event._stadium2Gen2Handled = true
   self:sync()
+  local snapshot=self.eventVisuals and self.eventVisuals[event]
+  if snapshot then
+    self.presentedVolatile=self.presentedVolatile or {}
+    for _,which in ipairs({"player","enemy"}) do
+      local state=snapshot[which]
+      if state.substituteHit then
+        local doll=self:ensureSubstitute(which)
+        if doll then doll:hit() end
+      end
+      self.substituteActive[which]=state.substitute or state.substituteHit
+      self.presentedVolatile[which]=state
+    end
+  end
   local side = event.side
   if event.kind=="move" and side then
     local data=self.screen and self.screen.game and self.screen.game.data
@@ -397,54 +453,39 @@ function Scene:handleEvent(event)
         warn("Gen 2 battle FX trigger failed: "..tostring(err))
       end
     end
-    if def and def.effect=="EFFECT_SUBSTITUTE" and not event.missed then
-      self.substituteActive[side]=true
-    end
+    -- The clip starts from the animForMove hook (installScreenHooks), when
+    -- Gold's move animation actually starts; a charge turn plays the
+    -- species' charge row there instead of the move clip.
+    self.chargeTurn=self.chargeTurn or {}
+    self.chargeTurn[side]=(event.animParam==1 and moveId
+      and FxSequence.CHARGE_ENTRIES[moveId] and not event.missed) and moveId or nil
     if def and def.effect=="EFFECT_FLY" and not event.missed then
       local flight=self.vanish[side]
       local volatile=self:volatileFor(side)
-      if volatile and volatile.chargeMove==event.move then
+      if event.animParam==1 then
         flight.active,flight.mode,flight.sawHidden=false,"depart",nil
-      elseif flight.active or (volatile and volatile.vanished) then
+      elseif event.wasVanished or flight.active or (volatile and volatile.vanished) then
         flight.active,flight.mode,flight.sawHidden=true,"return",false
       end
     end
-  elseif event.kind=="message" and type(event.text)=="string"
-      and event.text:find("SUBSTITUTE broke!",1,true) then
-    for _,which in ipairs({"player","enemy"}) do
-      local mon=self.actors[which] and self.actors[which].mon
-      local name=mon and tostring(mon.nickname or mon.name or mon.species or "") or ""
-      local shown=name
-      if self.screen and self.screen.name then
-        local ok,value=pcall(self.screen.name,self.screen,mon)
-        if ok and value then shown=tostring(value) end
-      end
-      if shown~="" and event.text:find(shown,1,true) then
-        self.substituteActive[which]=false
-      end
-    end
   end
-  if event.kind == "move" and side then
+  if event.kind == "damage" and side then
     local actor = self.actors[side]
-    local data = self.screen and self.screen.game and self.screen.game.data
-    local def = data and data.moves and data.moves[event.move]
-    local moveId = tonumber(event.move) or (def and tonumber(def.index or def.number))
-    if actor and event.animParam == 1 and FxSequence.CHARGE_ENTRIES[moveId] and actor.charge then
-      local model = actor.renderer and actor.renderer.model
-      local entry, start = FxSequence.chargeFrames(model and model.fxDispatch, moveId)
-      if not actor:charge(entry, start) then actor:attack(moveId) end
-    elseif actor then actor:attack(def and tonumber(def.index or def.number)) end
+    -- Explicit anim fields describe residual effects or silent HP costs,
+    -- not a direct impact. Zero-damage bookkeeping must not flinch either.
+    -- With battle FX on, the hit clip plays at the Stadium impact instead
+    -- (the adapter's onImpact hook), so it is not replayed here.
+    if actor and not self.battleFx and event.anim==nil and (tonumber(event.amount) or 0)>0
+        and not self.substituteActive[side] then actor:hit() end
   elseif event.kind == "status" and side then
     self.presentedStatus[side] = event.status
-  elseif event.kind == "damage" and side then
-    local actor = self.actors[side]
-    if actor then actor.flash = 0.12 end
   elseif event.kind == "faint" and side then
     local actor = self.actors[side]
     -- Gold first chases the HP bar and begins its native sink.  Starting the
     -- Stadium clip at damage time makes it finish before the faint message.
     if actor then actor.pendingFaint=true end
   elseif (event.kind == "send" or event.kind == "sendout") and side then
+    if self.minimized then self.minimized[side]=nil end
     self.substituteActive[side]=false
     self.vanish[side]={active=false}
     self:sync()
@@ -454,6 +495,7 @@ function Scene:handleEvent(event)
     local actor = self.actors[side]
     if actor then actor:entrance() end
   elseif event.kind == "sendout" then
+    if self.minimized then self.minimized.player=nil end
     self.substituteActive.player=false
     self.vanish.player={active=false}
     self:sync()
@@ -462,7 +504,9 @@ function Scene:handleEvent(event)
     self.actors.player:entrance()
   elseif event.kind == "transform" and side and event.mon then
     local data = self.screen and self.screen.game and self.screen.game.data
-    self.actors[side]:load(data, event.mon, dexOf(data, event.mon))
+    local shown=self:shownMon(side) or event.mon
+    local species=shown==event.mon and event.species or shown.species
+    self.actors[side]:load(data, shown, dexOf(data, {species=species or shown.species}))
     self.actors[side]:play("entrance", false)
   end
   self:signalEventFx(event)
@@ -514,6 +558,22 @@ end
 -- Damage events name their cause with Gold's own anim constant; heal and
 -- stage events are attributed to the move being presented. Leftovers heals
 -- carry no source and are not signalled.
+-- The attacker's clip when Gold's move animation starts (animForMove hook):
+-- the species' charge row on a charge turn noted by handleEvent, else the
+-- move clip (Actor:attack times it from the dispatch row).
+function Scene:startMoveClip(side, moveId)
+  local actor=self.actors and self.actors[side]
+  if not actor then return false end
+  local charging=self.chargeTurn and self.chargeTurn[side]
+  if charging and charging==moveId and actor.charge then
+    self.chargeTurn[side]=nil
+    local model=actor.renderer and actor.renderer.model
+    local entry,start=FxSequence.chargeFrames(model and model.fxDispatch,moveId)
+    if actor:charge(entry,start) then return true end
+  end
+  return actor:attack(moveId)
+end
+
 function Scene:signalEventFx(event)
   local fx = self.battleFx
   if not fx or not fx.signalEffect then return end
@@ -592,11 +652,17 @@ local PIC_SCALE = {
 
 function Scene:picScale(side, screen)
   screen=screen or self.screen
-  if not (screen and screen.anim and screen.ballThrow and screen.animPicState) then
-    return 1
-  end
-  local ok,state=pcall(screen.animPicState,screen,side)
-  if not ok or type(state)~="table" then return 1 end
+  local actor=self.actors[side]
+  self.minimized=self.minimized or {}
+  local state=screen and screen.animPicState and screen:animPicState(side)
+  if state and state.pic=="minimize" then self.minimized[side]=actor and actor.mon
+  elseif state and state.pic~=nil and state.pic~="substitute" then self.minimized[side]=nil end
+  -- With battle FX on, Stadium's own Minimize routine (84122998, actor
+  -- sizeScale 0.8) shrinks the model; the Game Boy 0.35 applies otherwise.
+  if actor and not self.battleFx and self.minimized[side]==actor.mon and actor.mon
+      and not (state and state.pic=="substitute") and not self.substituteActive[side] then return .35 end
+  if not (screen and screen.anim and state) then return 1 end
+  if not screen.ballThrow then return 1 end
   local size=tonumber(state.size)
   return (PIC_SCALE[side] and PIC_SCALE[side][size]) or 1
 end
@@ -658,6 +724,15 @@ local function installScreenHooks()
   if BattleState.stadium2ImporterGen2 then return end
   BattleState.stadium2ImporterGen2 = true
 
+  local Battle=require("src.battle.gen2.Battle")
+  local emit=Battle.emit
+  if emit then
+    function Battle:emit(event,...)
+      if session and session.battle==self then session:recordEvent(event) end
+      return emit(self,event,...)
+    end
+  end
+
   local originalPic = BattleState.drawPic
 
   -- Gold's opponent trainer sheets are the odd one out in the Gen 2 import:
@@ -671,6 +746,9 @@ local function installScreenHooks()
   -- or GPU readback is involved.
   local function prepareTrainerImages(screen)
     if not screen or screen.stadium2ImporterTrainerImagesPrepared then return end
+    local scene=active(screen)
+    if scene then scene.trainerImageOriginals={enemyTrainerImage=screen.enemyTrainerImage,
+      playerBackImage=screen.playerBackImage,prepared=screen.stadium2ImporterTrainerImagesPrepared,applied={}} end
     screen.stadium2ImporterTrainerImagesPrepared = true
     if screen.enemyTrainerImage and screen.enemyTrainerPath then
       screen.enemyTrainerImage = TrainerSprite.fromPath(
@@ -682,6 +760,10 @@ local function installScreenHooks()
         and not screen.playerBackTrueColor then
       screen.playerBackImage = TrainerSprite.fromPath(
         screen.playerBackPath, screen.playerBackImage, "shade0")
+    end
+    if scene then
+      scene.trainerImageOriginals.applied.enemyTrainerImage=screen.enemyTrainerImage
+      scene.trainerImageOriginals.applied.playerBackImage=screen.playerBackImage
     end
   end
 
@@ -817,7 +899,9 @@ local function installScreenHooks()
     scene.crystalMovePane=GameVersion.engine()=="crystal"
       and self.phase=="moves"
     local layerOk,layer=pcall(Hud.layer,function() self:drawScene() end,
-      {crystalMovePane=scene.crystalMovePane})
+      {crystalMovePane=scene.crystalMovePane,
+        statusOwned=scene.statusHudOwned,bottomOwned=scene.bottomUiVisible,
+        preservePaper=not UIOwnership.hudEnabled()})
     -- The reference wide compositor snaps status HUDs from a HUD-only texture
     -- and leaves battle text/windows in the centred Game Boy frame.  Do the same for
     -- AskNickname so opening the modal never changes the wide HUD geometry.
@@ -834,7 +918,11 @@ local function installScreenHooks()
       hudLayerOk,hudLayer=pcall(UIOwnership.withNativeStatus,self,function()
       local had=rawget(self,"hudCleared")
       self.hudCleared=function() return false end
-      local ok,result=pcall(Hud.hudLayer,function() self:drawHud() end)
+      local ok,result=pcall(Hud.hudLayer,function()
+        self:drawHud()
+        UIOwnership.drawLegacyGen2Status(self)
+        UIOwnership.drawStatusOverlay(self)
+      end)
       self.hudCleared=had
       if not ok then error(result,0) end
       return result
@@ -857,7 +945,8 @@ local function installScreenHooks()
     if not layerOk then error(layer,0) end
     if not hudLayerOk then error(hudLayer,0) end
     if not modalLayerOk then error(modalLayer,0) end
-    local composed=Hud.composite(scene,self,layer,hudLayer,modalLayer)
+    local composed=Hud.composite(scene,self,layer,hudLayer,modalLayer,
+      {decorate=UIOwnership.hudEnabled()})
     if deferObjects and objectRunner and self.animView then
       local box=scene.hudBox
       g.push()
@@ -871,11 +960,28 @@ local function installScreenHooks()
     return composed
   end
 
+  -- Called by the host only when the move script actually starts (including
+  -- deferred/called moves), not for announcements or misses.
+  if BattleState.animForMove then
+    local animForMove=BattleState.animForMove
+    function BattleState:animForMove(move,side,...)
+      local started=animForMove(self,move,side,...)
+      local scene=active(self)
+      if started and scene and scene.actors[side] then
+        local data=self.game and self.game.data
+        local def=data and data.moves and data.moves[move]
+        if def then scene:startMoveClip(side,tonumber(def.index or def.number)) end
+      end
+      return started
+    end
+  end
+
   local originalAdvance = BattleState.advanceQueue
   function BattleState:advanceQueue(...)
     local event = self.queue and self.queue[1] or nil
     local scene = active(self)
-    local after = event and (event.kind == "send" or event.kind == "sendout")
+    local after = event and (event.kind == "send" or event.kind == "sendout"
+      or event.kind == "transform")
     if scene and event and not after then
       scene.screen = self
       scene:handleEvent(event)
@@ -1117,9 +1223,13 @@ end
 
 function Gen2.install()
   if installed then return true end
-  installScreenHooks()
-  installAnimationProjection()
-  installControls()
+  patches=PatchScope.new()
+  patches:capture({require("src.ui.gen2.BattleState"),require("src.battle.gen2.Battle"),
+    require("src.ui.gen2.BattleAnimView"),require("src.core.Game2")},function()
+    installScreenHooks()
+    installAnimationProjection()
+    installControls()
+  end)
   installed = true
   return true
 end
@@ -1223,8 +1333,14 @@ function Gen2.currentScene()
   return session
 end
 
+function Gen2.uninstall()
+  if patches then patches:restore();patches=nil end
+  installed=false
+  Gen2.finish(nil,true)
+end
+
 function Gen2.resetForTests()
-  Gen2.finish()
+  Gen2.uninstall()
   ArenaRuntime.resetForTests()
   installed, modRef, configured = false, nil, 251
 end

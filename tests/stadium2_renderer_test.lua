@@ -809,7 +809,7 @@ end
 function g.newImage(data)
   local img = { data = data }
   function img:setFilter(min, mag, anisotropy) self.filter, self.anisotropy = min, anisotropy end
-  function img:setWrap() end
+  function img:setWrap(s, t) self.wrapS, self.wrapT = s, t end
   function img:release() end
   return img
 end
@@ -895,6 +895,8 @@ calls = {}
 local ident={1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}
 local sceneOK,sceneErr=gpuRig:drawScene("opaque",ident,{viewProjection=ident})
 ok(sceneOK,sceneErr or "shared scene draw")
+ok(gpuRig.shader.uniforms.prelitShadowEnabled == 0,
+  "Pokemon unlit materials do not inherit arena floor-shadow reception")
 local sceneCanvas,sceneDraws,sceneDepthContract=false,0,false
 local sceneNeutralColor,sceneFirstDraw
 for index,call in ipairs(calls) do
@@ -933,6 +935,64 @@ ok(math.abs(colorRow[9] - 64/255) < 0.0001
   and math.abs(colorRow[12] - 32/255) < 0.0001,
   "source RGBA including alpha reaches the VertexColor mesh attribute")
 colorRig:release()
+
+-- The phase-5 Poké Ball is a mirrored TEXEL1 mask, not a full image.
+-- Uniforms alone do not configure desktop GPU sampling: verify the actual
+-- image state at submission, including reuse after another material.
+;(function()
+  local arenaModel = assert(Pack.parse(bytes))
+  arenaModel.species, arenaModel.staticPose, arenaModel.handlers = 0, true, nil
+  local prim = arenaModel.prims[1]
+  prim.additive, prim.effect, prim.decal = false, nil, false
+  prim.callbackOffset, prim.callbackTextureRequired = 0xDA14, true
+  local arenaRig = assert(Renderer.new(arenaModel, { boundedTextureUV = false }))
+  arenaModel.handlers = { records = {
+    { commandOffset = 0xDA14, descriptor = 0x81000148 },
+  } }
+  arenaRig.handlerState.textureBySite = { [0xDA14] = 1 }
+  local secondary = Pack.image(arenaModel, 2)
+  local originalDraw = g.draw
+  local cases = {
+    { sampler = { cms = 1, cmt = 1 }, s = "mirroredrepeat", t = "mirroredrepeat" },
+    { sampler = { cms = 3, cmt = 1 }, s = "clamp", t = "mirroredrepeat" },
+    { sampler = { cms = 0, cmt = 2 }, s = "repeat", t = "clamp" },
+    { wrap = "repeat", s = "repeat", t = "repeat" },
+    { s = "clamp", t = "clamp" },
+  }
+  for _, path in ipairs({ "scene", "canvas" }) do
+    for _, case in ipairs(cases) do
+      arenaRig.handlerState.textureSetBySite = { [0xDA14] = {
+        1, 2, phase5 = true, samplers = { [2] = case.sampler }, wrap = case.wrap,
+      } }
+      secondary:setWrap("stale", "stale")
+      local submitted = false
+      function g.draw(mesh, ...)
+        if mesh == arenaRig.parts[1].mesh then
+          submitted = true
+          ok(secondary.wrapS == case.s and secondary.wrapT == case.t,
+            path .. " submits TEXEL1 with its own per-axis physical sampler")
+        end
+        return originalDraw(mesh, ...)
+      end
+      if path == "scene" then
+        assert(arenaRig:drawScene("opaque", ident, {
+          viewProjection = ident, sunMap = {}, sunVP = ident,
+        }))
+        ok(arenaRig.shader.uniforms.sunEnabled == 1
+          and arenaRig.shader.uniforms.prelitShadowEnabled == 1,
+          "prelit arena surfaces receive the battlers' shadow map")
+      else
+        assert(arenaRig:renderToCanvas(64, 64))
+        ok(arenaRig.shader.uniforms.sunEnabled == 0
+          and arenaRig.shader.uniforms.prelitShadowEnabled == 0,
+          "private canvas clears shadow state left by the shared scene")
+      end
+      ok(submitted, path .. " exercised the secondary-texture draw")
+    end
+  end
+  g.draw = originalDraw
+  arenaRig:release()
+end)()
 
 local shaderAttempts = 0
 function g.newShader(code)

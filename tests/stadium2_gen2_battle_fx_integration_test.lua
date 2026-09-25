@@ -152,6 +152,7 @@ scene.actors.player.charge=function(_,entry,start) charged[#charged+1]={entry=en
 local triggersBefore=#calls.trigger
 battle.data.moves[19]={index=19,effect="EFFECT_FLY"}
 scene:handleEvent({kind="move",side="player",move=19,animParam=1})
+scene:startMoveClip("player",19) -- Gold's animForMove hook
 ok(calls.charges and calls.charges[1].moveId==19 and calls.charges[1].side=="player",
   "a charge turn schedules the variant route")
 ok(#calls.trigger==triggersBefore,"a charge turn does not play the move bank")
@@ -171,6 +172,8 @@ ok(scene:restCondition("enemy").frozen,"a presented freeze holds the frozen pose
 
 -- Fly/Dig after the departing animation, told apart by the charge move.
 local vol={}
+-- visualState clears the vanish mode once the departing animation ends.
+scene.vanish.player={active=false}
 scene.actors.player.mon=scene.actors.player.mon or battle.player
 battle.volatile=function(_,mon) return mon==scene.actors.player.mon and vol or {} end
 vol.vanished,vol.chargeMove=true,"FLY"
