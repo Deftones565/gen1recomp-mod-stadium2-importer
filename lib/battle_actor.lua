@@ -213,6 +213,23 @@ function Actor:hit()
   return true
 end
 
+-- Charge turn of a two-turn move: the species' charge row (context
+-- entry 255-260), started at the row's byte 6 like 84111DB4(+0x61B).
+function Actor:charge(entry, startFrame)
+  if not self.renderer then return false,"actor has no model" end
+  if self.pendingFaint or self.context=="faint" then return false,"actor is fainting" end
+  local name=("rom_context_%d"):format(tonumber(entry) or 0)
+  local ok=self.renderer.setContext and self.renderer:setContext(name,false) or false
+  if not ok then return false,("species %s has no %s clip"):format(tostring(self.dex),name) end
+  if (tonumber(startFrame) or 0)>0 and self.renderer.seekFrame then
+    self.renderer:seekFrame(startFrame)
+  end
+  self.context="attack"
+  self.renderer.finished=false
+  self.restKey,self.restHold=nil,nil
+  return true
+end
+
 function Actor:entrance()
   if self.context=="faint" then return false end
   self.grow={time=0,duration=.65}

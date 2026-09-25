@@ -310,6 +310,30 @@ function Scene:syncPresentationState()
     if residual and self.battleFx and self.battleFx.signalEffect then
       pcall(self.battleFx.signalEffect,self.battleFx,residual.entry,residual.side)
     end
+    -- Red's charge turn cancels the move row and queues a charge row
+    -- (XSTATITEM_ANIM / XSTATITEM_DUPLICATE_ANIM, TELEPORT for Fly,
+    -- SLIDE_DOWN_ANIM for Dig) while the battler holds `charging`. Stadium's
+    -- charge state plays the charge clip and the variant route instead.
+    local chargeRow={XSTATITEM_ANIM=true,XSTATITEM_DUPLICATE_ANIM=true,
+      TELEPORT=true,SLIDE_DOWN_ANIM=true}
+    local charger=self:shownBattler(rowSide)
+    local charging=charger and charger.charging
+    if chargeRow[name] and charging then
+      local cdef=battle.data and battle.data.moves and battle.data.moves[charging.id]
+      local chargeId=cdef and tonumber(cdef.index or cdef.number)
+      if chargeId and FxSequence.CHARGE_ENTRIES[chargeId] then
+        def=nil
+        local actor=self.actors[rowSide]
+        local model=actor and actor.renderer and actor.renderer.model
+        local entry,start=FxSequence.chargeFrames(model and model.fxDispatch,chargeId)
+        if actor and actor.charge and not actor:charge(entry,start) and actor.attack then
+          actor:attack(chargeId)
+        end
+        if self.battleFx and self.battleFx.playCharge then
+          pcall(self.battleFx.playCharge,self.battleFx,chargeId,rowSide,actor)
+        end
+      end
+    end
     if def then
       local side=battle.animAttackerIsPlayer and "player" or "enemy"
       local moveId=tonumber(def.index or def.number)

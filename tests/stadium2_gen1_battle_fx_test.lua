@@ -13,6 +13,7 @@ end
 local importer={}
 local adapterNew,adapterTrigger,adapterUpdates,finishes=0,{},{},0
 local signals={}
+local charges={}
 local adapter={
   new=function(received,options)
     adapterNew=adapterNew+1
@@ -24,6 +25,7 @@ local adapter={
       update=function(_,dt) adapterUpdates[#adapterUpdates+1]=dt end,
       finish=function() finishes=finishes+1 end,
       signalEffect=function(_,id,owner) signals[#signals+1]={id=id,owner=owner} end,
+      playCharge=function(_,moveId,side) charges[#charges+1]={moveId=moveId,side=side} return true end,
     }
   end,
 }
@@ -99,6 +101,31 @@ battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="ABSORB",true,tru
 scene:syncPresentationState()
 ok(#adapterTrigger==triggers+1 and adapterTrigger[#adapterTrigger][1]==71,
   "a real Absorb (with hit data) still plays its move FX")
+battle.animPlaying=false;scene:syncPresentationState()
+
+-- Charge rows: Fly's TELEPORT row is its charge, not Teleport's move FX.
+battle.data.moves.FLY={index=19}
+battle.data.moves.TELEPORT={index=100}
+battle.data.moves.SOLARBEAM={index=76}
+local charged={}
+scene.actors.player.charge=function(_,entry) charged[#charged+1]=entry return true end
+battle.player.charging={id="FLY"}
+local before=#adapterTrigger
+battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="TELEPORT",true,true
+scene:syncPresentationState()
+ok(#adapterTrigger==before and charges[#charges].moveId==19 and charged[#charged]==256,
+  "Fly's charge row plays the charge clip and variant, not Teleport's FX")
+battle.animPlaying=false;scene:syncPresentationState()
+battle.player.charging={id="SOLARBEAM"}
+battle.animName,battle.animPlaying="XSTATITEM_ANIM",true
+scene:syncPresentationState()
+ok(charges[#charges].moveId==76 and charged[#charged]==257,"SolarBeam's charge row -> row 257")
+battle.animPlaying=false;scene:syncPresentationState()
+battle.player.charging=nil
+local count=#charges
+battle.animName,battle.animPlaying="XSTATITEM_ANIM",true
+scene:syncPresentationState()
+ok(#charges==count,"an X item's XSTATITEM_ANIM (no charging move) is not a charge turn")
 battle.animPlaying=false;scene:syncPresentationState()
 
 print(("%d checks passed (Stadium 2 Gen 1 battle FX integration)"):format(checks))

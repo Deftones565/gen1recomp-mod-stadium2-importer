@@ -18,10 +18,10 @@ shadows, and most of the move-effect engine. Move-level status is tracked in
 
 Large; visible every turn.
 
-- Battle selects only contexts 251-254, 258, 261 and 262
-  (`docs/luna/research/battle-rest-pose.md`); 255-257, 259-260 and
+- Battle uses context entries 251-262 (`docs/luna/research/battle-rest-pose.md`);
   263-270 are never read. Resting poses (261 asleep, 262 Fly, 258
-  Diglett/Dugtrio Dig, frozen hit hold) are implemented (2026-09-25).
+  Diglett/Dugtrio Dig, frozen hit hold) and charge-turn clips (255-260)
+  are implemented (2026-09-25).
 - The decoded event codes show which clip Stadium plays for which battle
   event. Work: pair each code with the matching Gen1Recomp event, then play
   the clip and its effect together.

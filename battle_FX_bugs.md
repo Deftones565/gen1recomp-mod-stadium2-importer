@@ -1,5 +1,13 @@
 Move bug list
 
+Battle follow-up (2026-09-25, two-turn moves, web session):
+- The charge turn of Razor Wind, Fly, SolarBeam, Dig, Skull Bash and Sky
+  Attack now plays Stadium's charge clip for the species and the move's
+  charge-turn effect (the variant route), timed from the species' charge
+  row. The second turn plays the move normally. Gen 1 and Gen 2.
+- Gen 1 Fly's charge turn no longer plays Teleport's move effect.
+- Needs your retest.
+
 Battle follow-up (2026-09-25, status and battle-event effects, web session):
 - Stadium's effects now play for: poison/toxic and burn damage, Leech Seed,
   Curse, stat raises (your own, Rage, Belly Drum) and drops (Sand-Attack,

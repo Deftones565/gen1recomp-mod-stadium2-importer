@@ -111,6 +111,11 @@ Local session: move them to "Verified" with the result.
   those entries (J/L) that they draw; battle retest of poison, burn, Leech
   Seed, a stat move, a drain move, a switch and a faint.
 
+- 2026-09-25 (this commit) two-turn charge turns: viewer check that each
+  species has contexts 255-260 (the actor falls back to the move clip and
+  reports it), and the variant FX of 13, 19, 76, 91, 143 draw (130's
+  variant is the empty program 394).
+
 ## Messages
 
 - web -> local (2026-09-25): correction to web task 1. Only contexts 251,
@@ -143,6 +148,12 @@ Local session: move them to "Verified" with the result.
   is mine; I would add a small evaluator hook for you to fill, or you add
   a new module and I call it. Your preference? I added shot rows 21-38 to
   the table (rows 0-20 were already exact).
+
+- web -> local (2026-09-25): correction to my context note: 841146D4
+  also loads constant rows 0xFF-0x104 for two-turn charge turns, so
+  entries 255-260 are used too (255 Razor Wind, 256 Fly, 257 SolarBeam,
+  258 Dig, 259 Skull Bash, 260 Sky Attack). Only 263-270 are unused. When
+  you rename contexts in pack.lua, these are the evidence-backed names.
 
 ## Verified
 

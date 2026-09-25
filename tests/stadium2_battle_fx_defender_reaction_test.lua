@@ -145,4 +145,19 @@ ok(#signalled == 1 and signalled[1].id == 0x11A, "a 0xFF marker skips 0x119 (841
 Dispatch.contextMarker = oldMarker
 ok(adapter:playFaint("player", {}) == false, "no dispatch rows: faint effects are reported, not guessed")
 
+-- Charge turn: the variant route fires at the charge row's byte 0x0B.
+local variants = {}
+adapter.playVariant = function(_, moveId, source) variants[#variants + 1] = {moveId, source} end
+local chargeRows = {}
+for i = 1, 271 * 20 do chargeRows[i] = "\0" end
+chargeRows[256 * 20 + 0x0B + 1] = string.char(9)
+player.runtime.frame = 200
+ok(adapter:playCharge(19, "enemy", {renderer = {model = {fxDispatch = table.concat(chargeRows)}}}),
+  "Fly's charge turn is scheduled")
+player.runtime.frame = 208; adapter:_firePendingVariants()
+ok(#variants == 0, "not before the charge row's frame")
+player.runtime.frame = 209; adapter:_firePendingVariants()
+ok(#variants == 1 and variants[1][1] == 19 and variants[1][2] == "enemy", "variant route at byte 0x0B")
+ok(adapter:playCharge(33, "enemy", {}) == nil, "ordinary moves have no charge turn")
+
 print(("%d checks passed (battle FX defender reaction)"):format(checks))

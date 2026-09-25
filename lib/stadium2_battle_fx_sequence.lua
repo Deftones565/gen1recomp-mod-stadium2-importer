@@ -148,6 +148,25 @@ function Sequence.faintFrames(dispatchBytes)
   return first, second
 end
 
+-- Charge turn of two-turn moves. 8412C47C queues 0x16 Razor Wind, 0x17
+-- SolarBeam, 0x18 Skull Bash, 0x19 Sky Attack (family 8), 0x1A Fly
+-- (family 6), 0x1B Dig (family 7). Their setup states copy a charge row
+-- through 841146D4 (84116010: 0xFF/0x101/0x103/0x104; 841155B0: 0x100;
+-- 84115940: 0x102), play its body clip from row byte 6 (+0x61B), and at the
+-- row's byte 0x0B (+0x619) call 841088CC: the variant (route mode 1) FX.
+Sequence.CHARGE_ENTRIES = {[13] = 255, [19] = 256, [76] = 257, [91] = 258,
+  [130] = 259, [143] = 260}
+
+-- Returns entry, start frame (row byte 6), variant frame (row byte 0x0B).
+function Sequence.chargeFrames(dispatchBytes, moveId)
+  local entry = Sequence.CHARGE_ENTRIES[tonumber(moveId)]
+  if not entry or type(dispatchBytes) ~= "string" then return entry end
+  local base = entry * 20
+  local start, frame = dispatchBytes:byte(base + 6 + 1), dispatchBytes:byte(base + 0x0B + 1)
+  if not start or not frame then return entry end
+  return entry, start, frame
+end
+
 -- Returns the dispatch hit frame for `moveId`, or nil when the row is absent.
 function Sequence.hitFrame(dispatchBytes, moveId)
   moveId = math.floor(tonumber(moveId) or 0)

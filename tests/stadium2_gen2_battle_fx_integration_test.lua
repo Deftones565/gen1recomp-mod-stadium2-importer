@@ -18,6 +18,8 @@ package.preload[adapterName]=function()
         end,
         update=function(_,dt) calls.updates[#calls.updates+1]=dt end,
         finish=function() calls.finishes=calls.finishes+1 end,
+        playCharge=function(_,moveId,side) calls.charges=calls.charges or {}
+          calls.charges[#calls.charges+1]={moveId=moveId,side=side} return true end,
       }
     end,
   }
@@ -126,6 +128,19 @@ scene:handleEvent({kind="stage",side="player",stat="attack",stages=-1})
 ok(last().id==0xFD and last().owner=="player","Growl's drop -> 0xFD on the target")
 scene:handleEvent({kind="send",side="enemy",mon=battle.enemy})
 ok(last().id==0x122 and last().owner=="enemy","send-out -> 0x122")
+
+-- Charge turn (animParam 1): variant route and charge clip, not move+impact.
+local charged={}
+scene.actors.player.charge=function(_,entry,start) charged[#charged+1]={entry=entry,start=start} return true end
+local triggersBefore=#calls.trigger
+battle.data.moves[19]={index=19,effect="EFFECT_FLY"}
+scene:handleEvent({kind="move",side="player",move=19,animParam=1})
+ok(calls.charges and calls.charges[1].moveId==19 and calls.charges[1].side=="player",
+  "a charge turn schedules the variant route")
+ok(#calls.trigger==triggersBefore,"a charge turn does not play the move bank")
+ok(charged[1] and charged[1].entry==256,"Fly's charge turn plays charge row 256")
+scene:handleEvent({kind="move",side="player",move=19,wasVanished=true})
+ok(#calls.charges==1,"the release turn is an ordinary move")
 
 -- Resting-pose condition follows presented status events, not live status.
 battle.player.status="sleep"

@@ -377,7 +377,13 @@ function Scene:handleEvent(event)
       -- Presented (non-missed) moves play the move bank now and the impact
       -- bank at the attacker's dispatch hit frame (84108728/841087B8).
       local ok,err
-      if event.alternate~=true and self.battleFx.playMoveAndImpact then
+      -- Gold's charge turn (BattleCommand_Charge sets animParam 1): Stadium's
+      -- charge state plays the variant route, not the move and impact.
+      if event.animParam==1 and FxSequence.CHARGE_ENTRIES[moveId]
+          and self.battleFx.playCharge then
+        ok,err=pcall(self.battleFx.playCharge,self.battleFx,moveId,side,
+          self.actors and self.actors[side])
+      elseif event.alternate~=true and self.battleFx.playMoveAndImpact then
         ok,err=pcall(self.battleFx.playMoveAndImpact,self.battleFx,moveId,side,
           self.actors and self.actors[side])
       else
@@ -421,7 +427,12 @@ function Scene:handleEvent(event)
     local actor = self.actors[side]
     local data = self.screen and self.screen.game and self.screen.game.data
     local def = data and data.moves and data.moves[event.move]
-    if actor then actor:attack(def and tonumber(def.index or def.number)) end
+    local moveId = tonumber(event.move) or (def and tonumber(def.index or def.number))
+    if actor and event.animParam == 1 and FxSequence.CHARGE_ENTRIES[moveId] and actor.charge then
+      local model = actor.renderer and actor.renderer.model
+      local entry, start = FxSequence.chargeFrames(model and model.fxDispatch, moveId)
+      if not actor:charge(entry, start) then actor:attack(moveId) end
+    elseif actor then actor:attack(def and tonumber(def.index or def.number)) end
   elseif event.kind == "status" and side then
     self.presentedStatus[side] = event.status
   elseif event.kind == "damage" and side then

@@ -12,9 +12,21 @@ table (actor+0x2D4). 84112158(actor, ctx) plays row ctx: body clip byte 0
 (84111D64), auxiliary clip byte 1 (84111E50), frame 0. 84112218 and
 841120AC do the same from a given frame. Every call to these three uses a
 constant context, and the only fixed-offset row reads anywhere in the
-uploaded assembly are rows 251, 253, 254, 261 and 262. So battle selects
-only 251, 252, 253, 254, 258, 261 and 262; rows 255-257, 259-260 and
-263-270 are never read.
+uploaded assembly are rows 251, 253, 254, 261 and 262. Correction
+(2026-09-25, later): the row copier 841146D4 also takes constant rows,
+0xFF-0x104, for the charge turn of two-turn moves (see "Charge turn"
+below). So battle uses entries 251-262; only 263-270 are never read.
+
+## Charge turn
+
+8412C47C queues 0x16 Razor Wind, 0x17 SolarBeam, 0x18 Skull Bash, 0x19 Sky
+Attack (family 8, setup 84116010), 0x1A Fly (family 6, 841155B0) and 0x1B
+Dig (family 7, 84115940). The setups copy charge rows through 841146D4:
+255 Razor Wind, 256 Fly, 257 SolarBeam, 258 Dig, 259 Skull Bash, 260 Sky
+Attack. The state plays the row's body clip from byte 6 (+0x61B) and, at
+byte 0x0B (+0x619), calls 841088CC: the move's variant route (841156D0,
+84116248, 84115B34). Fly then loops 262. Entry 258 is therefore Dig's
+charge clip, which Diglett/Dugtrio hold underground.
 
 ## Resting pose (841139D0)
 

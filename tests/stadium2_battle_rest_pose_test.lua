@@ -86,4 +86,14 @@ actor:update(1 / 30)
 ok(calls[1][2] == "rom_context_261" and calls[2][2] == "idle" and #warnings == 1
   and warnings[1]:find("rom_context_261", 1, true), "a missing sleep clip falls back to idle once, reported")
 
+-- Charge clip (context entries 255-260) from its start frame.
+clips.rom_context_256 = true
+actor:play("idle", true)
+calls = {}
+ok(actor:charge(256, 5) == true and actor.context == "attack", "charge plays context 256")
+ok(calls[1][2] == "rom_context_256" and calls[1][3] == false and calls[2][1] == "seek" and calls[2][2] == 5,
+  "the charge clip starts at the row's byte-6 frame")
+local chargeOk, why = actor:charge(259, 0)
+ok(chargeOk == false and why:find("rom_context_259", 1, true), "a missing charge clip is reported")
+
 print(("%d checks passed (battle rest pose)"):format(checks))

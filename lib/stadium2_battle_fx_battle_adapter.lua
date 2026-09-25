@@ -560,6 +560,35 @@ function Adapter:playVariant(moveId, source)
   return effect, err
 end
 
+-- Charge turn of a two-turn move: the attacker's state plays its charge row
+-- and fires the variant route at that row's byte 0x0B (Sequence.chargeFrames).
+function Adapter:playCharge(moveId, source, actor)
+  local model = actor and actor.renderer and actor.renderer.model
+  local entry, _, frame = Sequence.chargeFrames(model and model.fxDispatch, moveId)
+  if not entry then return nil, "not a two-turn move" end
+  if not frame then
+    self:_warn({code = "unresolved-charge-frame", message =
+      ("charge row %d is unavailable; move %s charge effect not played"):format(entry, tostring(moveId))})
+    return nil, "charge row unavailable"
+  end
+  self.pendingVariants = self.pendingVariants or {}
+  self.pendingVariants[#self.pendingVariants + 1] = {moveId = moveId, source = source,
+    frame = (self.player and self.player.runtime and self.player.runtime.frame or 0) + frame}
+  return true
+end
+
+function Adapter:_firePendingVariants()
+  local pending = self.pendingVariants
+  if not pending or #pending == 0 then return end
+  local frame = self.player and self.player.runtime and self.player.runtime.frame or 0
+  local kept = {}
+  for _, item in ipairs(pending) do
+    if frame >= item.frame then self:playVariant(item.moveId, item.source)
+    else kept[#kept + 1] = item end
+  end
+  self.pendingVariants = kept
+end
+
 -- 8410890C(id, owner): latch the signal and play FX entry `id` (entries
 -- 252..301 are non-move battle effects) with `owner` as the source.
 function Adapter:signalEffect(id, owner)
@@ -801,6 +830,7 @@ function Adapter:update(dt)
     local frame = self.player:update(dt)
     self:_firePendingImpacts()
     self:_firePendingSignals()
+    self:_firePendingVariants()
     return frame
   end
 end

@@ -69,6 +69,19 @@ local first, second = Sequence.faintFrames(faintRow)
 ok(first == 12 and second == 30, "0x119 at row byte 0x0B, 0x11A at byte 0x0A")
 ok(Sequence.faintFrames(nil) == nil, "no dispatch rows, no faint timing")
 
+-- Charge rows (84116010 / 841155B0 / 84115940).
+ok(Sequence.CHARGE_ENTRIES[13] == 255 and Sequence.CHARGE_ENTRIES[19] == 256
+  and Sequence.CHARGE_ENTRIES[76] == 257 and Sequence.CHARGE_ENTRIES[91] == 258
+  and Sequence.CHARGE_ENTRIES[130] == 259 and Sequence.CHARGE_ENTRIES[143] == 260,
+  "charge rows per two-turn move")
+local rows = {}
+for i = 1, 271 * 20 do rows[i] = "\0" end
+rows[257 * 20 + 6 + 1] = string.char(4)
+rows[257 * 20 + 0x0B + 1] = string.char(22)
+local entry, start, frame = Sequence.chargeFrames(table.concat(rows), 76)
+ok(entry == 257 and start == 4 and frame == 22, "SolarBeam: row 257, start byte 6, variant at byte 0x0B")
+ok(Sequence.chargeFrames(nil, 1) == nil, "non-charge moves have no charge row")
+
 -- Router variant channel.
 local move = {primaryDispatch = {{kind = "program", programId = 1}},
   alternateDispatch = {{kind = "program", programId = 2}},
