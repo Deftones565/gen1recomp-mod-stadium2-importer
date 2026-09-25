@@ -543,7 +543,7 @@ local function preparePack(data, species, moveRows, ctx)
   w:raw(Handlers.packExtension(data.handlerOps, data.handlerSourceBase, data.handlerFragment,
     { prims = prims, handlerTextures = data.handlerTextures,
       attachments=data.attachments,fxDispatch=data.fxDispatch,
-      fxBattleProfile=data.fxBattleProfile }))
+      fxBattleProfile=data.fxBattleProfile,fxContextScales=data.fxContextScales }))
   return {
     prefix = prefix,
     suffix = w:bytes(),

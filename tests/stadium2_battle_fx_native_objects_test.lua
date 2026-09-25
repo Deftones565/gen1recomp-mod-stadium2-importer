@@ -107,6 +107,15 @@ ok(builtinSlot.object.pointer == 0x8416A3E0
     and builtinSlot.resolution.resolution.mapper == 0x800024A0
     and builtinSlot.resolution.resolution.low20Offset == 0x6A3E0,
   "built-in resolver retains exact main resolver and low-20-bit evidence")
+local colorOnly=Objects.new({resolve=function()return {object={delay=4},delay=4}end})
+for _,case in ipairs({{2,"background-color",{nativeColorTrack={period=2,mode=0,colors={{1,2,3,4},{5,6,7,8}}}}},
+    {5,"model-color",{nativeModelColor={primary={period=2,mode=0,colors={{1,2,3,4},{5,6,7,8}}}}}},
+    {8,"screen-overlay",{nativeColorTrack={period=2,mode=0,colors={{1,2,3,4},{5,6,7,8}}}}}})do
+  local mode,kind,event=case[1],case[2],case[3];event.mode=mode
+  local index=assert(colorOnly:enqueue(0x1000+mode,event))
+  ok(colorOnly:snapshot().slots[index+1].presentationKind==kind,
+    "built-in color mode is classified before its first scheduler tick")
+end
 builtin:tick(1)
 ok(#builtin:snapshot().diagnostics == 0,
   "mapped decoded object does not diagnose when callback is supported")

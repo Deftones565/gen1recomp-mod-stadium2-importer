@@ -138,10 +138,19 @@ function Actor:load(data, mon, forcedDex)
   return true
 end
 
-function Actor:attack(moveIndex)
-  if not self.renderer or self.pendingFaint or self.context=="faint" then return false end
-  if (STATE_RANK[self.context] or 0)>STATE_RANK.attack then return false end
+-- `strict` (viewer testing) plays only the species' own clip for this move:
+-- no generic attack fallback, and the reason is returned on failure.
+function Actor:attack(moveIndex, strict)
+  if not self.renderer then return false,"actor has no model" end
+  if self.pendingFaint or self.context=="faint" then return false,"actor is fainting" end
+  if (STATE_RANK[self.context] or 0)>STATE_RANK.attack then
+    return false,("actor is busy (%s)"):format(tostring(self.context))
+  end
   local ok=moveIndex and self.renderer:setMove(moveIndex,false) or false
+  if not ok and strict then
+    return false,("species %s has no animation for move %s")
+      :format(tostring(self.dex),tostring(moveIndex))
+  end
   if not ok then ok=self:play("attack",false) end
   if ok then self.context="attack" end
   return ok

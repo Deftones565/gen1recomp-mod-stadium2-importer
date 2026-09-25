@@ -349,6 +349,80 @@ assert(fire47.geometry and fire47.geometry.selector==1
     and fire47.attachment.cameraLine==nil,
   "Fire Punch particle component pointers differ from fragment 79")
 
+-- The motion block's +4 and +8 fields point to three independent native
+-- angle and float-position controllers (84101D54), not opaque axis masks.
+local decodedTracks,decodedPositions,decodedCurves,decodedScaleCurves={},{},{},{}
+for id=0,394 do
+  for _,event in ipairs(FxNative.execute(catalog.programs[id],{moveId=id}).scheduled or {}) do
+    local transform=event.transform
+    if transform then
+      local scaleCurve=transform.nativeScaleCurve
+      if scaleCurve then
+        assert(not scaleCurve.unsupported
+            and #scaleCurve.times==#scaleCurve.values
+            and #scaleCurve.times>0,
+          "retail native scale curve did not decode its keyframes")
+        decodedScaleCurves[scaleCurve.address]=true
+      end
+      local curve=transform.nativeMotion and transform.nativeMotion.direction
+        and transform.nativeMotion.direction.curve
+      if curve then
+        assert(not curve.unsupported and #curve.times==#curve.values
+            and #curve.times>0,
+          "retail native speed curve did not decode its keyframes")
+        decodedCurves[curve.address]=true
+      end
+      for _,track in pairs(transform.rotationTracks or {}) do
+        decodedTracks[track.address]=true
+      end
+      for _,track in pairs(transform.positionTracks or {}) do
+        assert(track.spawnRandom==40 and track.target==40
+            and track.random==0 and track.step==4,
+          "retail position-track spawn/update layout changed")
+        decodedPositions[track.address]=true
+      end
+    end
+  end
+end
+local function countKeys(values)
+  local count=0
+  for _ in pairs(values) do count=count+1 end
+  return count
+end
+assert(countKeys(decodedTracks)>0 and countKeys(decodedPositions)>0
+    and countKeys(decodedCurves)>0 and countKeys(decodedScaleCurves)>0,
+  "retail transform motion tracks and curves were not decoded")
+local curveMoves,scaleCurveMoves,mode4Moves={},{},{}
+for moveId=1,FxRom.MOVE_COUNT do
+  local move=catalog.moves[moveId]
+  for _,dispatch in ipairs({move.primaryDispatch,move.alternateDispatch}) do
+    for _,entry in ipairs(dispatch) do
+      if entry.kind=="program" then
+        for _,event in ipairs(FxNative.execute(catalog.programs[entry.programId],
+            {moveId=moveId}).scheduled or {}) do
+          local motion=event.transform and event.transform.nativeMotion
+          if motion and motion.direction and motion.direction.curve then
+            curveMoves[moveId]=true
+          end
+          if event.transform and event.transform.nativeScaleCurve then
+            scaleCurveMoves[moveId]=true
+          end
+          if event.transform and event.transform.rotationOffset
+              and event.transform.rotationOffset.mode==4 then
+            mode4Moves[moveId]=true
+          end
+        end
+      end
+    end
+  end
+end
+assert(countKeys(curveMoves)==112 and countKeys(decodedCurves)>=27,
+  "retail native speed-curve move coverage changed")
+assert(countKeys(scaleCurveMoves)==128 and countKeys(decodedScaleCurves)>=40,
+  "retail native scale-curve move coverage changed")
+assert(countKeys(mode4Moves)==5,
+  "retail shared angle-vector move coverage changed")
+
 local lifecycle = catalog.lifecycle
 assert(lifecycle[0] and lifecycle[29] and not lifecycle[30],
   "native lifecycle table must expose exactly 30 families")

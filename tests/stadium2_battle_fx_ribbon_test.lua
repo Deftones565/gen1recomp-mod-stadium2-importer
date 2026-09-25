@@ -97,7 +97,8 @@ ok(not terminatedSnapshot.active and terminatedSnapshot.lastResult == -1,
   "lifecycle update callback result -1 terminates instance")
 
 local builtin = Lifecycle.new()
-local builtinId = assert(builtin:spawn(23, {sourceSide = "player"}))
+local builtinId = assert(builtin:spawn(23, {sourceSide = "player",
+  lifecycleAnchor={0,0,0},lifecycleScale=1}))
 builtin:step(1)
 local builtinSnapshot = builtin:snapshot()
 local builtinInstance = builtinSnapshot.instances[1]

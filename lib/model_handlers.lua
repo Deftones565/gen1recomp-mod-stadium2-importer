@@ -160,6 +160,8 @@ local function renderBytes(renderInfo)
   if type(profile)=="string" and #profile==0x30 then
     out[#out+1]="FXBP"..profile
   end
+  local scales=renderInfo and renderInfo.fxContextScales
+  if type(scales)=='string' and #scales==0x50 then out[#out+1]='FXCS'..scales end
   return table.concat(out)
 end
 
@@ -222,6 +224,11 @@ local function readRenderBytes(data)
   if data:sub(cursor+1,cursor+4)=="FXBP" then
     if cursor+4+0x30>#data then return nil end
     out.fxBattleProfile=data:sub(cursor+5,cursor+4+0x30)
+    cursor=cursor+4+0x30
+  end
+  if data:sub(cursor+1,cursor+4)=='FXCS' then
+    if cursor+4+0x50>#data then return nil end
+    out.fxContextScales=data:sub(cursor+5,cursor+4+0x50)
   end
   return out
 end
@@ -461,9 +468,10 @@ function Handlers.prepare(extension)
     if record.family == "dynamic-object-renderer" then
       program.geometry = dynamicObjectGeometry(extension, record)
     elseif record.family == "render-time-geometry-pipeline" then
+      local contract=Registry.info(record.descriptor)
       program.phase5Material = Phase5Geometry.materialSpec(extension.fragment,
         extension.sourceBase, record.argOffset,
-        record.descriptor == 0x81000148 and 2 or 1)
+        contract and contract.submissionMode or 1)
       program.phase5Controller = Phase5Geometry.controllerSpec(extension.fragment,
         extension.sourceBase, record.argOffset)
     end

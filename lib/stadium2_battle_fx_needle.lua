@@ -37,9 +37,9 @@ function Needle.step(s)
   -- Unlike Swift, the native pool never ends the lifecycle; wrapper expires at 50.
   return 0
 end
-local function rotation(angle,sign)
+local function rotation(angle,sign,pitchSign)
   local r=f(f(f(f(angle*-360)*sign)/6.2831854820251465)*f(3.1415926/180))
-  local p=f((90-sign*90)*f(3.1415926/180))
+  local p=f((90+(pitchSign or -1)*sign*90)*f(3.1415926/180))
   local sr,cr,sp,cp=f(math.sin(r)),f(math.cos(r)),f(math.sin(p)),f(math.cos(p))
   return function(v)
     return {f(f(f(v[1]*cp)+f(v[2]*f(sr*sp)))+f(v[3]*f(cr*sp))),
@@ -47,40 +47,46 @@ local function rotation(angle,sign)
       f(f(f(-v[1]*sp)+f(v[2]*f(sr*cp)))+f(v[3]*f(cr*cp)))}
   end
 end
-function Needle.geometry(s,asset)
+function Needle.geometry(s,asset,options)
   if not asset then return nil end
-  local g={kind='rom-beam',family=17,layers={}}
+  options=options or {}
+  local g={kind='rom-beam',family=s.family,layers={}}
   for i=1,4 do
     local slot=s.slots[i];local active=slot and slot.active
     for _,trail in ipairs({false,true}) do
       local cycle=trail and {15,15,31,4,7,7,7,4} or {5,4,1,4,1,7,4,7}
-      local layer={pos={},uv={},idx={},color={},nrm=not trail and {} or nil,lighting=not trail,
-        geometryMode=trail and 0x200005 or 0x220405,
-        draw={textures=trail and {} or {-3},cycles=1,primary={197,184,122,255},environment={197,184,122,255},
+      local lit=not trail and options.lighting~=false
+      local tint=options.texture and {255,255,255,255} or {197,184,122,255}
+      local layer={pos={},uv={},idx={},color={},nrm=not trail and {} or nil,lighting=lit,
+        geometryMode=lit and 0x220405 or 0x200005,
+        draw={textures=trail and {} or {options.texture or -3},cycles=1,primary=tint,environment=tint,
           cycle0=cycle,cycle1=cycle,lodFraction=255,alpha=1,uv={0,0,0,0},scrollAndShift={0,0,0,0,0,0,0,0}}}
       local head=active and slot.nodes[1]
       local visible=active and (trail or head.position[2]>0)
-      local transform=head and rotation(head.angle,slot.sign)
+      local transform=head and rotation(head.angle,slot.sign,options.pitchSign)
       for v=1,trail and 30 or #asset.pos/3 do
         local p={0,0,0};local n=visible and (trail and slot.nodes[math.floor((v-1)/2)+1] or head)
         if trail then
           if n then
             local angle=f(n.angle+(v%2==0 and 3.1415927410125732 or 0))
             local rad=f(f(angle*360/6.2831854820251465)*f(3.1415926/180))
-            p={short(trunc(n.position[1])),math.max(0,short(trunc(f(n.position[2]-f(f(math.sin(rad))*n.radius))))),
-              short(trunc(f(n.position[3]+f(f(math.cos(rad))*n.radius))))}
+            local scale=options.trailScale and slot.scale or 1
+            p={short(trunc(n.position[1])),math.max(0,short(trunc(f(n.position[2]-f(f(f(math.sin(rad))*scale)*n.radius))))),
+              short(trunc(f(n.position[3]+f(f(f(math.cos(rad))*scale)*n.radius))))}
           end
-          for _,c in ipairs({192,255,255,n and n.alpha or 0}) do layer.color[#layer.color+1]=c end
+          local tint=options.trailTint or {192,255,255}
+          for _,c in ipairs({tint[1],tint[2],tint[3],n and n.alpha or 0}) do layer.color[#layer.color+1]=c end
         else
           local offset=(v-1)*3
           local normal={asset.nrm[offset+1],asset.nrm[offset+2],asset.nrm[offset+3]}
           if transform then normal=transform(normal) end
           for k=1,3 do layer.nrm[#layer.nrm+1]=normal[k] end
           if n then
-            p=transform({asset.pos[offset+1]*slot.scale,asset.pos[offset+2]*slot.scale,asset.pos[offset+3]*slot.scale})
+            local headScale=options.headScale or slot.scale
+            p=transform({asset.pos[offset+1]*headScale,asset.pos[offset+2]*headScale,asset.pos[offset+3]*headScale})
             for k=1,3 do p[k]=f(p[k]+n.position[k]) end
           end
-          for _,c in ipairs({255,255,255,n and 255 or 0}) do layer.color[#layer.color+1]=c end
+          for _,c in ipairs({255,255,255,n and (options.alpha or 255) or 0}) do layer.color[#layer.color+1]=c end
         end
         for k=1,3 do layer.pos[#layer.pos+1]=p[k]-s.frameOrigin[k] end
         layer.uv[#layer.uv+1]=trail and 0 or asset.uv[v*2-1]

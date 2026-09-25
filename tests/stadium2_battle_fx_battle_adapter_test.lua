@@ -64,6 +64,14 @@ near(resolved.position[1],7.55,"lane placement converts source X once")
 near(resolved.position[2],.1,"lane placement converts source Y once")
 near(resolved.position[3],.15,"lane placement converts source Z once")
 ok(resolved.scale==.05,"fixed initial scale converts at renderer boundary")
+sceneHost.visualActor=function()
+  return {renderer={model={fxDispatch=string.rep("\0",15)
+    ..string.char(50)..string.rep("\0",4)}}}
+end
+local scaledParticle={event={context={sourceSide="enemy",moveId=1}},position={0,0,0}}
+local scaledContext=captured.contextForParticle(scaledParticle,sceneContext)
+near(scaledContext.nativeSpawnScale,.5,
+  "native position-track spawn scale comes from the move dispatch byte")
 
 local effect=assert(adapter:trigger(7,"enemy",true))
 ok(fakePlayer.triggers==1 and captured.targetSide=="player"

@@ -260,10 +260,17 @@ function Scene:syncPresentationState()
       if moveId then
         self.actors[side]:attack(moveId)
         if self.battleFx then
-          -- Gen 1's host state does not expose a second Stadium dispatch
-          -- bank; keep the authored primary route unless a host explicitly
-          -- supplies an alternate presentation selector.
-          self.battleFx:trigger(moveId,side,battle.animAlternate==true)
+          -- Gen 1 skips the move animation when a move misses, so a started
+          -- animation is presented as an ordinary result: move bank now and
+          -- impact bank at the dispatch hit frame. A host-supplied alternate
+          -- selector still plays that single bank.
+          if battle.animAlternate==true then
+            self.battleFx:trigger(moveId,side,true)
+          elseif self.battleFx.playMoveAndImpact then
+            self.battleFx:playMoveAndImpact(moveId,side,self.actors[side])
+          else
+            self.battleFx:trigger(moveId,side,false)
+          end
         end
       end
     end

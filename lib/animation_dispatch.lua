@@ -7,6 +7,59 @@ local Layout = require("mods.STADIUM2_IMPORTER.lib.layout")
 -- are the 251 Gen II moves; entries 251..270 are non-move battle contexts.
 local Dispatch = {}
 
+-- 84113014 DMA: 49B780 + 8970 + (species-1)*50, actor+67C.
+function Dispatch.contextScaleBytes(rom,species)
+  species=tonumber(species)
+  if type(rom)~='string' or not species or species%1~=0 or species<1 or species>251 then return nil end
+  local offset=0x4A40F0+(species-1)*0x50
+  if #rom<offset+0x50 then return nil end
+  return rom:sub(offset+1,offset+0x50)
+end
+
+-- Exact jump-table aliases of 8411E358. Offsets are zero based.
+local contextOffsets={
+  [252]=3,[253]=3,[254]=8,[256]=0x12,[257]=0x17,[258]=0x17,[259]=0x17,
+  [260]=0x1C,[261]=0x21,[264]=0x26,[265]=0x2B,[266]=0x2B,[267]=0x30,
+  [268]=0x35,[269]=0x3A,[270]=0x3A,[271]=0xD,[272]=3,[273]=3,
+  [274]=0x49,[276]=0x44,[277]=0x44,[278]=0x44,[279]=0x44,[280]=0x3F,
+  [290]=0x49,[291]=0x4E,[292]=0x49,[295]=0x3A,[296]=0xD,[298]=0x49,[299]=0x49}
+local dispatchOffsets={[255]=0x67B,[281]=0x13D7,[282]=0x13D3,[283]=0x13D3,[294]=0x13D3}
+function Dispatch.contextScale(contextId,contextBytes,dispatchBytes)
+  contextId=tonumber(contextId)
+  if not contextId then return nil end
+  contextId=math.floor(contextId)%65536 -- scheduler +0A / particle +68
+  local offset=contextOffsets[contextId]
+  local bytes=contextBytes
+  if offset==nil then offset=dispatchOffsets[contextId];bytes=dispatchBytes end
+  if offset==nil then return 0 end
+  if type(bytes)~='string' or #bytes<=offset then return nil end
+  local f=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float')
+  return f(bytes:byte(offset+1)*f(.01))
+end
+
+-- 8411E244(owner, contextId): marker label for a context emitter. Species
+-- table (actor+67C) offsets and dispatch-record (actor+2D4) offsets from its
+-- jump table at 84189450; every other ID returns zero.
+local contextMarkerOffsets={
+  [252]=0x04,[253]=0x04,[254]=0x09,[256]=0x13,[257]=0x18,[258]=0x18,
+  [259]=0x18,[260]=0x1D,[261]=0x22,[264]=0x27,[265]=0x2C,[266]=0x2C,
+  [267]=0x31,[268]=0x36,[269]=0x3B,[270]=0x3B,[271]=0x0E,[272]=0x04,
+  [273]=0x04,[274]=0x4A,[276]=0x45,[277]=0x45,[278]=0x45,[279]=0x45,
+  [280]=0x40,[290]=0x4A,[291]=0x4F,[292]=0x4A,[295]=0x3B,[296]=0x0E,
+  [298]=0x4A,[299]=0x4A}
+local contextMarkerDispatch={[255]=0x13DA,[281]=0x13C7,[282]=0x13C6,
+  [283]=0x13C6,[294]=0x13C6}
+function Dispatch.contextMarker(contextId,contextBytes,dispatchBytes)
+  contextId=tonumber(contextId)
+  if not contextId then return nil end
+  contextId=math.floor(contextId)%65536
+  local offset,bytes=contextMarkerOffsets[contextId],contextBytes
+  if offset==nil then offset,bytes=contextMarkerDispatch[contextId],dispatchBytes end
+  if offset==nil then return 0 end
+  if type(bytes)~='string' or #bytes<=offset then return nil end
+  return bytes:byte(offset+1)
+end
+
 -- func_84113014 DMA-loads 0x30 bytes per species from this US ROM table;
 -- func_84112704 copies +14/+08 to battler+648/+650 respectively.
 Dispatch.BATTLE_PROFILE_START = 0x49DA60
@@ -33,7 +86,8 @@ function Dispatch.battleProfile(bytes)
   local center,ground=float(0x14),float(8)
   if not center or not ground then return nil end
   local f32=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
-  return {centerY=center,groundY=ground,targetHeight=f32(center-ground)}
+  return {centerY=center,groundY=ground,targetHeight=f32(center-ground),
+    bodyHeight=float(4)} -- 84112704: profile+04 -> actor+64C
 end
 
 Dispatch.ARCHIVE_START = Layout.ANIMATION_DISPATCH_TABLE_START

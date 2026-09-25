@@ -126,6 +126,7 @@ function NativePackets.build(snapshot, options)
       generation = number(slot.generation) or 0,
       active = slot.active == true,
       mode = slot.mode,
+      presentationKind = slot.presentationKind,
       countdown = slot.countdown,
       reload = slot.reload,
       age = slot.age,
@@ -145,24 +146,30 @@ function NativePackets.build(snapshot, options)
       geometry = nil,
     }
 
-    local placement, placementDiagnostic = callbackProof(
-      options.resolvePlacement, slot, context, "native-object-placement-unresolved")
-    if placement then
-      packet.placement = placement
-    elseif payloadProof(packet.drawPackets, "placement") then
-      packet.placement = {resolved = true, source = "native-draw-callback"}
-    else
-      append(out.diagnostics, placementDiagnostic)
-    end
+    -- Built-in modes 2/5/8 are rendered by the background, battler-color,
+    -- and 2D-overlay paths. They own no 3D object, so asking for a 3D
+    -- placement/geometry resolver is a false missing-FX diagnostic.
+    if not (packet.presentationKind and #packet.visualObjects==0
+        and #packet.drawPackets==0) then
+      local placement, placementDiagnostic = callbackProof(
+        options.resolvePlacement, slot, context, "native-object-placement-unresolved")
+      if placement then
+        packet.placement = placement
+      elseif payloadProof(packet.drawPackets, "placement") then
+        packet.placement = {resolved = true, source = "native-draw-callback"}
+      else
+        append(out.diagnostics, placementDiagnostic)
+      end
 
-    local geometry, geometryDiagnostic = callbackProof(
-      options.resolveGeometry, slot, context, "native-object-geometry-unresolved")
-    if geometry then
-      packet.geometry = geometry
-    elseif payloadProof(packet.drawPackets, "geometry") then
-      packet.geometry = {resolved = true, source = "native-draw-callback"}
-    else
-      append(out.diagnostics, geometryDiagnostic)
+      local geometry, geometryDiagnostic = callbackProof(
+        options.resolveGeometry, slot, context, "native-object-geometry-unresolved")
+      if geometry then
+        packet.geometry = geometry
+      elseif payloadProof(packet.drawPackets, "geometry") then
+        packet.geometry = {resolved = true, source = "native-draw-callback"}
+      else
+        append(out.diagnostics, geometryDiagnostic)
+      end
     end
 
     for _, item in ipairs(packet.callbackDiagnostics) do

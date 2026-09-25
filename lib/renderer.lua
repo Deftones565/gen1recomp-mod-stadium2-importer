@@ -7,6 +7,7 @@ local EffectRenderer = require("mods.STADIUM2_IMPORTER.lib.effect_renderer")
 local Sampler = require("mods.STADIUM2_IMPORTER.lib.sampler")
 local RenderContract = require("mods.STADIUM2_IMPORTER.lib.render_contract")
 local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+local BattleFxRenderMode = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_render_mode")
 
 local Renderer = {}
 Renderer.__index = Renderer
@@ -1110,6 +1111,15 @@ function Renderer.shouldReceiveModelSunShadows(options)
   return not Renderer.isMobileGraphics()
 end
 
+-- Direct battle-FX shape entries carry the 84102E84 render-mode selector.
+local function battleFxRenderMode(prim)
+  if not prim or prim.battleFxRenderState == nil then return nil end
+  if prim.battleFxRenderModeDecoded == nil then
+    prim.battleFxRenderModeDecoded = BattleFxRenderMode.decode(prim.battleFxRenderState) or false
+  end
+  return prim.battleFxRenderModeDecoded or nil
+end
+
 local function isArenaModel(model)
   return model and model.staticPose == true and tonumber(model.species) == 0
 end
@@ -1951,7 +1961,8 @@ function Renderer:callbackUsesMaterialFx(prim)
   -- opaque local eye atlas at the same node keeps its display-list material.
   -- Field phase-5 nodes are different: their locally textured floor carrier
   -- is TEXEL0 and must still receive the callback's TEXEL1 mask/combiner.
-  if record.descriptor == 0x81000140 or record.descriptor == 0x81000148 then
+  if record.descriptor == 0x81000138 or record.descriptor == 0x81000140
+      or record.descriptor == 0x81000148 then
     return isArenaModel(self.model) or prim.callbackTextureRequired == true
   end
   return false
@@ -2369,14 +2380,29 @@ function Renderer:drawScene(pass, model, options)
     end
     local drawParts = Renderer.arenaRenderOrder(self.model, self.parts, pass,
       model, options.viewMatrix)
+    local battleFxBlendChanged = false
     for drawIndex, part in ipairs(drawParts) do
       local partIndex = part.sourcePartIndex or drawIndex
       local additive = part.prim.additive == true
       local renderState = Renderer.primitiveRenderState(self.model, part.prim, options)
+      local fxMode = not additive and battleFxRenderMode(part.prim) or nil
       if part.mesh and renderState.drawStatic
           and (not self.debugOnlyPrimitive or self.debugOnlyPrimitive == partIndex)
           and ((additiveOnly and additive) or (opaqueOnly and not additive)
           or (not additiveOnly and not opaqueOnly)) then
+        if g.setBlendMode and fxMode and fxMode.blend then
+          -- 84102E84 translucent entries blend; cutout/opaque entries write
+          -- the combined color (cutout texels are discarded below).
+          if fxMode.blend == "blend" then
+            g.setBlendMode("alpha", "alphamultiply")
+          else
+            g.setBlendMode("replace", "premultiplied")
+          end
+          battleFxBlendChanged = true
+        elseif g.setBlendMode and battleFxBlendChanged then
+          g.setBlendMode(additiveOnly and "add" or "alpha", "alphamultiply")
+          battleFxBlendChanged = false
+        end
         if g.setBlendMode and isArenaModel(self.model) then
           if additive then
             g.setBlendMode("add", "alphamultiply")
@@ -2413,6 +2439,10 @@ function Renderer:drawScene(pass, model, options)
           renderState.lightingEnabled and 1 or 0)
         if g.setDepthMode then
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
+          if fxMode and fxMode.depthCompare ~= nil then
+            compare = fxMode.depthCompare and RenderContract.MODEL_DEPTH_COMPARE or "always"
+            write = fxMode.depthWrite == true and not additiveOnly
+          end
           if options.screenSpace or part.prim.battleFxNoDepth then compare,write="always",false end
           g.setDepthMode(compare, write)
         end
@@ -2500,7 +2530,10 @@ function Renderer:drawScene(pass, model, options)
         end
         local arenaAlphaMode = part.prim.arenaAlphaMode
         pcall(self.shader.send, self.shader, "alphaCutoff",
-          additive and 0.001 or arenaAlphaMode == "cutout" and 0.05
+          additive and 0.001
+            or (fxMode and fxMode.blend == "cutout"
+              and BattleFxRenderMode.CUTOUT_ALPHA - 0.5 / 255)
+            or arenaAlphaMode == "cutout" and 0.05
             or (arenaAlphaMode == "blend" and 0.001 or 0.01))
         if texture then
           if texture.setFilter then pcall(texture.setFilter, texture, self.textureFilter,
@@ -2522,6 +2555,9 @@ function Renderer:drawScene(pass, model, options)
         sendFlameBillboard(self.shader, part, options.viewMatrix, model)
         g.draw(part.mesh)
       end
+    end
+    if battleFxBlendChanged and g.setBlendMode then
+      g.setBlendMode(additiveOnly and "add" or "alpha", "alphamultiply")
     end
     self:drawDynamicObjects(pass, model, options)
   end)

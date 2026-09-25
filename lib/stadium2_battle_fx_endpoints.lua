@@ -2,6 +2,24 @@
 -- 8411DCCC (missing source marker), and 84109630 (signed offsets).
 -- Positions and the rotation matrix are already in the caller's native frame.
 local Endpoints={}
+local f=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
+-- 8411DD8C, including the two halfwords at D_84183AB0 (82 and 102).
+local heightMarkers={[51]=9,[73]=7,[87]=7,[145]=7,[184]=9,[217]=9,
+  [218]=2,[232]=8,[233]=4,[226]=1,[245]=9,[178]=10,[247]=3,
+  [249]=9,[250]=9,[208]=3,[82]=9,[102]=9}
+function Endpoints.heightPoint(actor)
+  if actor.species==95 then return actor.specialHeightPoint end -- D_841911E0+50
+  local markers=actor.markers
+  if not markers then return nil end
+  local label=heightMarkers[actor.species]
+  if label then return markers[label] end
+  return markers[100] or markers[9]
+end
+function Endpoints.anchorHeight(actor)
+  local p=Endpoints.heightPoint(actor)
+  if not p or actor.bodyHeight==nil then return nil end
+  return math.max(0,f(p[2]-f(actor.bodyHeight*.5))) -- 8411EF90
+end
 local function flag(value,mask) return math.floor((value or 0)/mask)%2==1 end
 function Endpoints.resolve(actor,target)
   local p=actor.position

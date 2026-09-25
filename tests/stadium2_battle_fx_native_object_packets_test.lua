@@ -96,6 +96,34 @@ ok(unresolved.diagnostics[2].code == "native-object-placement-unresolved"
 ok(unresolved.packets[1].placement == nil and unresolved.packets[1].geometry == nil,
   "unresolved native objects do not become fabricated geometry")
 
+local presentation = Packets.build({slots={{index=0,generation=1,active=true,
+  mode=2,presentationKind="background-color",event={effectId=3},
+  visualObjects={},drawPackets={}}}})
+ok(#presentation.packets==1 and #presentation.diagnostics==0
+    and presentation.packets[1].presentationKind=="background-color"
+    and presentation.packets[1].placement==nil and presentation.packets[1].geometry==nil,
+  "built-in native color presentation does not request invented 3D geometry")
+
+local romFile=io.open(os.getenv('STADIUM2_ROM') or
+  'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
+if romFile then
+  local Rom=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_rom')
+  local catalog=assert(Rom.catalog(romFile:read('*a')));romFile:close()
+  local decoded=0
+  for _,program in pairs(catalog.programs)do for _,record in ipairs(program.records)do
+    local emitter=record.emitter
+    if emitter and emitter.descriptorKind=='native-object' then
+      local mode=emitter.mode
+      ok((mode==2 or mode==8) and emitter.nativeColorTrack~=nil
+          or mode==5 and emitter.nativeModelColor~=nil
+            and (emitter.nativeModelColor.primary or emitter.nativeModelColor.secondary),
+        'retail native-object record has a decoded color presentation')
+      decoded=decoded+1
+    end
+  end end
+  ok(decoded>100,'shared native color presentation covers retail records')
+end
+
 local callbackError = Packets.build({slots = {{index = 0, generation = 1,
   active = true, mode = 8, commandPointer = 0x8416C83C, event = {}}}}, {
   resolvePlacement = function() error("placement ABI unavailable") end,

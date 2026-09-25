@@ -202,7 +202,8 @@ function Beam.model(g,textures)
   for i,layer in ipairs(g.layers) do
     local d=layer.draw
     local p={pos=layer.pos,uv=layer.uv,idx=layer.idx,nverts=#layer.pos/3,nidx=#layer.idx,
-      nrm={},skin={},color={},tex=d.textures[1] and #model.textures+1 or -1,texAnim=-1,additive=false,cull=false,
+      textureScale=layer.textureScale,
+      nrm={},skin={},color={},tex=d.textures[1] and #model.textures+1 or -1,texAnim=-1,additive=false,cull=layer.cull or false,
       lighting=layer.lighting or false,vertexSemantics="color",alphaMode="blend",geometryMode=layer.geometryMode or (layer.glow and 0x200004 or 0x200005),
       sampler={cms=0,cmt=0},material={phase5=true,primitiveColor={},environmentColor={},
         primitiveLodFraction=d.lodFraction/255,

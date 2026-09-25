@@ -54,6 +54,7 @@ local shadowModel=assert(Fragment.extract(shadowBytes,"shadow-fixture",{directLa
 assert(shadowModel.attachments[1].label==100 and shadowModel.attachments[1].bone==-1)
 model.fxDispatch=string.rep(string.char(0,0,7)..string.rep("\0",17),271)
 model.fxBattleProfile=profileBytes
+model.fxContextScales=string.rep(string.char(17,31,53,79,101),16)
 model.prims={{tex=0,cull=0,pos={0,0,0,1,0,0,0,1,0},uv={0,0,1,0,0,1},
   nrm={0,1,0,0,1,0,0,1,0},skin={0,0,0},idx={0,1,2},nidx=3,nverts=3}}
 model.textures={{w=1,h=1,rgba="\255\255\255\255"}}
@@ -63,6 +64,7 @@ for _,packed in ipairs({normal,shiny}) do
   local decoded=assert(Pack.parse(packed))
   assert(decoded.attachments[1].label==7 and decoded.fxDispatch==model.fxDispatch)
   assert(decoded.fxBattleProfile==profileBytes,"native profile survives normal/shiny cache")
+  assert(decoded.fxContextScales==model.fxContextScales,"context scale bytes survive normal/shiny cache")
   local renderer=assert(Renderer.new(decoded,{flipY=false}))
   local p=assert(renderer:attachmentPosition(7))
   assert(p[1]==10 and p[2]==20 and p[3]==30)
@@ -91,7 +93,7 @@ for _,packed in ipairs({normal,shiny}) do
   assert(shadow[1]==0 and shadow[2]==0 and shadow[3]==0,"root shadow uses the root transform")
   renderer:release()
 end
-model.attachments=nil;model.fxDispatch=nil;model.fxBattleProfile=nil
+model.attachments=nil;model.fxDispatch=nil;model.fxBattleProfile=nil;model.fxContextScales=nil
 assert(not assert(Pack.parse(Build.pack(model,25,{},ctx))).attachments,"legacy metadata remains valid")
 
 -- Validate the two models used by the visual viewer against the real dispatch

@@ -8,6 +8,12 @@ local player=Player.new({runtime=runtime,loadRenderer=function(move,shape)calls.
 ok(player:trigger({moveId=7})==1 and runtime.triggerCalls==1,"trigger delegated")
 player:update(1/30);ok(runtime.updateCalls==1,"update delegated")
 local result=assert(player:draw({camera={vp={}},environment={}}));ok(result.drawn==1 and calls.draw==2,"opaque and additive render once")
+local previousRuntime=renderer.setHandlerRuntime
+snapshots.particles[1].frame=17 -- authored hold must not freeze texture animation
+renderer.setHandlerRuntime=function(self,c)
+  ok(c.materialFrame==2 and c.callbackFrame==2,"cached FX material clock advances with its packet")
+  previousRuntime(self,c)
+end
 snapshots.particles[1].material.nativeAlpha=64
 local originalDraw=renderer.drawScene
 renderer.drawScene=function(self,pass,matrix,options)

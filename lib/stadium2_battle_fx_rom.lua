@@ -12,6 +12,9 @@ FxRom.ROM_BASE = 0x36F890
 FxRom.VRAM_BASE = 0x84100000
 FxRom.MOVE_TABLE = 0x84182A5C
 FxRom.MOVE_COUNT = 251
+-- D_84182A5C is indexed by effect ID, not only by move. Entries 252..301
+-- are non-move battle effects played by 8410545C after 8410890C(id).
+FxRom.ENTRY_COUNT = 301
 FxRom.PROGRAM_TABLE = 0x84182154
 FxRom.PROGRAM_COUNT = 395
 FxRom.SEQUENCE_TABLE = 0x84182A30
@@ -220,6 +223,29 @@ local function decodeGeometry(rom,address,repeats,particles)
 end
 
 -- func_8410119C/841013F4 and the vertical branch of func_84101D54.
+local function decodeNativeCurve(rom,address)
+  if not addressInOverlay(address) then return nil end
+  local header=pointerAt(rom,address,0)
+  local values=pointerAt(rom,address,4)
+  local times=header and pointerAt(rom,header,4)
+  local bytes=header and rgbaAt(rom,header)
+  local count=bytes and bytes[4] or 0
+  local out={address=address,percentRandom=readSigned16(rom,address+8),
+    percentBase=readSigned16(rom,address+10)}
+  if not times or not values or count<1 or count>64 then
+    out.unsupported=true
+    return out
+  end
+  out.loop=bytes[2]==0
+  out.period=bytes[3]
+  out.times,out.values={},{}
+  for index=0,count-1 do
+    out.times[#out.times+1]=readSigned16(rom,times+index*2)
+    out.values[#out.values+1]=readSigned16(rom,values+index*2)
+  end
+  return out
+end
+
 local function decodeNativeMotion(rom,address)
   if not addressInOverlay(address) then return nil end
   local direction=pointerAt(rom,address,0)
@@ -228,7 +254,7 @@ local function decodeNativeMotion(rom,address)
   if direction then
     local speed=pointerAt(rom,direction,4)
     out.direction={mode=readSigned16(rom,direction),
-      curve=pointerAt(rom,direction,8)}
+      curve=decodeNativeCurve(rom,pointerAt(rom,direction,8))}
     if speed then
       out.direction.speed={mode=readSigned16(rom,speed),
         startAge=readSigned16(rom,speed+2),initial=readSigned16(rom,speed+4),
@@ -247,26 +273,48 @@ local function decodeNativeMotion(rom,address)
   return out
 end
 
+-- func_84101D54 reads three independent +4 angle tracks and +8 float
+-- position tracks from the transform's motion block. Both use 12-byte rows.
+local function decodeAxisTracks(rom,address,position)
+  if not addressInOverlay(address) then return nil end
+  local tracks={}
+  for axis=1,3 do
+    local row=pointerAt(rom,address,(axis-1)*4)
+    if row then tracks[axis]={address=row,flags=read16(rom,row),
+      startAge=readSigned16(rom,row+2),endAge=readSigned16(rom,row+4),
+      target=readSigned16(rom,row+6),random=readSigned16(rom,row+8),
+      step=readSigned16(rom,row+10),
+      spawnRandom=position and readSigned16(rom,row+12) or nil} end
+  end
+  return tracks
+end
+
 local function decodeTransform(rom,address)
   if not addressInOverlay(address) then return nil end
   local frame=pointerAt(rom,address,0)
   local rotation=pointerAt(rom,address,4)
   local scale=pointerAt(rom,address,8)
   local motion=pointerAt(rom,address,12)
+  local anchor=pointerAt(rom,address,16)
   local rotationOffset=rotation and pointerAt(rom,rotation,4)
   local directionalVelocity=rotation and pointerAt(rom,rotation,8)
   local scaleController=scale and pointerAt(rom,scale,0)
   local motionController=motion and pointerAt(rom,motion,0)
+  local rotationAxes=motion and pointerAt(rom,motion,4)
   local motionAxes=motion and pointerAt(rom,motion,8)
   return {
     address=address,frame=frame,rotation=rotation,scale=scale,motion=motion,
+    nativeAnchorTable=anchor and {mode=readSigned16(rom,anchor),index=readSigned16(rom,anchor+2)} or nil,
     frameRule=frame and {mode=readSigned16(rom,frame),
       value=readSigned16(rom,frame+2)} or nil,
     rotationOffset=randomVectorSpec(rom,rotationOffset),
     directionalVelocity=randomVectorSpec(rom,directionalVelocity),
     scaleController=scaleController,
+    nativeScaleCurve=decodeNativeCurve(rom,scaleController),
     motionController=motionController,
     nativeMotion=decodeNativeMotion(rom,motionController),
+    rotationTracks=decodeAxisTracks(rom,rotationAxes),
+    positionTracks=decodeAxisTracks(rom,motionAxes,true),
     motionAxes=motionAxes,
   }
 end
@@ -307,7 +355,17 @@ local function decodeMaterial(rom,address)
   return {
     address=address,shapeId=readSigned16(rom,address),
     secondaryShapeId=readSigned16(rom,address+2),
+    -- Retail 841031F4 selects its shape from +0 only. Dynamic anchor rules
+    -- belong to transform+10, not this material's +0/+2 halfwords.
+    nativeSecondaryShapeSelection=false,
+    nativeEndAge=readSigned16(rom,address+4),
+    -- 84104D28: with descriptor flag 0x1, (f32)(s16)material+6 is the
+    -- distance passed to 84105930 (point along the camera ray).
+    nativeCameraRayDistance=readSigned16(rom,address+6),
     colorController=colorController,colors=colors,
+    -- 84102370 skips color updates when the animation header is NULL;
+    -- 84106F34 still preloads the RGBA values at controller+4/+8.
+    nativeConstantColors=colorController and read32(rom,colorController)==0 or false,
     nativeMaterialColors=true,
     nativePrimaryTrack=decodeParticleColorTrack(rom,colorController,4),
     nativeSecondaryTrack=decodeParticleColorTrack(rom,colorController,8),
@@ -315,6 +373,8 @@ local function decodeMaterial(rom,address)
     secondaryColor=secondary and rgbaAt(rom,secondary) or nil,
     constantColor=constant and rgbaAt(rom,constant) or nil,
     nativeAlphaInitial=constant and rgbaAt(rom,constant)[1] or nil,
+    nativeAlphaBaseRamp=constant and {target=rgbaAt(rom,constant)[2],
+      step=rgbaAt(rom,constant)[3],startAge=rgbaAt(rom,constant)[4]} or nil,
     nativeAlphaRamp=fadeBytes and {address=fade,target=fadeBytes[1],
       step=fadeBytes[2],startAge=readSigned16(rom,fade+2)} or nil,
   }
@@ -584,7 +644,7 @@ end
 
 function FxRom.move(rom, moveId)
   moveId = math.floor(tonumber(moveId) or -1)
-  if moveId < 1 or moveId > FxRom.MOVE_COUNT then return nil, "move ID out of range" end
+  if moveId < 1 or moveId > FxRom.ENTRY_COUNT then return nil, "move ID out of range" end
   local address = FxRom.MOVE_TABLE + moveId * 8
   local primary = assert(read16(rom, address), "truncated move FX table")
   local alternate = assert(read16(rom, address + 2), "truncated move FX table")
@@ -599,6 +659,18 @@ function FxRom.move(rom, moveId)
   if not primaryDispatch then return nil,primaryDispatchError end
   local alternateDispatch,alternateDispatchError=decodedDispatch(alternateResolved)
   if not alternateDispatch then return nil,alternateDispatchError end
+  -- 841052AC route mode 1 (armed by 841088CC) reads D_84172A1A+primary*4,
+  -- i.e. the +2 half of a 0x4000 side-variant primary. Only the six
+  -- two-turn moves use a variant primary; mode 1 has no valid route for
+  -- any other entry.
+  local variantResolved,variantDispatch
+  if primary>=0x4000 and primary<0x8000 then
+    local err
+    variantResolved,err=FxRom.resolveRoute(rom,primary,true)
+    if not variantResolved then return nil,err end
+    variantDispatch,err=decodedDispatch(variantResolved)
+    if not variantDispatch then return nil,err end
+  end
   return {
     moveId = moveId,
     address = address,
@@ -610,6 +682,8 @@ function FxRom.move(rom, moveId)
     alternateResolved = alternateResolved,
     primaryDispatch=primaryDispatch,
     alternateDispatch=alternateDispatch,
+    variantResolved=variantResolved,
+    variantDispatch=variantDispatch,
   }
 end
 
@@ -679,7 +753,7 @@ function FxRom.catalog(rom,trigBytes)
     if not program then return nil, ("program %d: %s"):format(id, err) end
     programs[id] = program
   end
-  for id = 1, FxRom.MOVE_COUNT do
+  for id = 1, FxRom.ENTRY_COUNT do
     local move, err = FxRom.move(rom, id)
     if not move then return nil, ("move %d: %s"):format(id, err) end
     moves[id] = move
@@ -689,7 +763,26 @@ function FxRom.catalog(rom,trigBytes)
     programs = programs,
     moves = moves,
     lifecycle = FxRom.lifecycle(rom),
-    lifecycleAssets = {needle=FxRom.needleAsset(rom),ribbon=FxRom.ribbonAsset(rom),beamGlow=(function()
+    lifecycleAssets = {fragment79=#rom<FxRom.ROM_BASE and rom or rom:sub(FxRom.ROM_BASE+1,0x419480),
+      mainKernel=#rom>=FxRom.ROM_BASE and rom:sub(0x1001,0xA8000) or nil,
+      radialSpark=(function()
+        local pixels={}
+        for i=0,1023,4 do for _,v in ipairs(rgbaAt(rom,0x84187E90+i)) do
+          local intensity=math.floor(v/16)*17
+          pixels[#pixels+1]=string.char(intensity,intensity,intensity,v%16*17)
+        end end
+        return {w=32,h=32,format=3,size=1,rgba=table.concat(pixels)}
+      end)(),
+      sonicBoom=(function()
+        local a={pos={},uv={},nrm={},idx={1,3,2,3,4,2}}
+        for j=0,3 do
+          local at=0x84187A78+j*16
+          for k=0,2 do a.pos[#a.pos+1]=readSigned16(rom,at+k*2);a.nrm[#a.nrm+1]=k==1 and 1 or 0 end
+          a.uv[#a.uv+1]=readSigned16(rom,at+8)/2048
+          a.uv[#a.uv+1]=readSigned16(rom,at+10)/2048
+        end
+        return a
+      end)(),needle=FxRom.needleAsset(rom),ribbon=FxRom.ribbonAsset(rom),beamGlow=(function()
       local pixels={}
       for i=0,1023,4 do for _,v in ipairs(rgbaAt(rom,0x84188738+i)) do
         local intensity=math.floor(v/16)*17

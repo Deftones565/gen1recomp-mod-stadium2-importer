@@ -321,8 +321,16 @@ function Scene:handleEvent(event)
     local moveId=tonumber(event.move)
       or (def and tonumber(def.id or def.index or def.number))
     if self.battleFx and event.missed~=true and moveId then
-      local ok,err=pcall(self.battleFx.trigger,self.battleFx,moveId,side,
-        event.alternate==true)
+      -- Presented (non-missed) moves play the move bank now and the impact
+      -- bank at the attacker's dispatch hit frame (84108728/841087B8).
+      local ok,err
+      if event.alternate~=true and self.battleFx.playMoveAndImpact then
+        ok,err=pcall(self.battleFx.playMoveAndImpact,self.battleFx,moveId,side,
+          self.actors and self.actors[side])
+      else
+        ok,err=pcall(self.battleFx.trigger,self.battleFx,moveId,side,
+          event.alternate==true)
+      end
       if ok then self.battleFxMovePending=true;self.battleFxAnimation=nil end
       if not ok and not self.battleFxTriggerError then
         self.battleFxTriggerError=true

@@ -23,7 +23,8 @@ local preview=Preview.new({rom=rom,releaseModel=function()models=models+1 end,
     end,release=function()releases=releases+1 end}
   end},
 })
-check(preview:start(7,"enemy",false)~=nil,"primary move starts")
+local context={world={groundY=0,actorSlots={enemy={x=10,y=0,z=0},player={x=-10,y=0,z=0}}}}
+check(preview:start(7,"enemy",false,context)~=nil,"primary move starts")
 local snapshot=preview.player:snapshot()
 check(#snapshot.effects==1 and not snapshot.effects[1].alternate,
   "preview selects only the primary channel")
@@ -40,7 +41,6 @@ preview:drawBackground({environment={bands={{1,1,1}}},graphics={clear=function(r
 end}})
 check(cleared and cleared[1]<1 and cleared[1]==cleared[2],
   "mode2 ROM color reaches the viewer background renderer")
-local context={world={groundY=0,actorSlots={enemy={x=10,y=0,z=0},player={x=-10,y=0,z=0}}}}
 local result=preview:draw(context)
 check(result.drawn>0 and draws==result.drawn*2,"ROM shapes reach both render passes")
 local count=loads
@@ -49,8 +49,13 @@ local after=preview.player:snapshot()
 check(after.frame==snapshot.frame and after.particles[1].id==first.id
   and after.particles[1].age==first.age,"drawing cannot advance or recreate particles")
 check(loads==count,"repeated draws reuse shape renderers")
-check(#preview.diagnostics>0,"unsupported native behavior is visible")
-check(preview:start(7,"player",false)~=nil,"replay starts")
+for _,row in ipairs(preview.diagnostics) do
+  check(row.code~="unsupported-lifetime",
+    "native byte-age expiry is not reported as an unresolved lifetime")
+end
+-- Determinism compares identical source/scene inputs. Source yaw now rotates
+-- spawn offsets, so opposite battle sides intentionally have different poses.
+check(preview:start(7,"enemy",false,context)~=nil,"replay starts")
 check(preview.player:backgroundColor({1,1,1})[1]==1,"replay resets native background color")
 check(releases==count and models==count,"replay releases renderers and models")
 for _=1,12 do preview:step() end
@@ -60,6 +65,8 @@ check(replay.age==first.age and replay.position[1]==first.position[1]
 check(preview:start(7,"player",true)~=nil,"alternate route starts independently")
 local alternate=preview.player:snapshot().effects[1]
 check(alternate.alternate and alternate.sourceSide=="player","alternate route and source reach runtime")
+check(preview:finish() and preview.player.runtime.lifecycle.finishedEffects[preview.effectId],
+  "viewer can signal native effect completion for gated fades")
 preview:release();preview:update(1);preview:step()
 check(not preview.active and preview.player==nil,"stop releases persistent state")
 local effect,err=preview:start(999,"player",false)

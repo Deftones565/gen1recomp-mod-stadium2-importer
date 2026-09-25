@@ -17,12 +17,20 @@ local function clone(value, seen)
   return copy
 end
 
-local function channelFor(move, alternate)
+local function channelFor(move, alternate, variant)
   if type(move) ~= "table" then
     return nil, "missing decoded move row"
   end
   if type(alternate) ~= "boolean" then
     return nil, "alternate must be an explicit boolean"
+  end
+  if variant == true then
+    -- Route mode 1 (841088CC): the +2 half of a side-variant primary.
+    if alternate then return nil, "variant route has no alternate bank" end
+    if type(move.variantDispatch) ~= "table" then
+      return nil, "decoded move row has no variant route"
+    end
+    return move.variantDispatch
   end
   local key = alternate and "alternateDispatch" or "primaryDispatch"
   local channel = move[key]
@@ -35,8 +43,8 @@ end
 -- Select exactly one ROM-authored channel, preserving its order.  Returned
 -- entries are copies so a runtime may annotate them without mutating the ROM
 -- catalog shared by other effects.
-function Router.resolve(move, alternate)
-  local channel, err = channelFor(move, alternate)
+function Router.resolve(move, alternate, variant)
+  local channel, err = channelFor(move, alternate, variant)
   if not channel then return nil, err end
   local out = {}
   for index, entry in ipairs(channel) do

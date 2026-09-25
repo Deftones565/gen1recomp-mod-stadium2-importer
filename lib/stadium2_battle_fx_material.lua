@@ -37,6 +37,17 @@ local function present(value)
   return value ~= nil and value ~= 0 and value ~= false
 end
 
+local function gateSignal(context,kind,state)
+  local value=context[kind=="global" and "nativeAlphaGlobalGate" or "nativeAlphaSignal"]
+  local resolve=context.resolveNativeAlphaGate
+  if type(resolve)=="function" then
+    local ok,result=pcall(resolve,kind,copy(state),copy(context))
+    if ok and result~=nil then value=result end
+  end
+  if value==nil then return nil end
+  return present(value)
+end
+
 local function resolver(context, names)
   for _, name in ipairs(names) do
     if type(context[name]) == "function" then return context[name] end
@@ -103,22 +114,29 @@ function Material.init(material, context)
   state.nativePrimaryTrack=copy(material.nativePrimaryTrack)
   state.nativeSecondaryTrack=copy(material.nativeSecondaryTrack)
   state.nativeAlphaRamp=copy(material.nativeAlphaRamp)
+  state.nativeAlphaBaseRamp=copy(material.nativeAlphaBaseRamp)
   if state.nativeMaterialColors or state.nativeAlphaRamp or material.nativeAlphaInitial~=nil then
     state.nativeAlpha=material.nativeAlphaInitial
       or (state.primaryColor and state.primaryColor[4]) or context.attribute or 255
     state.nativeAlpha=state.nativeAlpha%256
     state.nativeFlags=tonumber(context.flags) or 0
     state.nativeFlags2=tonumber(context.flags2) or 0
-    if math.floor(state.nativeFlags/0x10)%2==1 or math.floor(state.nativeFlags2/4)%2==1 then
+    state.nativeAlphaSignalAge=0
+    local gatedGlobal=math.floor(state.nativeFlags2/4)%2==1
+    local gatedSignal=math.floor(state.nativeFlags/0x10)%2==1
+    local signalKind=gatedGlobal and "global" or gatedSignal and "signal" or nil
+    if state.nativeAlphaRamp and signalKind
+        and gateSignal(context,signalKind,state)==nil then
       state.nativeAlphaGateUnresolved=true
       addDiagnostic(state,"unsupported-alpha-gate",
-        "native alpha ramp requires battle-counter/global gate state",{kind="material"})
+        "native alpha ramp requires its battle signal",{kind="material"})
     end
   end
 
   local colorResolver = resolver(context,
     {"colorController", "resolveColorController", "colorResolver"})
   if present(state.colorController) and not colorResolver
+      and not material.nativeConstantColors
       and not state.nativePrimaryTrack and not state.nativeSecondaryTrack then
     addDiagnostic(state, "unsupported-color-controller",
       "fragment-79 color-controller update requires an explicit resolver", {
@@ -127,7 +145,8 @@ function Material.init(material, context)
   end
   local shapeResolver = resolver(context,
     {"selectShape", "shapeSelection", "resolveShape"})
-  if present(state.secondaryShapeId) and not shapeResolver then
+  if present(state.secondaryShapeId) and not shapeResolver
+      and material.nativeSecondaryShapeSelection~=false then
     addDiagnostic(state, "unsupported-secondary-shape",
       "secondary shape selection requires an explicit resolver", {
         kind = "shape-selection",
@@ -224,10 +243,34 @@ function Material.step(state, options)
   -- 84102534/84102598: post-increment age enables a byte alpha ramp.
   -- The target is approached by an unsigned byte step with saturation.
   local ramp=out.nativeAlphaRamp
-  if ramp and not out.nativeAlphaGateUnresolved then
+  local rampApplied=false
+  if ramp then
     if delta==1 then
       local age=tonumber(options.age) or out.age
-      if age>=ramp.startAge then
+      local gatedGlobal=math.floor((out.nativeFlags2 or 0)/4)%2==1
+      local gatedSignal=math.floor((out.nativeFlags or 0)/0x10)%2==1
+      local enabled=true
+      if gatedGlobal then
+        enabled=gateSignal(merged,"global",out)
+      elseif gatedSignal then
+        local signal=gateSignal(merged,"signal",out)
+        if signal==nil then enabled=nil else enabled=false end
+        if signal then
+          out.nativeAlphaSignalAge=((out.nativeAlphaSignalAge or 0)+1)%256
+          enabled=out.nativeAlphaSignalAge>=ramp.startAge
+        end
+      else
+        enabled=age>=ramp.startAge
+      end
+      if enabled==nil then
+        out.nativeAlphaGateUnresolved=true
+        addDiagnostic(out,"unsupported-alpha-gate",
+          "native alpha ramp requires its battle signal",{kind="material"})
+      else
+        out.nativeAlphaGateUnresolved=false
+      end
+      if enabled then
+        rampApplied=true
         local alpha=out.nativeAlpha
         if alpha<ramp.target then alpha=math.min(ramp.target,alpha+ramp.step)
         elseif alpha>ramp.target then alpha=math.max(ramp.target,alpha-ramp.step) end
@@ -240,6 +283,16 @@ function Material.step(state, options)
     else
       addDiagnostic(out,"unsupported-alpha-step","native alpha requires individual 30 Hz ticks")
     end
+  end
+  -- 84102648: the initial alpha controller continues while the gated/end
+  -- controller is inactive. This is how Roar/Whirlwind fade in before recall.
+  local base=out.nativeAlphaBaseRamp
+  if not rampApplied and not out.nativeAlphaGateUnresolved and base and delta==1
+      and (tonumber(options.age) or out.age)>=base.startAge then
+    local alpha=out.nativeAlpha
+    if alpha<base.target then alpha=math.min(base.target,alpha+base.step)
+    elseif alpha>base.target then alpha=math.max(base.target,alpha-base.step) end
+    out.nativeAlpha=alpha
   end
   return out
 end

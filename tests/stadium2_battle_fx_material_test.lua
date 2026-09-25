@@ -33,6 +33,11 @@ ok(state.primaryColor[1] == 1 and state.primaryColor[4] == 255
 ok(hasDiagnostic(state, "unsupported-color-controller")
   and hasDiagnostic(state, "unsupported-secondary-shape"),
   "unresolved controller and secondary shape are explicit")
+local retail=Material.init({shapeId=47,secondaryShapeId=95,
+  nativeSecondaryShapeSelection=false,nativeMaterialColors=true},{})
+ok(not hasDiagnostic(retail,"unsupported-secondary-shape")
+    and retail.shapeId==47 and retail.secondaryShapeId==95,
+  "ROM second halfword is retained without inventing an alternate-shape callback")
 local snapshot = Material.snapshot(state)
 snapshot.primaryColor[1] = 99
 ok(state.primaryColor[1] == 1 and snapshot._context == nil,
@@ -104,4 +109,25 @@ local gated=Material.init({nativeAlphaRamp={target=0,step=255,startAge=0}},{flag
 gated=Material.step(gated,{age=1})
 ok(gated.nativeAlpha==255 and hasDiagnostic(gated,"unsupported-alpha-gate"),
   "battle-gated fades remain explicitly unresolved")
+local noRamp=Material.init({nativeMaterialColors=true},{flags=0x10})
+ok(not hasDiagnostic(noRamp,"unsupported-alpha-gate"),
+  "gate flags without an alpha ramp do not require a live signal")
+local globalGate=Material.init({nativeAlphaInitial=200,
+  nativeAlphaRamp={target=0,step=50,startAge=9}},
+  {flags2=4,nativeAlphaGlobalGate=false})
+globalGate=Material.step(globalGate,{age=1})
+ok(globalGate.nativeAlpha==200 and not hasDiagnostic(globalGate,"unsupported-alpha-gate"),
+  "global gate suppresses the fade without an unsupported warning")
+globalGate=Material.step(globalGate,{age=2,nativeAlphaGlobalGate=true})
+ok(globalGate.nativeAlpha==150,"global gate starts the fade independent of age")
+local signalGate=Material.init({nativeAlphaInitial=200,
+  nativeAlphaRamp={target=0,step=50,startAge=2}},
+  {flags=0x10,nativeAlphaSignal=false})
+signalGate=Material.step(signalGate,{age=10})
+signalGate=Material.step(signalGate,{age=11,nativeAlphaSignal=true})
+ok(signalGate.nativeAlpha==200 and signalGate.nativeAlphaSignalAge==1,
+  "signal-gated fade counts only active signal ticks")
+signalGate=Material.step(signalGate,{age=12,nativeAlphaSignal=true})
+ok(signalGate.nativeAlpha==150 and signalGate.nativeAlphaSignalAge==2,
+  "signal-gated fade starts at its authored signal count")
 print(("%d checks passed (Stadium 2 battle FX material)"):format(checks))

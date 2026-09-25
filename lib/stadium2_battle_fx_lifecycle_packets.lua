@@ -144,7 +144,7 @@ function Packets.build(snapshot, options)
         appendDiagnostic(out, diagnostic(base), seenDiagnostics)
       elseif type(resolver) ~= "function" and evidence.geometry
           and (evidence.geometry.kind == "rom-ribbon" or evidence.geometry.kind == "rom-wave-grid"
-            or evidence.geometry.kind == "rom-beam") then
+            or evidence.geometry.kind == "rom-terrain-grid" or evidence.geometry.kind == "rom-beam") then
         local packet = copy(evidence)
         packet.kind, packet.renderable = "lifecycle", true
         packet.modelResolution = {proven=true, geometry=copy(evidence.geometry)}

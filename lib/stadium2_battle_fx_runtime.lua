@@ -96,7 +96,7 @@ local function diagnostic(runtime, code, effect, fields)
 end
 
 local function copyMotionFields(particle, motionState)
-  for _, field in ipairs({"age", "lifetime", "position", "velocity", "rotation", "scale"}) do
+  for _, field in ipairs({"age", "lifetime", "position", "velocity", "rotation", "scale", "nativeAnchor", "nativeHidden"}) do
     if motionState[field] ~= nil then
       particle[field] = copy(motionState[field])
     elseif field == "lifetime" then
@@ -166,10 +166,25 @@ function Runtime.new(options)
       end
     end
     local hasTrigTables = random.tableA ~= nil and random.tableB ~= nil
+    local nativeMode4Vector={0,0,0}
     if motionOptions.randomVector == nil and type(random.vector) == "function"
         and (not defaultRandom or hasTrigTables) then
       motionOptions.randomVector = function(mode, values, context)
         values = type(values) == "table" and values or {}
+        if defaultRandom and mode==4 then
+          -- 841063D8 writes D_84190158 only for particle index zero, then
+          -- adds the saved signed halfwords for every sibling in the burst.
+          if context and context.particleIndex==0 then
+            local sampled={}
+            for axis=1,3 do
+              sampled[axis]=random:scalar(0,values[axis] or 0)
+              if sampled[axis]==nil then return nil end
+            end
+            nativeMode4Vector=sampled
+          end
+          return {nativeMode4Vector[1],nativeMode4Vector[2],
+            nativeMode4Vector[3]}
+        end
         local angles = context and (context.angleContext or context.angle) or nil
         return random:vector(mode, values[1], values[2], angles)
       end
@@ -186,6 +201,16 @@ function Runtime.new(options)
     lifecycle = Lifecycle.new(lifecycleOptions)
   end
   local material = options.material or Material
+  local materialOptions=copy(options.materialOptions or {})
+  if materialOptions.resolveNativeAlphaGate==nil then
+    materialOptions.resolveNativeAlphaGate=function(kind,state,context)
+      if kind~="signal" or context.nativeAlphaSignal~=nil then return nil end
+      local effectId=context.effectId or state.effectId
+      if lifecycle and lifecycle.finishedEffects
+          and lifecycle.finishedEffects[effectId] then return 1 end
+      return lifecycle and lifecycle.nativeSignal or nil
+    end
+  end
   return setmetatable({
     catalog = options.catalog or {},
     native = options.native or Native,
@@ -195,7 +220,12 @@ function Runtime.new(options)
     nativeObjects = nativeObjects,
     lifecycle = lifecycle,
     material = material,
-    materialOptions = copy(options.materialOptions or {}),
+    materialOptions = materialOptions,
+    writeDynamicAnchor = options.writeDynamicAnchor,
+    modelAnimationFinished = options.modelAnimationFinished,
+    -- 84107998 marker selection; injected because it needs owner data.
+    emissionMarkers = options.emissionMarkers,
+    nativeMarkerSelect = 0,
     clockHz = clockHz,
     catchUpLimit = catchUpLimit,
     lifetimeResolver = options.lifetimeResolver,
@@ -272,6 +302,9 @@ function Runtime:_particle(effect, source)
     material = copy(source.material or {}),
     attachment = copy(event.attachment or {}),
     event = copy(event),
+    -- 841072BC stores the 84107998 marker at +0x7E (flag 0x2 when secondary).
+    nativeMarkerLabel = source.nativeMarkerLabel,
+    nativeSecondaryEmission = source.nativeSecondaryEmission,
     active = true,
   }
   -- The resolver receives the source-shaped particle and event, so later
@@ -374,10 +407,16 @@ end
 function Runtime:_initMaterial(effect, particle, source)
   local init = self.material and (self.material.init or self.material.initialize)
   if type(init) ~= "function" then
+    self:_emitUnsupported(effect,"material-initialization",{
+      programId=particle.event and particle.event.programId,
+      address=particle.event and particle.event.address,kind="material",
+      message="material evaluator has no init function"})
     particle._materialState = copy(particle.material)
     return
   end
   local context = copy(self.materialOptions)
+  if math.floor((particle.event.flags2 or 0)/4)%2==1
+      and context.resetNativeAlphaGlobalGate then context.resetNativeAlphaGlobalGate() end
   for key, value in pairs(effect.context) do context[key] = copy(value) end
   for key, value in pairs(particle.event or {}) do context[key] = copy(value) end
   context.effectId = effect.id
@@ -405,7 +444,13 @@ end
 function Runtime:_stepMaterial(effect, particle)
   if not particle._materialState then return end
   local step = self.material and (self.material.step or self.material.evaluate)
-  if type(step) ~= "function" then return end
+  if type(step) ~= "function" then
+    self:_emitUnsupported(effect,"material-evaluation",{
+      programId=particle.event and particle.event.programId,
+      address=particle.event and particle.event.address,kind="material",
+      message="material evaluator has no step function"})
+    return
+  end
   local options = copy(self.materialOptions)
   options.delta = options.delta or 1
   options.age = particle.age
@@ -470,18 +515,57 @@ function Runtime:_stepManagers()
 end
 
 function Runtime:_spawn(effect, previousFrame, frame)
+  if effect.emissionCancelled then return end
   -- Program schedulers are authored relative to the move's start, whereas
   -- the runtime clock is shared by every active move.  Keep that local frame
   -- conversion here so a move triggered at presentation frame 240 still
   -- starts its ROM scheduler at local frame zero.
   local previousLocal = previousFrame - effect.originFrame
   local localFrame = frame - effect.originFrame
+  local function spawn(source)
+    source.born = source.born + effect.originFrame
+    local state = self:_particle(effect, source)
+    effect.particles[#effect.particles + 1] = state
+  end
   for _, execution in ipairs(effect.executions) do
-    local particles = self.native.particles(execution, previousLocal, localFrame)
-    for _, source in ipairs(particles or {}) do
-      source.born = source.born + effect.originFrame
-      local state = self:_particle(effect, source)
-      effect.particles[#effect.particles + 1] = state
+    local particles = self.native.particles(execution, previousLocal, localFrame) or {}
+    local index = 1
+    while index <= #particles do
+      -- One scheduler emission: consecutive particles of one birth.
+      local first = particles[index]
+      local last = index
+      while particles[last + 1] and particles[last + 1].schedulerIndex == first.schedulerIndex
+          and particles[last + 1].generation == first.generation do
+        last = last + 1
+      end
+      local event = first.event or {}
+      local markers
+      if type(self.emissionMarkers) == "function" and (event.mode == 0 or event.mode == 1) then
+        local ok, value, reason = pcall(self.emissionMarkers, event, effect.context,
+          self.nativeMarkerSelect)
+        if ok and type(value) == "table" then markers = value
+        else
+          self:_emitUnsupported(effect, "unresolved-emission-markers", {
+            programId = event.programId, address = event.address, kind = "particle",
+            message = ok and (reason or "84107998 marker inputs are unavailable") or tostring(value),
+          })
+        end
+      end
+      if markers then
+        -- 841072BC runs once per selected marker, each creating the full set.
+        for _, marker in ipairs(markers) do
+          for i = index, last do
+            local source = {}
+            for key, value in pairs(particles[i]) do source[key] = value end
+            source.nativeMarkerLabel = marker.label
+            source.nativeSecondaryEmission = marker.secondary == true or nil
+            spawn(source)
+          end
+        end
+      else
+        for i = index, last do spawn(particles[i]) end
+      end
+      index = last + 1
     end
   end
 end
@@ -514,6 +598,25 @@ function Runtime:_stepEffect(effect, previousFrame, frame)
         })
       end
       self:_stepMaterial(effect, particle)
+      if particle.active and self.modelAnimationFinished then
+        local ok,finished,err=pcall(self.modelAnimationFinished,particle,frame)
+        if ok and finished==true then particle.active=false
+        elseif not ok or finished==nil then
+          self:_emitUnsupported(effect,'model-animation-completion',{
+            programId=particle.event.programId,address=particle.event.address,
+            message=tostring(ok and err or finished),kind='particle'})
+        end
+      end
+      local rule=particle.event.transform and particle.event.transform.nativeAnchorTable
+      if rule and rule.mode==0 then
+        local ok,value,err=false,nil,'native marker-1 pose resolver unavailable'
+        if self.writeDynamicAnchor then ok,value,err=pcall(self.writeDynamicAnchor,particle,rule) end
+        if not ok or value==nil then
+          self:_emitUnsupported(effect,'dynamic-anchor-write',{
+            programId=particle.event.programId,address=particle.event.address,
+            message=tostring(ok and err or value or err),kind='particle'})
+        end
+      end
     end
   end
   self:_spawn(effect, previousFrame, frame)
@@ -531,10 +634,11 @@ function Runtime:trigger(context)
   local move = self.catalog.moves and self.catalog.moves[moveId]
   if not move then return nil, "battle FX move is unavailable" end
   local alternate = context.alternate == true
+  local variant = context.variant == true
   local select = self.router and (self.router.resolve or self.router.select
     or self.router.channel)
   if type(select) ~= "function" then return nil, "battle FX router is unavailable" end
-  local okRoute, dispatch, routeError = pcall(select, move, alternate)
+  local okRoute, dispatch, routeError = pcall(select, move, alternate, variant or nil)
   if not okRoute then return nil, tostring(dispatch) end
   if type(dispatch) ~= "table" then
     return nil, routeError or "battle FX dispatch is unavailable"
@@ -546,6 +650,7 @@ function Runtime:trigger(context)
     sourceSide = context.sourceSide,
     targetSide = context.targetSide,
     alternate = alternate,
+    variant = variant or nil,
     originFrame = self.frame,
     context = copyContext(context),
     executions = {},
@@ -573,6 +678,14 @@ function Runtime:trigger(context)
           effect.context)
         if ok and execution then
           execution.programId = entry.programId
+          -- D_84190178 is global: the latest executed program's value is
+          -- what 84107998 reads at every later emission.
+          if execution.nativeMarkerSelect ~= nil then
+            self.nativeMarkerSelect = execution.nativeMarkerSelect
+          end
+          for _,item in ipairs(execution.diagnostics or {}) do
+            self:_emitUnsupported(effect,item.code,item)
+          end
           for _, event in ipairs(execution.scheduled or {}) do
             event.programId = entry.programId
             event.effectId = effect.id
@@ -658,6 +771,67 @@ function Runtime:trigger(context)
   return effect.id
 end
 
+-- 841089D8(1), the failed-move path of 841087B8:
+-- 84105E3C releases every active slot of the 64-entry scheduler at
+-- D_84190150 (pending emitters and native objects); 841003AC (argument 1)
+-- resets the background and both battlers' colors and frees every particle
+-- except those holding object flag 0x10000 (descriptor bit 0x20000000,
+-- 84107170); 84109460(1) -> 841093E8 clears every lifecycle slot.
+function Runtime:abortAll()
+  if self.released then return false end
+  for _, id in ipairs(self.effectOrder) do
+    local effect = self.effects[id]
+    if effect then
+      effect.emissionCancelled = true
+      local kept = {}
+      for _, particle in ipairs(effect.particles) do
+        local flags = tonumber(particle.event and particle.event.flags) or 0
+        if math.floor(flags / 0x20000000) % 2 == 1 and not particle.nativeReleased then
+          kept[#kept + 1] = particle
+        end
+      end
+      effect.particles = kept
+    end
+  end
+  if self.nativeObjects and type(self.nativeObjects.release) == "function" then
+    self.nativeObjects:release()
+  end
+  if self.lifecycle and type(self.lifecycle.release) == "function" then
+    self.lifecycle:release()
+  end
+  return true
+end
+
+-- 84108A10(owner): for every live particle owned by `owner` (object +8,
+-- the route owner D_84190194 at construction) that holds object flag 0x10000
+-- (descriptor bit 0x20000000): clear flags 0x10080, and if it also holds
+-- flag 0x8000 (descriptor bit 0x08000000) end it (+0x92 = 0) and hide its
+-- visual. Released particles are no longer exempt from abortAll.
+function Runtime:releaseHeld(ownerSide)
+  if self.released then return 0 end
+  local count = 0
+  for _, id in ipairs(self.effectOrder) do
+    local effect = self.effects[id]
+    local owner = effect and (effect.context.nativeOwnerSide or effect.sourceSide)
+    if effect and owner == ownerSide then
+      local kept = {}
+      for _, particle in ipairs(effect.particles) do
+        local flags = tonumber(particle.event and particle.event.flags) or 0
+        local held = math.floor(flags / 0x20000000) % 2 == 1 and not particle.nativeReleased
+        if held then
+          particle.nativeReleased = true
+          count = count + 1
+          if math.floor(flags / 0x08000000) % 2 == 0 then kept[#kept + 1] = particle end
+        else
+          kept[#kept + 1] = particle
+        end
+      end
+      effect.particles = kept
+    end
+  end
+  return count
+end
+
 function Runtime:step(count)
   if self.released then return self.frame end
   count = validateTicks(count)
@@ -734,13 +908,14 @@ function Runtime:snapshot()
     end
   end
   for index, particle in ipairs(particles) do
-    result.particles[index] = copy(particle)
-    -- Evaluator state is persistent runtime-owned data, not part of the
-    -- caller-facing snapshot.  The evaluated fields above remain available.
-    result.particles[index]._motionState = nil
-    result.particles[index]._motionDiagnosticKeys = nil
-    result.particles[index]._materialState = nil
-    result.particles[index]._materialDiagnosticKeys = nil
+    local public={}
+    for key,value in pairs(particle) do
+      if key~='_motionState' and key~='_motionDiagnosticKeys'
+          and key~='_materialState' and key~='_materialDiagnosticKeys' then
+        public[key]=value
+      end
+    end
+    result.particles[index] = copy(public)
     result.materials[index] = {
       particleId = particle.id,
       effectId = particle.effectId,

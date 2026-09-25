@@ -1,11 +1,16 @@
 -- Runtime/packet/renderer coordinator. Battle mechanics remain host-owned.
 local Runtime=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_runtime")
+local Attachment=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_attachment")
 local Packets=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_draw_packets")
 local NativePackets=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native_object_packets")
 local LifecyclePackets=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_lifecycle_packets")
 local Ribbon=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_ribbon")
 local WaveGrid=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_wave_grid")
+local TerrainGrid=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_terrain_grid")
 local Beam=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_beam")
+local CommonAnchor=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_common_anchor")
+local BattleState=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_state")
+local ModelAnimation=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_model_animation")
 local Player={};Player.__index=Player
 local NativeObjects=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native_objects")
 local function copy(v,s)if type(v)~="table"then return v end;s=s or{};if s[v]then return s[v]end;local o={};s[v]=o;for k,x in pairs(v)do o[copy(k,s)]=copy(x,s)end;return o end
@@ -21,10 +26,161 @@ local function mergeDiagnostics(target,items,seen)
     if not seen[key]then seen[key]=true;target[#target+1]=copy(item)end
   end
 end
+local function drawDiagnostic(built,packet,code,message)
+  built.diagnostics[#built.diagnostics+1]={code=code,severity="warning",
+    effectId=packet.effectId,programId=packet.programId,instanceId=packet.instanceId,
+    familyId=packet.familyId,address=packet.address,kind="draw",message=tostring(message)}
+end
+local function configureRenderer(renderer,packet,built)
+  if packet.modelAnimation then
+    local state=packet.modelAnimation
+    local model=renderer.model
+    if not model or model.battleFxAnimationId~=state.id or not renderer.seekFrame then
+      drawDiagnostic(built,packet,'unresolved-model-animation','native FX skeletal animation is unavailable')
+      return false
+    end
+    local target=ModelAnimation.frame(model.anims[1],state)
+    renderer.animIndex=1
+    if renderer.frame~=target or renderer._battleFxPoseFrame~=target then
+      local ok,result=pcall(renderer.seekFrame,renderer,target)
+      if not ok or not result then
+        drawDiagnostic(built,packet,'model-animation-pose',ok and 'pose rejected' or result)
+        return false
+      end
+      renderer._battleFxPoseFrame=target
+    end
+  end
+  if type(renderer.setHandlerRuntime)~="function" then return true end
+  -- Common FX frameRule is a spawn hold, not the material clock. The
+  -- fragment-26 controller reads the particle's live byte age at +0x7F.
+  local frame=packet.materialFrame or packet.frame or packet.age or 0
+  local ok,result,detail=pcall(renderer.setHandlerRuntime,renderer,
+    -- FX renderers are cached and never advance Renderer.displayTime. Supply
+    -- their material clock explicitly, or phase-5 controllers stay at zero.
+    {callbackFrame=frame,materialFrame=frame},false)
+  if not ok or result==false then
+    drawDiagnostic(built,packet,"draw-handler-runtime",
+      ok and (detail or "renderer rejected callback state") or result)
+    return false
+  end
+  return true
+end
 function Player.new(options)
   options=type(options)=="table"and options or{};local runtime=options.runtime
   local beamScene={value=options.sceneContext}
+  local signals={global=0}
+  local player
+  local dynamicAnchors={}
   if not runtime then local ro=copy(options.runtimeOptions or{});ro.catalog=options.catalog or ro.catalog
+    ro.modelAnimationFinished=ro.modelAnimationFinished or function(particle,tick)
+      if not ModelAnimation.finishesParticle(particle) then return false end
+      -- 8410291C checks the pose from the preceding graph traversal. Keep
+      -- the terminal pose visible for its tick before retiring the object.
+      local animation=ModelAnimation.packet(particle,tick-1)
+      if not animation then return false end
+      local renderer,err=player:_renderer(particle.event.context.moveId,
+        particle.shapeId,animation.id)
+      local model=renderer and renderer.model
+      if not model or model.battleFxAnimationId~=animation.id then
+        return nil,err or 'native FX animation header unavailable for completion'
+      end
+      return ModelAnimation.finished(model.anims[1],animation)
+    end
+    ro.writeDynamicAnchor=ro.writeDynamicAnchor or function(particle,rule)
+      local animation=ModelAnimation.packet(particle,player.runtime.frame)
+      local renderer,err=player:_renderer(particle.event.context.moveId,particle.shapeId,
+        animation and animation.id)
+      if not renderer then return nil,err end
+      if not renderer.attachmentPosition or not renderer.updatePose then
+        return nil,'dynamic anchor requires a posed FX model marker'
+      end
+      local built={diagnostics={}}
+      local posed={};for key,value in pairs(particle) do posed[key]=value end
+      posed.modelAnimation=animation
+      if not configureRenderer(renderer,posed,built) then return nil,'dynamic anchor callback pose failed' end
+      renderer:updatePose(true)
+      local point=renderer:attachmentPosition(1)
+      if not point then return false end -- 8003C9B8 leaves the table untouched
+      local position={}
+      for k=1,3 do position[k]=(particle.nativeAnchor and particle.nativeAnchor[k] or 0)+particle.position[k] end
+      local matrix=Packets.nativeMatrix(position,particle.scale,particle.rotation)
+      local f=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float')
+      local out={}
+      for k=1,3 do local j=(k-1)*4
+        out[k]=f(matrix[j+1]*point[1]+matrix[j+2]*point[2]+matrix[j+3]*point[3]+matrix[j+4])
+      end
+      dynamicAnchors[rule.index]=out
+      return true
+    end
+    ro.materialOptions=ro.materialOptions or {}
+    ro.materialOptions.resetNativeAlphaGlobalGate=ro.materialOptions.resetNativeAlphaGlobalGate
+      or function()signals.global=0 end -- 841072A4, each gated constructor
+    local alphaResolver=ro.materialOptions.resolveNativeAlphaGate
+    ro.materialOptions.resolveNativeAlphaGate=function(kind,state,context)
+      if alphaResolver then
+        local value=alphaResolver(kind,state,context)
+        if value~=nil then return value end
+      end
+      if kind=='global' then
+        if context.nativeAlphaGlobalGate~=nil then return context.nativeAlphaGlobalGate end
+        return signals.global
+      end
+      if context.nativeAlphaSignal~=nil then return context.nativeAlphaSignal end
+      local manager=runtime and runtime.lifecycle
+      if manager and manager.finishedEffects and manager.finishedEffects[context.effectId] then return 1 end
+      return manager and manager.nativeSignal or nil
+    end
+    if options.commonAnchorInputs then
+      ro.motionOptions=ro.motionOptions or {}
+      local savedOrigin
+      ro.motionOptions.resolveNativeAnchor=ro.motionOptions.resolveNativeAnchor or function(state,initial)
+        local event=state.particle.event or {}
+        local input=options.commonAnchorInputs(state.particle,beamScene.value)
+        local rule=event.transform and event.transform.nativeAnchorTable
+        if rule and rule.mode==1 then
+          input=input or {}
+          input.nestedAnchor=dynamicAnchors[rule.index]
+          input.dynamicAnchorMissing=input.nestedAnchor==nil
+        end
+        local result=CommonAnchor.resolve(event,input or {},savedOrigin)
+        if initial and event.mode==0 and result.saveOrigin then
+          local f=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float')
+          savedOrigin={}
+          for axis=1,3 do savedOrigin[axis]=f(result.anchor[axis]+
+            (result.clearCommonOffset and 0 or state.nativeSpawnOffset[axis])) end
+        end
+        return result
+      end
+    end
+    if options.contextForParticle then
+      ro.motionOptions=ro.motionOptions or {}
+      ro.motionOptions.resolveNativeYaw=ro.motionOptions.resolveNativeYaw or function(particle)
+        local context=options.contextForParticle(particle,beamScene.value)
+        return context and context.nativeSourceYaw
+      end
+      ro.motionOptions.resolveNativeSpawnScale=ro.motionOptions.resolveNativeSpawnScale or function(particle)
+        local context=options.contextForParticle(particle,beamScene.value)
+        return context and context.nativeSpawnScale
+      end
+      ro.motionOptions.resolveNativeContextScale=ro.motionOptions.resolveNativeContextScale or function(particle)
+        local context=options.contextForParticle(particle,beamScene.value)
+        return context and context.nativeContextScale
+      end
+      ro.motionOptions.resolveNativeFinalY=ro.motionOptions.resolveNativeFinalY or function(state)
+        local particle=copy(state.particle or {})
+        particle.position=copy(state.position)
+        local contract=particle.attachment or particle.event and particle.event.attachment
+        local context=options.contextForParticle(particle,beamScene.value)
+        local placement=contract and context and Attachment.resolve(contract,context)
+        return placement and placement.resolved and placement.position[2] or nil
+      end
+    end
+    if options.emissionMarkers and not ro.emissionMarkers then
+      -- 84107998 marker selection needs the owner's live model data.
+      ro.emissionMarkers=function(event,context,markerSelect)
+        return options.emissionMarkers(event,context,markerSelect,beamScene.value)
+      end
+    end
     if options.resolveBeam then
       ro.lifecycleOptions=ro.lifecycleOptions or {}
       ro.lifecycleOptions.resolveBeam=ro.lifecycleOptions.resolveBeam or function(context)
@@ -33,7 +189,7 @@ function Player.new(options)
     end
     runtime=Runtime.new(ro)
   end
-  return setmetatable({runtime=runtime,loadRenderer=options.loadRenderer,releaseRenderer=options.releaseRenderer,contextForParticle=options.contextForParticle,resolvePlacement=options.resolvePlacement,
+  player=setmetatable({runtime=runtime,loadRenderer=options.loadRenderer,releaseRenderer=options.releaseRenderer,contextForParticle=options.contextForParticle,resolvePlacement=options.resolvePlacement,
     resolveNativePlacement=options.resolveNativePlacement or options.resolveNativeObjectPlacement or options.nativePlacementResolver,
     resolveNativeGeometry=options.resolveNativeGeometry or options.resolveNativeObjectGeometry or options.nativeGeometryResolver,
     resolveNativeRenderer=options.resolveNativeRenderer or options.nativeObjectRendererResolver,
@@ -42,9 +198,63 @@ function Player.new(options)
     createGeometryRenderer=options.createGeometryRenderer,
     loadWaveGridTexture=options.loadWaveGridTexture,
     loadBeamTexture=options.loadBeamTexture,beamScene=beamScene,
+    battleStateForContext=options.battleStateForContext,signals=signals,dynamicAnchors=dynamicAnchors,
+    contextNeedsSnapshot=options.contextNeedsSnapshot,
     warn=options.warn,renderers={},diagnostics={},diagnosticKeys={},released=false},Player)
+  return player
 end
-function Player:trigger(context)if self.released then return nil,"battle FX player released"end;return self.runtime:trigger(context)end
+function Player:trigger(context)
+  if self.released then return nil,"battle FX player released" end
+  context=copy(context or {})
+  if not context.conditionForMove then
+    local inputs=self.battleStateForContext and self.battleStateForContext(context,self.beamScene.value)
+      or context.nativeBattleState
+    context.conditionForMove=function(id,_,record,current)
+      return BattleState.condition(context.nativeContextId or id,inputs,current)
+    end
+  end
+  return self.runtime:trigger(context)
+end
+-- 8410890C latches the independent global alpha gate only for context 300.
+function Player:signalContext(id)
+  if self.released then return false end
+  if id==300 then self.signals.global=1 end
+  return true
+end
+-- 8410890C(id, owner) also stores the effect ID and owner; the next
+-- 8410545C pass plays entry `id` of D_84182A5C through its primary route
+-- (entries 252..301 are the non-move battle effects). Like move routes,
+-- the runtime starts it on the current tick as local frame zero.
+function Player:playEntry(id,context)
+  if self.released then return nil,"battle FX player released" end
+  id=tonumber(id)
+  if not id or id%1~=0 or id<1 then return nil,"battle FX entry ID is invalid" end
+  context=copy(context or {})
+  context.moveId=id
+  context.alternate=false
+  context.variant=nil
+  return self:trigger(context)
+end
+-- D_841901B8, read by 841094EC as the lifecycle presentation signal:
+-- 841086F0 (route armed) clears it; 8410874C (impact) and 8410878C set it.
+function Player:setRouteSignal(value)
+  if self.released then return false end
+  local manager=self.runtime.lifecycle
+  if not (manager and manager.setNativeSignal) then return false end
+  manager:setNativeSignal(value)
+  return true
+end
+-- 84108A10(owner) held-particle release; see Runtime:releaseHeld.
+function Player:releaseHeld(ownerSide)
+  if self.released then return 0 end
+  return self.runtime:releaseHeld(ownerSide)
+end
+-- 841089D8(1) failed-move cleanup; see Runtime:abortAll.
+function Player:abortAll()
+  if self.released then return false end
+  return self.runtime:abortAll()
+end
+function Player:dynamicAnchor(index) return copy(self.dynamicAnchors[index]) end
 function Player:update(dt)if self.released then return nil end;return self.runtime:update(dt)end
 function Player:finish(effectId)
   if self.released then return false end
@@ -57,9 +267,21 @@ function Player:backgroundColor(base)
   local native=self.runtime:snapshot().nativeObjects
   return NativeObjects.backgroundColor(base,native and native.nativeColor)
 end
+function Player:_recordDiagnostics(items)
+  for _,d in ipairs(items or {}) do
+    local key=diagnosticKey(d)
+    if not self.diagnosticKeys[key] then
+      self.diagnosticKeys[key]=true
+      self.diagnostics[#self.diagnostics+1]=copy(d)
+      if type(self.warn)=="function" then pcall(self.warn,copy(d)) end
+    end
+  end
+end
 function Player:packets(sceneContext)
   local snapshot=self.runtime:snapshot()
   local built=Packets.build(snapshot,{context=sceneContext,
+    contextNeedsSnapshot=self.contextNeedsSnapshot,
+    trigTables=self.runtime.catalog and self.runtime.catalog.trigTables,
     contextForParticle=self.contextForParticle and function(p,s,c)return self.contextForParticle(p,sceneContext,s,c)end or nil,
     resolvePlacement=self.resolvePlacement})
   -- Native-object and lifecycle records remain separate from common particle
@@ -93,7 +315,7 @@ local function renderOptions(scene,packet,pass)
   end
   local nativeColors=packet.material and packet.material.nativeMaterialColors and packet.material or nil
   if nativeColors then rgba[1],rgba[2],rgba[3]=1,1,1 end
-  return{battleFxColors=nativeColors,viewProjection=camera.viewProjection or camera.vp,viewMatrix=camera.view,normalMatrix={1,0,0,0,1,0,0,0,1},lightDir=environment.light,ambient=environment.ambient,diffuse=environment.diffuse,tint=rgba,skipHandlers=pass=="additive",flipWinding=true,disableCulling=true,sunMap=shadow.map,sunVP=shadow.sunVP,sunDark=shadow.sunDark,sunBias=shadow.sunBias,sunTexel=shadow.sunTexel}
+  return{battleFxColors=nativeColors,viewProjection=camera.viewProjection or camera.vp,viewMatrix=camera.view,normalMatrix={1,0,0,0,1,0,0,0,1},lightDir=environment.light,ambient=environment.ambient,diffuse=environment.diffuse,tint=rgba,skipHandlers=pass=="additive",flipWinding=true,disableCulling=not (packet.geometry and packet.geometry.nativeCulling),sunMap=shadow.map,sunVP=shadow.sunVP,sunDark=shadow.sunDark,sunBias=shadow.sunBias,sunTexel=shadow.sunTexel}
 end
 local function identityMatrix()
   return {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}
@@ -143,8 +365,9 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
   if not renderer then
     local geometry = packet.modelResolution and packet.modelResolution.geometry
     if geometry and (geometry.kind == "rom-ribbon" or geometry.kind == "rom-wave-grid"
-        or geometry.kind == "rom-beam") and self.createGeometryRenderer then
+        or geometry.kind == "rom-terrain-grid" or geometry.kind == "rom-beam") and self.createGeometryRenderer then
       local wave=geometry.kind == "rom-wave-grid"
+      local terrain=geometry.kind == "rom-terrain-grid"
       local beam=geometry.kind == "rom-beam"
       local key = "lifecycle:"..tostring(packet.instanceId)
       local entry = self.renderers[key]
@@ -155,6 +378,16 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
       end
       local assets = self.runtime.catalog and self.runtime.catalog.lifecycleAssets
       local asset=assets and assets.ribbon
+      if terrain then
+        asset={}
+        if not entry then
+          for _,symbol in ipairs(geometry.textureSymbols or {31,32}) do
+            local ok,value=pcall(self.loadBeamTexture or function()end,moveId,symbol)
+            if ok then asset[symbol]=value end
+            if not asset[symbol] then asset=nil;break end
+          end
+        end
+      end
       if wave then
         asset=nil
         if not entry and self.loadWaveGridTexture then
@@ -168,7 +401,8 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
           for _,layer in ipairs(geometry.layers) do for _,symbol in ipairs(layer.draw.textures) do
             if not asset[symbol] then
               local ok,value
-              if symbol==-3 then ok,value=true,assets and assets.needle and assets.needle.texture
+              if symbol==-4 then ok,value=true,assets and assets.radialSpark
+              elseif symbol==-3 then ok,value=true,assets and assets.needle and assets.needle.texture
               elseif symbol==-2 then
                 local ribbon=assets and assets.ribbon
                 ok,value=true,ribbon and {w=8,h=16,format=3,size=1,rgba=ribbon.rgba}
@@ -182,12 +416,19 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
       end
       if not entry and asset then
         local model = beam and Beam.model(geometry,asset)
-          or wave and WaveGrid.model(asset,geometry) or Ribbon.model(asset, geometry)
-        local ok, value = pcall(self.createGeometryRenderer, model)
+          or wave and WaveGrid.model(asset,geometry)
+          or terrain and TerrainGrid.model(geometry,asset) or Ribbon.model(asset, geometry)
+        local ok, value, detail = pcall(self.createGeometryRenderer, model)
         if ok and value then
           entry = {renderer=value, owned=model, frame=packet.frame}
           self.renderers[key] = entry
+        else
+          drawDiagnostic(built,packet,"draw-geometry-renderer",
+            ok and (detail or "geometry renderer returned no renderer") or value)
         end
+      elseif not entry then
+        drawDiagnostic(built,packet,"draw-lifecycle-texture",
+          "ROM texture assets unavailable for "..tostring(geometry.kind))
       end
       if entry then
         renderer = entry.renderer
@@ -198,6 +439,14 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
               for i,row in ipairs(part.rows or {}) do
                 for c=1,4 do row[8+c]=(part.prim.color[(i-1)*4+c] or 0)/255 end
               end
+            end
+          elseif terrain then
+            TerrainGrid.updateModel(entry.owned,geometry)
+            for _,part in ipairs(renderer.parts or {}) do
+              for i,row in ipairs(part.rows or {}) do
+                for c=1,4 do row[8+c]=(part.prim.color[(i-1)*4+c] or 0)/255 end
+              end
+              part.used={};for _,index in ipairs(part.prim.idx) do part.used[index]=true end
             end
           else
           local prim = entry.owned.prims[1]
@@ -221,14 +470,14 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
           packet.waveGrid=true
           local context=self.contextForParticle and self.contextForParticle({event={context=packet.context}},sceneContext)
           packet.matrix=WaveGrid.matrix(sceneContext and sceneContext.camera,context and context.worldUnits)
-        elseif not beam then
+        elseif not beam and not terrain then
           packet.material = {nativeMaterialColors=true,
             primaryColor=geometry.colors[1], secondaryColor=geometry.colors[2]}
         end
         if not wave and not packetMatrix(packet) and self.contextForParticle then
           local context = self.contextForParticle({event={context=packet.context}}, sceneContext)
           local units = context.worldUnits
-          local origin = context.sharedOrigin
+          local origin = terrain and {0,0,0} or context.sharedOrigin
           if units and origin then
             packet.placement = {resolved=true, scale=units,
               position={origin[1]*units,origin[2]*units,origin[3]*units}}
@@ -261,10 +510,7 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
     return false
   end
   local success = true
-  if type(renderer.setHandlerRuntime) == "function" then
-    pcall(renderer.setHandlerRuntime, renderer,
-      {callbackFrame=packet.frame or packet.age or 0}, false)
-  end
+  if not configureRenderer(renderer,packet,built) then return false end
   for _, pass in ipairs({"opaque", "additive"}) do
     local options=renderOptions(sceneContext, packet, pass)
     if packet.waveGrid then
@@ -284,10 +530,10 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
   end
   return success
 end
-function Player:_renderer(moveId,shapeId)
-  local key=tostring(moveId)..":"..tostring(shapeId);if self.renderers[key]then return self.renderers[key].renderer end
+function Player:_renderer(moveId,shapeId,animationId)
+  local key=tostring(moveId)..":"..tostring(shapeId)..":"..tostring(animationId or 0);if self.renderers[key]then return self.renderers[key].renderer end
   if type(self.loadRenderer)~="function"then return nil,"battle FX renderer loader unavailable"end
-  local ok,renderer,owned=pcall(self.loadRenderer,moveId,shapeId);if not ok then return nil,tostring(renderer)end;if not renderer then return nil,tostring(owned or"battle FX shape renderer unavailable")end
+  local ok,renderer,owned=pcall(self.loadRenderer,moveId,shapeId,animationId);if not ok then return nil,tostring(renderer)end;if not renderer then return nil,tostring(owned or"battle FX shape renderer unavailable")end
   self.renderers[key]={renderer=renderer,owned=owned};return renderer
 end
 function Player:draw(sceneContext)
@@ -312,12 +558,26 @@ function Player:draw(sceneContext)
   end
   local drawn=0
   for _,packet in ipairs(built.packets)do
-    local renderer,err=self:_renderer(moveByEffect[packet.effectId],packet.shapeId)
+    local renderer,err=self:_renderer(moveByEffect[packet.effectId],packet.shapeId,
+      packet.modelAnimation and packet.modelAnimation.id)
     if not renderer or type(renderer.drawScene)~="function" then built.diagnostics[#built.diagnostics+1]={code="draw-renderer",severity="warning",effectId=packet.effectId,programId=packet.programId,address=nil,kind="draw",message=renderer and "renderer has no drawScene method" or tostring(err)}
     else
-      if type(renderer.setHandlerRuntime)=="function"then pcall(renderer.setHandlerRuntime,renderer,{callbackFrame=packet.frame or packet.age or 0},false)end
-      local success=true
-      for _,pass in ipairs({"opaque","additive"})do if type(renderer.drawScene)=="function"then local ok,result=pcall(renderer.drawScene,renderer,pass,packet.matrix,renderOptions(sceneContext,packet,pass));if not ok or result==false then success=false;built.diagnostics[#built.diagnostics+1]={code="draw-renderer",severity="warning",effectId=packet.effectId,programId=packet.programId,address=nil,kind="draw",message=ok and"renderer rejected packet"or tostring(result)};break end end end
+      local success=configureRenderer(renderer,packet,built)
+      local drawMatrix=packet.matrix
+      local shapeModel=renderer.model
+      if success and shapeModel and shapeModel.battleFxGeometryMode~=nil
+          and not shapeModel.battleFxCompiledLayout and packet.nativeTransform then
+        -- 841031F4 -> 84102B3C: direct shapes use the geometry-mode transform.
+        -- Compiled layouts are drawn by the model system from 841028DC.
+        local value,code,message=Packets.shapeMatrix(packet.nativeTransform,
+          shapeModel.battleFxGeometryMode,{trigTables=self.runtime.catalog and self.runtime.catalog.trigTables,
+          camera=sceneContext and sceneContext.camera})
+        if value then drawMatrix=value
+        else success=false;drawDiagnostic(built,packet,code,message) end
+      end
+      if success then
+        for _,pass in ipairs({"opaque","additive"})do if type(renderer.drawScene)=="function"then local ok,result=pcall(renderer.drawScene,renderer,pass,drawMatrix,renderOptions(sceneContext,packet,pass));if not ok or result==false then success=false;built.diagnostics[#built.diagnostics+1]={code="draw-renderer",severity="warning",effectId=packet.effectId,programId=packet.programId,address=nil,kind="draw",message=ok and"renderer rejected packet"or tostring(result)};break end end end
+      end
       if success then drawn=drawn+1 end
     end
   end
@@ -325,7 +585,7 @@ function Player:draw(sceneContext)
   -- packets must reach the renderer.  Unresolved packets have no geometry and
   -- remain diagnostic-only by construction in their packet builders.
   for _,packet in ipairs(built.nativeObjectPackets or {}) do
-    if resolvedField(packet, "placement") and resolvedField(packet, "geometry")
+    if not packet.presentationKind and resolvedField(packet, "placement") and resolvedField(packet, "geometry")
         and drawProvenPacket(self, sceneContext, packet, moveByEffect[packet.effectId],
           self.resolveNativeRenderer, "native-object", built) then
       drawn = drawn + 1
@@ -338,10 +598,7 @@ function Player:draw(sceneContext)
       drawn = drawn + 1
     end
   end
-  for _,d in ipairs(built.diagnostics)do
-    local key=diagnosticKey(d)
-    if not self.diagnosticKeys[key]then self.diagnosticKeys[key]=true;self.diagnostics[#self.diagnostics+1]=copy(d);if type(self.warn)=="function"then pcall(self.warn,copy(d))end end
-  end
+  self:_recordDiagnostics(built.diagnostics)
   built.drawn=drawn;return built
 end
 
@@ -353,29 +610,48 @@ function Player:drawOverlay(sceneContext)
   local moves={}
   for _,effect in ipairs(snapshot.effects or {}) do moves[effect.id]=effect.moveId end
   local count=0
-  for _,instance in ipairs(snapshot.nativeObjects.screenInstances or {}) do
+  local built={diagnostics={}}
+  local screens=Packets.build(snapshot,{screenOnly=true,trigTables=self.runtime.catalog and self.runtime.catalog.trigTables})
+  for _,d in ipairs(screens.diagnostics) do
+    if d.code=='unresolved-screen-trig' then built.diagnostics[#built.diagnostics+1]=d end
+  end
+  for _,instance in ipairs(snapshot.nativeObjects and snapshot.nativeObjects.screenInstances or {}) do
     if instance.active then
-      local renderer,err=self:_renderer(moves[instance.effectId],instance.shapeId)
-      if renderer then
-        if renderer.setHandlerRuntime then renderer:setHandlerRuntime({callbackFrame=instance.age},false) end
-        local packet={material={nativeMaterialColors=true,nativeAlpha=255,
+      local matrix=identityMatrix();matrix[4]=160;matrix[8]=120
+      screens.screenPackets[#screens.screenPackets+1]={effectId=instance.effectId,
+        age=instance.age,born=instance.born,shapeId=instance.shapeId,matrix=matrix,
+        matrixYScale=matrix,material={nativeMaterialColors=true,nativeAlpha=255,
           primaryColor={255,255,255,255},secondaryColor=instance.rgba}}
-        for _,pass in ipairs({"opaque","additive"}) do
-          local options=renderOptions(sceneContext,packet,pass)
-          options.screenSpace=true
-          options.viewProjection={1/160,0,0,-1, 0,-1/120,0,1, 0,0,-.5,0, 0,0,0,1}
-          options.viewMatrix=identityMatrix()
-          local matrix=identityMatrix();matrix[4]=160;matrix[8]=120
-          local ok,message=renderer:drawScene(pass,matrix,options)
-          if ok==false then error(message or "native screen draw failed") end
-        end
-        count=count+1
-      elseif self.warn then
-        self.warn({code="native-screen-renderer",kind="native-object",severity="warning",
-          effectId=instance.effectId,message=tostring(err)})
-      end
     end
   end
+  -- Keep earlier full-screen color layers behind later screen particles.
+  for i,p in ipairs(screens.screenPackets) do p.screenOrder=i end
+  table.sort(screens.screenPackets,function(a,b)
+    local x,y=a.born or 0,b.born or 0
+    if x~=y then return x<y end
+    return a.screenOrder<b.screenOrder
+  end)
+  for _,packet in ipairs(screens.screenPackets) do
+    local renderer,err=self:_renderer(moves[packet.effectId],packet.shapeId)
+    if renderer and type(renderer.drawScene)=='function' then
+      local success=configureRenderer(renderer,packet,built)
+      for _,pass in ipairs(success and {'opaque','additive'} or {}) do
+        local options=renderOptions(sceneContext,packet,pass)
+        options.screenSpace=true
+        options.viewProjection={1/160,0,0,-1,0,-1/120,0,1,0,0,-.5,0,0,0,0,1}
+        options.viewMatrix=identityMatrix()
+        local geometryMode=renderer.model and renderer.model.battleFxGeometryMode
+        local matrix=geometryMode==6 and packet.matrixYScale or packet.matrix
+        local ok,result,message=pcall(renderer.drawScene,renderer,pass,matrix,options)
+        if not ok or result==false then
+          drawDiagnostic(built,packet,'native-screen-renderer',ok and (message or 'screen draw failed') or result)
+          success=false;break
+        end
+      end
+      if success then count=count+1 end
+    else drawDiagnostic(built,packet,'native-screen-renderer',err or 'screen renderer has no drawScene method') end
+  end
+  self:_recordDiagnostics(built.diagnostics)
   return count
 end
 function Player:release()

@@ -352,6 +352,7 @@ function Pack.parse(bytes)
     m.attachments=render and render.attachments
     m.fxDispatch=render and render.fxDispatch
     m.fxBattleProfile=render and render.fxBattleProfile
+    m.fxContextScales=render and render.fxContextScales
     Materials.attach(m)
     local textureReport = TextureParity.audit(m, { indexBase = 1 })
     if #textureReport.issues > 0 then

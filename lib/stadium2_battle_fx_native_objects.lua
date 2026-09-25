@@ -146,6 +146,17 @@ local function callbackResult(value)
     value.diagnostics
 end
 
+local function builtinPresentation(mode,event,callbacks,drawCallbacks)
+  if type(callbacks[mode])=="function" or type(drawCallbacks[mode])=="function" then return nil end
+  if mode==2 and type(event.nativeColorTrack)=="table" then return "background-color" end
+  if mode==5 and type(event.nativeModelColor)=="table"
+      and (event.nativeModelColor.primary or event.nativeModelColor.secondary) then
+    return "model-color"
+  end
+  if mode==8 and type(event.nativeColorTrack)=="table" then return "screen-overlay" end
+  return nil
+end
+
 local single=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
 local function clampByte(value)
   value = tonumber(value) or 0
@@ -320,6 +331,7 @@ function NativeObjects:enqueue(commandPointer, event)
   free.state = 1
   free.active = true
   free.mode = mode
+  free.presentationKind = builtinPresentation(mode,event,self.callbacks,self.drawCallbacks)
   free.visualObjects = {}
   free.rawFields = {}
   free.drawPackets = {}
@@ -338,6 +350,7 @@ function NativeObjects:_releaseSlot(slot)
   slot.age = nil
   slot.state = nil
   slot.mode = nil
+  slot.presentationKind = nil
   slot.visualObjects = nil
   slot.rawFields = nil
   slot.drawPackets = nil
@@ -371,7 +384,7 @@ function NativeObjects:_invoke(slot)
   if slot.mode==8 and track and type(callback)~="function" then
     local rgba,alive=NativeObjects.colorAt(track,0)
     if rgba then
-      self.screenInstances[#self.screenInstances+1]={age=0,active=alive,
+      self.screenInstances[#self.screenInstances+1]={age=0,born=self.tickCount,active=alive,
         track=clone(track),rgba=rgba,shapeId=90,position={160,120,0},
         effectId=slot.event.effectId,programId=slot.event.programId}
     else

@@ -2,6 +2,7 @@ package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local Runtime = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_runtime")
 local Native = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native")
+local Random = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_random")
 
 local checks = 0
 local function ok(value, message)
@@ -173,6 +174,77 @@ ok(second == 2, "effect IDs are monotonic after expiry")
 ok(runtime:snapshot().particles[1].id == 4,
   "particle IDs are monotonic and never reused")
 
+local signalEmitter=emitter(0,0,1)
+signalEmitter.flags=0x10
+signalEmitter.material={shapeId=47,nativeAlphaInitial=255,
+  nativeAlphaRamp={target=0,step=100,startAge=2}}
+local signalCatalog={programs={[1]={id=1,records={
+  {opcode=4,address=0x84170000,emitter=signalEmitter},
+  {opcode=0,address=0x84170008}}}},moves={[1]={
+  primaryDispatch={{kind="program",programId=1}}}}}
+local signalRuntime=Runtime.new({catalog=signalCatalog,
+  lifetimeResolver=function() return 10 end})
+assert(signalRuntime:trigger({moveId=1}))
+local function alphaWarning(snapshot)
+  for _,diagnostic in ipairs(snapshot.diagnostics) do
+    if diagnostic.code=="unsupported-alpha-gate" then return true end
+  end
+  return false
+end
+ok(not alphaWarning(signalRuntime:snapshot()),
+  "common material reads the lifecycle presentation signal at birth")
+signalRuntime:step(1)
+ok(signalRuntime:snapshot().particles[1].material.nativeAlpha==255,
+  "inactive presentation signal holds the common alpha ramp")
+signalRuntime.lifecycle:setNativeSignal(1)
+signalRuntime:step(1)
+ok(signalRuntime:snapshot().particles[1].material.nativeAlpha==255,
+  "first active signal tick advances the authored gate counter")
+signalRuntime:step(1)
+ok(signalRuntime:snapshot().particles[1].material.nativeAlpha==155
+    and not alphaWarning(signalRuntime:snapshot()),
+  "second active signal tick starts the ROM alpha ramp")
+local finishedRuntime=Runtime.new({catalog=signalCatalog,
+  lifetimeResolver=function() return 10 end})
+local finishedEffect=assert(finishedRuntime:trigger({moveId=1}))
+ok(finishedRuntime.lifecycle:finishEffect(finishedEffect),
+  "host move completion reaches the lifecycle signal owner")
+finishedRuntime:step(2)
+ok(finishedRuntime:snapshot().particles[1].material.nativeAlpha==155,
+  "move completion also opens the common-particle alpha gate")
+
+local sharedEmitter=emitter(0,1,2)
+sharedEmitter.particleCount=3
+sharedEmitter.transform={rotationOffset={mode=4,values={100,200,300}}}
+local sharedCatalog={trigTables={tableA=function()return 0 end,
+  tableB=function()return 1 end},programs={[1]={id=1,records={
+  {opcode=4,address=0x84170000,emitter=sharedEmitter},
+  {opcode=0,address=0x84170008}}}},moves={[1]={
+  primaryDispatch={{kind="program",programId=1}}}}}
+local sharedRuntime=Runtime.new({catalog=sharedCatalog,
+  randomOptions={seed=0x1234},lifetimeResolver=function()return 10 end})
+local oracle=Random.new({seed=0x1234})
+local function expectedVector()
+  return {oracle:scalar(0,100),oracle:scalar(0,200),oracle:scalar(0,300)}
+end
+local firstVector=expectedVector()
+assert(sharedRuntime:trigger({moveId=1}))
+local firstBurst=sharedRuntime:snapshot().particles
+ok(#firstBurst==3,"mode-4 native burst spawns all sibling particles")
+for index=1,3 do
+  ok(firstBurst[index].rotation[1]==firstVector[1]
+    and firstBurst[index].rotation[2]==firstVector[2]
+    and firstBurst[index].rotation[3]==firstVector[3],
+    "mode-4 siblings reuse one isolated three-sample vector")
+end
+local secondVector=expectedVector()
+sharedRuntime:step(1)
+local secondBurst=sharedRuntime:snapshot().particles
+ok(#secondBurst==6 and secondBurst[4].rotation[1]==secondVector[1]
+    and secondBurst[5].rotation[2]==secondVector[2]
+    and secondBurst[6].rotation[3]==secondVector[3],
+  "next mode-4 burst resamples at particle index zero")
+
 local clock = Runtime.new({catalog = catalog, lifetimeResolver = function() return 4 end})
 assert(clock:trigger({moveId = 7}))
 clock:update(1 / 30)
@@ -191,19 +263,22 @@ assert(unresolved:trigger({moveId = 7}))
 local unresolvedSnapshot = unresolved:snapshot()
 ok(unresolvedSnapshot.particles[1].lifetime == nil,
   "unresolved lifetime remains nil")
-ok(unresolvedSnapshot.diagnostics[1].code == "unsupported-lifetime",
-  "unresolved lifetime emits a stable diagnostic")
+local lifetimeWarning=false
+for _,row in ipairs(unresolvedSnapshot.diagnostics) do
+  if row.code=="unsupported-lifetime" then lifetimeWarning=true end
+end
+ok(not lifetimeWarning,"ordinary particles use their native byte-age endpoint")
 unresolved:step(257)
 ok(#unresolved:snapshot().particles==0,
   "ordinary unresolved particles still leave at the native age-byte endpoint")
 
 local unsupportedCatalog = {
   programs = {},
-  moves = {[1] = {primaryDispatch = {{kind = "lifecycle", lifecycleId = 7}}}},
+  moves = {[1] = {primaryDispatch = {{kind = "lifecycle", lifecycleId = 16}}}},
 }
 local unsupported = Runtime.new({catalog = unsupportedCatalog})
 assert(unsupported:trigger({moveId = 1}))
-ok(unsupported:snapshot().diagnostics[1].code == "unsupported-lifecycle-callback"
+ok(unsupported:snapshot().diagnostics[1].code == "unresolved-spike-cannon-model"
   and unsupported:snapshot().diagnostics[1].effectId == 1
   and unsupported:snapshot().diagnostics[1].programId == nil,
   "lifecycle manager diagnostic retains dispatch context")

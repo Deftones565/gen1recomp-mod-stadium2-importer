@@ -306,6 +306,7 @@ local function genericAnimationTable(data, Build, rom, species)
   for i=0,dispatchRows.n-1 do raw[#raw+1]=dispatchRows[i].raw end
   data.fxDispatch=table.concat(raw)
   data.fxBattleProfile=AnimationDispatch.battleProfileBytes(rom,species)
+  data.fxContextScales=AnimationDispatch.contextScaleBytes(rom,species)
   return AnimationSemantics.apply(animations, data.auxAnims, Build,
     AnimationRouting, dispatchRows)
 end

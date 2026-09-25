@@ -404,6 +404,7 @@ function Model:walk(o, depth, stageRenderProfile)
       self.stack[#self.stack] = idx
     elseif cmd == 0x23 then                           
       self.curTex = f:s16(o + 8)
+      self.curTexBone = self:curBone()
       self.curTlut = f:s16(o + 0xA)
       self.curMat = f:ptr(o + 4)
       self.curTexAnim = f:s16(o + 2)
@@ -493,7 +494,10 @@ function Model:runNodeDL(offset, bone, stageRenderProfile, stageSubmissionClass)
     self.curStageSubmissionClass
   self.curStageRenderProfile = stageRenderProfile
   self.curStageSubmissionClass = stageSubmissionClass
+  local oldDrawBone = self.curDrawBone
+  self.curDrawBone = bone
   self:runDL(offset, bone, 0)
+  self.curDrawBone = oldDrawBone
   if stageSubmissionClass ~= nil and self.currentDrawPrims then
     self.lastStageDrawPrims = self.currentDrawPrims
   end
@@ -536,6 +540,17 @@ function Model:primFor(tex, tlut, mat, texAnim, cull)
           arenaRenderProfile = self.curStageRenderProfile,
           arenaSubmissionClass = self.curStageSubmissionClass,
           verts = {}, nverts = 0, tris = {}, ntris = 0, remap = {} }
+    -- A 0x23 texture applies to its node and descendants; record draws that
+    -- only inherited it from an unrelated node through the global state.
+    if tex >= 0 and self.curTexBone ~= nil and self.curDrawBone ~= nil then
+      local bone, related = self.curDrawBone, false
+      while bone and bone >= 0 do
+        if bone == self.curTexBone then related = true; break end
+        local row = self.bones[bone + 1]
+        bone = row and row.parent or -1
+      end
+      p.foreignTexture = not related
+    end
     self.primsByKey[key] = p
     self.prims[#self.prims + 1] = p
   end
@@ -1511,6 +1526,14 @@ function StadiumFragment.extract(data, name, options)
     if p.ntris > 0 then
       local pal = m:tilePalette(p.mat)
       local ti = texIndexMap[p.tex .. "," .. p.tlut .. "," .. pal] or -1
+      -- 810024E0 loads a 0x81000138 callback's own texture (81001F14) before
+      -- its node's list. A 0x23 texture left in the global state by an
+      -- unrelated node does not survive that load (Swords Dance: six swords
+      -- whose guard/blade nodes follow the grip node's authored texture).
+      if ti >= 0 and p.foreignTexture and p.callbackDescriptor == 0x81000138
+          and callbackTextureBySite[p.callbackOffset] ~= nil then
+        ti = -1
+      end
       local texMap = nil
       if p.texAnim >= 0 then
         for _, a in ipairs(auxAnims) do
@@ -1913,6 +1936,26 @@ local function crystal251DecodeOne(frag, off, bones)
     tracks = tracks,
     sourceOffset = off,
   }
+end
+
+-- FX animations are independent kind-4 exports, sometimes in a different
+-- resource from their kind-3 skeleton. Decode against the supplied bones.
+function StadiumFragment.decodeAnimation(data, offset, bones, sourceBase)
+  local previous=BASE
+  if sourceBase then StadiumFragment.setBase(sourceBase) end
+  local ok,anim,err=pcall(function()
+    local frag,openError=StadiumFragment.open(data,'battle-fx-animation')
+    if not frag then return nil,openError end
+    if not offset or offset<0 or offset+28>#data then
+      return nil,'animation header outside resource'
+    end
+    local frames=frag:u16(offset+10)
+    if frames<1 or frames>4096 then return nil,'invalid animation frame count' end
+    return crystal251DecodeOne(frag,offset,bones)
+  end)
+  StadiumFragment.setBase(previous)
+  if not ok then return nil,tostring(anim) end
+  return anim,err
 end
 
 local function crystal251DecodeOffsets(frag, offsets, bones)

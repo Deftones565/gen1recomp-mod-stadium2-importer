@@ -4,6 +4,13 @@ Correction: [common-motion-next.md](common-motion-next.md) supersedes this
 early audit's trig addresses, scale-entry +6 interpretation, and legacy
 geometry-vector names. Use its verified instruction ranges for those fields.
 
+Further correction: `material+2` is retained as a raw halfword, but the
+retail draw helper `841031F4` selects the resource shape from `material+0`
+only. `84102750` reads `+2` only in the `+0 == 0` branch to index a dynamic
+anchor buffer; no retail common-particle material in the current catalog
+uses that branch with nonzero `+2`. It does not justify a secondary-shape
+selection warning or a guessed alternate mesh.
+
 This note is a ROM-backed disassembly report for the supported Stadium 2 US
 ROM (`1561c75d11cedf356a8ddb1a4a5f9d5d`).  The fragment-79 overlay is copied
 from ROM `0x36F890` to VRAM `0x84100000`; the instruction ranges below are

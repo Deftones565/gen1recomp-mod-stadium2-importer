@@ -59,8 +59,18 @@ local battleFxUnhook
 local battleFxBackgroundUnhook
 local battleFxMove=math.max(1,math.min(251,
   math.floor(tonumber(os.getenv("STADIUM2_VISUAL_MOVE_FX")) or 7)))
+-- Route mode: "sequence" (move animation + move bank + impact bank at the
+-- hit frame, the default), false (move bank only), true (impact bank only)
+-- or "variant" (route mode 1 of two-turn moves).
 local battleFx={active=false,frame=0,error=nil,
-  alternate=os.getenv("STADIUM2_VISUAL_FX_ALTERNATE")=="1"}
+  alternate=os.getenv("STADIUM2_VISUAL_FX_ALTERNATE")=="1" or "sequence"}
+local function routeLabel(long)
+  local mode=battleFx.alternate
+  if mode=="sequence" then return long and "sequence" or "SEQ" end
+  if mode=="variant" then return long and "variant" or "VAR" end
+  if mode==true then return long and "alternate" or "ALT" end
+  return long and "primary" or "PRI"
+end
 local tagData
 local tagFilePath
 local tagEditing = false
@@ -570,19 +580,56 @@ local function startBattleFx()
       end,
     })
   end
+  -- The source battler plays its own clip for this move. Testing must show
+  -- a missing clip, so there is no generic fallback, and the FX still plays.
+  local animationNote
+  if battleFxMove<=251 then
+    local actor=actorForSide(selectedSide)
+    local ok,reason=false,"no actor on this side"
+    if actor and actor.attack then ok,reason=actor:attack(battleFxMove,true) end
+    if not ok then
+      animationNote="animation skipped: "..tostring(reason)
+      warn("ROM_FX "..animationNote)
+    end
+  end
+  -- The hit-frame states (84116EB4/841170A0/84117948/84118138/841182E0) run
+  -- on the defender: they select context 254 (hit) and fire the impact bank.
+  -- The ROM starts that clip when the defender's state begins; the viewer
+  -- starts it with the impact, so its lead time is approximate.
+  local targetSide=selectedSide=="player" and "enemy" or "player"
+  battleFx.preview.onImpact=function()
+    local target=actorForSide(targetSide)
+    local renderer=target and target.renderer
+    local ok=renderer and renderer.setContext and renderer:setContext("hit",false)
+    if ok then
+      target.context="hit"
+      renderer.finished=false
+    else
+      local note=("hit animation skipped: species %s has no hit clip")
+        :format(tostring(target and target.dex))
+      warn("ROM_FX "..note)
+      showMessage(note)
+    end
+  end
   local effect, err=battleFx.preview:start(battleFxMove, selectedSide,
     battleFx.alternate, battleFx.sceneContext)
   battleFx.active=effect~=nil
   battleFx.frame=0
   if not effect then battleFx.error=tostring(err) end
-  showMessage(effect and ("Playing ROM FX #%03d (%s)"):format(battleFxMove,
-    battleFx.alternate and "alternate" or "primary")
-    or "move FX unavailable: "..tostring(err))
+  local impactNote=battleFx.preview.impactNote
+  if impactNote then warn("ROM_FX "..impactNote) end
+  local message=effect and ("Playing ROM FX #%03d (%s)"):format(battleFxMove,routeLabel(true))
+    or "move FX unavailable: "..tostring(err)
+  for _,note in ipairs({animationNote,impactNote}) do
+    if note then message=message.."\n"..note end
+  end
+  showMessage(message)
   return battleFx.active
 end
 
 local function cycleBattleFx(delta)
-  battleFxMove=((battleFxMove-1+(tonumber(delta) or 0))%251)+1
+  -- FX table entries 252..301 are the non-move battle effects.
+  battleFxMove=((battleFxMove-1+(tonumber(delta) or 0))%301)+1
   return startBattleFx()
 end
 
@@ -1082,13 +1129,18 @@ local function drawBattleFxButtons(g)
   g.setColor(.9,.93,1,1)
   g.printf("<",x,y+9,previousWidth,"center")
   g.printf(("FX %03d %s%s"):format(battleFxMove,
-    battleFx.alternate and "ALT" or "PRI",
+    routeLabel(false),
     battleFx.active and ("  %dF"):format(math.floor(battleFx.frame)) or ""),
     x+previousWidth,y+9,labelWidth,"center")
   g.printf(">",x+previousWidth+labelWidth,y+9,nextWidth,"center")
   if battleFx.preview and battleFx.active then
-    g.printf(("Drawn: %d   Diagnostics: %d"):format(
-      battleFx.preview.drawn or 0,#battleFx.preview.diagnostics),
+    local preview=battleFx.preview
+    local impact=""
+    if preview.pendingImpact then impact=("   Impact @%dF"):format(preview.pendingImpact.hit)
+    elseif preview.impactEffectId then impact="   Impact played"
+    elseif preview.impactNote then impact="   Impact skipped" end
+    g.printf(("Drawn: %d   Diagnostics: %d%s"):format(
+      preview.drawn or 0,#preview.diagnostics,impact),
       x,y+height+4,previousWidth+labelWidth+nextWidth,"right")
   end
   if battleFx.error then
@@ -1225,7 +1277,7 @@ local function drawText(g)
     g.print("Q/E animation   R recenter   SPACE pause", 24, 194)
     g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 212)
     g.print("0 all primitives   1-9 isolate   ,/. arena   B scene   C camera   V shader   S shot", 24, 230)
-    g.print("J/L move FX   K replay   O primary/alternate   N step FX (paused)   M stop",24,248)
+    g.print("J/L move FX   K replay   O route   N step (paused)   Y finish FX   M stop",24,248)
   end
   if debugPanel then
     local d = gasSnapshot()
@@ -1403,11 +1455,22 @@ function love.keypressed(key)
   elseif key == "l" then
     cycleBattleFx(1)
   elseif key == "o" then
-    battleFx.alternate=not battleFx.alternate
+    -- Sequence -> primary -> alternate -> variant (two-turn moves only).
+    local entry=battleFx.preview and battleFx.preview.catalog
+      and battleFx.preview.catalog.moves[battleFxMove]
+    if battleFx.alternate=="sequence" then battleFx.alternate=false
+    elseif battleFx.alternate==false then battleFx.alternate=true
+    elseif battleFx.alternate==true and entry and entry.variantDispatch then
+      battleFx.alternate="variant"
+    else battleFx.alternate="sequence" end
     startBattleFx()
   elseif key == "n" and paused and battleFx.active then
+    -- Keep the move animation on the same 30 Hz tick as the FX.
+    for _, actor in pairs(scene and scene.actors or {}) do actor:update(1/30) end
     battleFx.preview:step()
     battleFx.frame=battleFx.preview.frame
+  elseif key == "y" and battleFx.active then
+    if battleFx.preview:finish() then showMessage("ROM FX completion signaled") end
   elseif key == "m" then
     releaseBattleFx()
   elseif key == "b" then

@@ -76,7 +76,7 @@ local randomRuntime=Runtime.new({catalog={programs={[99]=randomProgram},
 assert(randomRuntime:trigger({moveId=61}))
 local randomParticle=randomRuntime:snapshot().particles[1]
 ok(randomParticle.rotation[1]~=0 and randomParticle.rotation[2]==0
-  and randomParticle.velocity[1]~=0,
+  and randomParticle.position[1]~=0 and randomParticle.velocity[1]==0,
   "default ROM random helpers evaluate decoded mode 0/1 vectors")
 ok(hostRngCalls==0,"battle RNG is isolated from battle FX random motion")
 local overrideRuntime=Runtime.new({catalog={programs={[99]=randomProgram},
@@ -86,7 +86,8 @@ local overrideRuntime=Runtime.new({catalog={programs={[99]=randomProgram},
   end}})
 assert(overrideRuntime:trigger({moveId=61}))
 local overrideParticle=overrideRuntime:snapshot().particles[1]
-ok(overrideParticle.rotation[1]==17 and overrideParticle.velocity[1]==19,
+ok(overrideParticle.rotation[1]==17 and overrideParticle.position[1]==19
+  and overrideParticle.velocity[1]==0,
   "explicit motion random resolver overrides the default ROM stream")
 local sentinelRandom=Runtime.new({randomOptions={seed=1}})
 local sentinel=sentinelRandom.motion.init({transform={rotationOffset={mode=0,

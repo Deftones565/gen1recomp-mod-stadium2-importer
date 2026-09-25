@@ -354,15 +354,15 @@ function Importer.battleFxResources(moveId)
   return BattleFxResources.resolve(battleFxResourceArchive,move.resources)
 end
 
-function Importer.battleFxShape(moveId,shapeId)
+function Importer.battleFxShape(moveId,shapeId,animationId)
   local resources,err=Importer.battleFxResources(moveId)
   if not resources then return nil,err end
   return BattleFxResources.shapeFromResolved(resources,
-    math.floor(tonumber(shapeId) or -1))
+    math.floor(tonumber(shapeId) or -1),animationId)
 end
 
-function Importer.battleFxShapeModel(moveId,shapeId)
-  local shape,err=Importer.battleFxShape(moveId,shapeId)
+function Importer.battleFxShapeModel(moveId,shapeId,animationId)
+  local shape,err=Importer.battleFxShape(moveId,shapeId,animationId)
   if not shape then return nil,err end
   return BattleFxResources.modelFromShape(shape,
     ("stadium2_move_%03d_shape_%03d"):format(moveId,shapeId))
@@ -392,8 +392,8 @@ function Importer.newBattleFxPlayer(options)
     return Importer.newRendererFromModel(model,{textureFilter="nearest",flipY=false})
   end
   if not playerOptions.loadRenderer then
-    playerOptions.loadRenderer=function(moveId,shapeId)
-      local model,modelError=Importer.battleFxShapeModel(moveId,shapeId)
+    playerOptions.loadRenderer=function(moveId,shapeId,animationId)
+      local model,modelError=Importer.battleFxShapeModel(moveId,shapeId,animationId)
       if not model then return nil,modelError end
       local renderer,rendererError=Importer.newRendererFromModel(model,{
         textureFilter="nearest",anisotropy=4,flipY=false,

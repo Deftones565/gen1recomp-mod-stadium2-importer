@@ -15,6 +15,7 @@ function Ribbon.new(id,context)
     scale=scale,radius=f(scale*40),minimum=f(scale*20),factor=1,
     active=true,vertices={},colors={{unpack(palette[1])},{unpack(palette[2])}}}
   local origin=context.lifecycleAnchor or {0,0,0}
+  state.anchor={origin[1],origin[2],origin[3]}
   for i=1,400 do state.vertices[i]={origin[1],origin[2],origin[3],state.radius} end
   return state
 end
@@ -22,7 +23,8 @@ local function sin(x)return f(math.sin(f(x)))end
 local function cos(x)return f(math.cos(f(x)))end
 function Ribbon.step(s,anchor)
   if not s.active then return -1 end
-  anchor=anchor or {0,0,0}
+  if anchor then s.anchor={anchor[1],anchor[2],anchor[3]} end
+  anchor=s.anchor
   s.counter=s.counter+1
   if s.counter>70 then s.active=false;return -1 end
   if s.counter>30 then

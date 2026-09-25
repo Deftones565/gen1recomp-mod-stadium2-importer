@@ -32,6 +32,44 @@ end
 
 local function fadd(a, b) return single(a + b) end
 local function fmul(a, b) return single(a * b) end
+local function signed16(value)
+  value=(value or 0)%65536
+  return value>=32768 and value-65536 or value
+end
+
+local function sampleNativeCurve(curve,age,originalAge)
+  if type(curve)~="table" or curve.unsupported
+      or type(curve.times)~="table" or type(curve.values)~="table"
+      or #curve.times==0 or #curve.times~=#curve.values then
+    return nil,"native curve keyframes could not be decoded"
+  end
+  age=age%256
+  local selectedAge=age
+  if curve.loop then
+    local period=number(curve.period)
+    if period<=0 then return nil,"native curve has an invalid loop period" end
+    selectedAge=age%period
+  end
+  local index=#curve.times
+  for i=1,#curve.times-1 do
+    if selectedAge>=curve.times[i] and selectedAge<curve.times[i+1] then
+      index=i
+      break
+    end
+  end
+  local value=number(curve.values[index])
+  if index<#curve.times then
+    local first,last=number(curve.times[index]),number(curve.times[index+1])
+    if first~=last then
+      local at=originalAge and age or selectedAge
+      local mixed=number(curve.values[index])+
+        (number(curve.values[index+1])-number(curve.values[index]))
+        *(at-first)/(last-first)
+      value=signed16(mixed<0 and math.ceil(mixed) or math.floor(mixed))
+    end
+  end
+  return value
+end
 
 local function copy(value, seen)
   if type(value) ~= "table" then return value end
@@ -59,6 +97,89 @@ local function addDiagnostic(state, code, detail, fields)
   }
 end
 
+local function hasFlag(state, mask)
+  return math.floor(number(state.particle.event and state.particle.event.flags)/mask)%2==1
+end
+
+-- Source +0x661 is live, not a multiplier baked into the raw +0x1c scalar.
+-- Flag 8 selects 8411E358's separate context table, never the move dispatch row.
+local function actorScale(state, options)
+  local special=hasFlag(state,8)
+  local field=special and "nativeContextScale" or "nativeSpawnScale"
+  local resolver=options[special and "resolveNativeContextScale" or "resolveNativeSpawnScale"]
+  local value=tonumber(state.particle[field])
+  if type(resolver)=="function" then
+    local ok,result=pcall(resolver,state.particle)
+    if ok then value=tonumber(result) end
+  end
+  if value~=nil then return single(value) end
+  addDiagnostic(state,"unsupported-native-constructor-scale",field,{
+    kind="particle",message=special and "native context scale (8411E358) is unavailable"
+      or "native source model/dispatch scale is unavailable"})
+  return 1
+end
+
+local function visualScalar(state, options, initial)
+  local factor=1
+  if state.nativeCommon and not hasFlag(state,0x80)
+      and (initial or not hasFlag(state,0x40)) then
+    factor=actorScale(state,options)
+  end
+  local value=fmul(state.nativeScalar or state.scale[1],factor)
+  state.scale={value,value,value}
+end
+
+local function updateAnchor(state,options,initial)
+  if not state.nativeCommon or type(options.resolveNativeAnchor)~="function" then return end
+  if not initial and not hasFlag(state,0x20000) and not hasFlag(state,1) then return end
+  local ok,result=pcall(options.resolveNativeAnchor,state,initial)
+  if not ok or type(result)~="table" or not result.anchor then
+    addDiagnostic(state,"unresolved-common-anchor","resolver",{message=tostring(result)})
+    return
+  end
+  state.nativeAnchor=vector(result.anchor)
+  for _,d in ipairs(result.diagnostics or {}) do addDiagnostic(state,d.code,d.message,d) end
+  if result.clearCommonOffset then
+    for axis=1,3 do
+      local offset=state.nativeSpawnOffset[axis]
+      state.position[axis]=fadd(state.position[axis],-offset)
+      if state.nativeMotionBase then state.nativeMotionBase[axis]=fadd(state.nativeMotionBase[axis],-offset) end
+    end
+    state.nativeSpawnOffset={0,0,0}
+  end
+end
+
+-- 84105F10 -> 811001A0: rotate about the source yaw, then scale and add.
+local function spawnVector(state, value, options)
+  local yaw=tonumber(state.particle.nativeSourceYaw)
+  if type(options.resolveNativeYaw)=="function" then
+    local ok,result=pcall(options.resolveNativeYaw,state.particle)
+    if ok then yaw=tonumber(result) end
+  end
+  local tables=options.trigTables
+  local index=yaw and math.floor((yaw%65536)/16)+1
+  local function lookup(values)
+    if not index then return nil end
+    if type(values)=="function" then
+      local ok,result=pcall(values,index)
+      return ok and tonumber(result) or nil
+    end
+    return type(values)=="table" and tonumber(values[index]) or nil
+  end
+  local sin=lookup(tables and tables.tableA)
+  local cos=lookup(tables and tables.tableB)
+  local rotated=vector(value)
+  if sin and cos then
+    rotated={fadd(fmul(value[1],cos),fmul(value[3],sin)),value[2],
+      fadd(fmul(-value[1],sin),fmul(value[3],cos))}
+  elseif value[1]~=0 or value[3]~=0 then
+    addDiagnostic(state,"unresolved-native-spawn-yaw","84105F10",{
+      message="native spawn offset requires source yaw and ROM trig tables"})
+  end
+  local factor=state.nativeConstructorScale or 1
+  return {fmul(rotated[1],factor),fmul(rotated[2],factor),fmul(rotated[3],factor)}
+end
+
 -- The ROM reader establishes the record layout in func_8410679C,
 -- func_84106AC4, and func_84106F34.  The scalar helper at
 -- 0x84105E9C..0x84105F0C calls external variants 0/1 and returns a signed
@@ -69,6 +190,8 @@ local function randomContext(state, rng, channel, component, bound)
   local context = {
     effectId = state.effectId, programId = state.programId,
     address = state.address, age = state.age, generation = state.generation,
+    particleIndex = state.particle and state.particle.particleIndex,
+    schedulerIndex = state.particle and state.particle.schedulerIndex,
     channel = channel,
     component = component, bound = bound,
     normalizedBound = bound == -1 and 0x10000 or bound,
@@ -112,7 +235,13 @@ local function randomVector(spec, state, rng, channel)
     return vector(out), true
   end
   local resolver = state._options and state._options.randomVector
-  if mode == 2 or mode == 3 or mode == 5 then
+  if mode == 2 or mode == 3 or mode == 4 or mode == 5 then
+    if mode==4 and channel~="rotation-offset" then
+      addDiagnostic(state,"unsupported-random-vector-mode",mode,{
+        message="native mode 4 is proven only for angle addition",
+        kind="random-vector"})
+      return {0,0,0},false
+    end
     if type(resolver) == "function" then
       local context = randomContext(state, rng, channel, nil, nil)
       local ok, value = pcall(resolver, mode, copy(spec.values or {}), context)
@@ -124,7 +253,8 @@ local function randomVector(spec, state, rng, channel)
       return {0, 0, 0}, false
     end
     addDiagnostic(state, "unsupported-random-vector-mode", mode, {
-      message = "fragment-79 angle-table arithmetic requires an explicit resolver",
+      message = mode==4 and "native shared angle vector requires a resolver"
+        or "fragment-79 angle-table arithmetic requires an explicit resolver",
       kind = "random-vector",
     })
     return {0, 0, 0}, false
@@ -280,12 +410,50 @@ function Motion.init(particle, options)
     state.scale={state.nativeScalar,state.nativeScalar,state.nativeScalar}
   end
   state.lifetime = initialLifetime(particle, scaleEntry)
+  -- 84102338: material+4 is an exact byte-age termination comparison.
+  -- Descriptor bit 1 selects a separate hide transition, not termination.
+  local endAge=particle.material and tonumber(particle.material.nativeEndAge)
+  local flags=tonumber(particle.event and particle.event.flags) or 0
+  local mode=particle.event and particle.event.mode
+  state.nativeCommon=mode==0 or mode==1
+  state.nativeScreen=mode==7
+  if state.nativeScreen then
+    state.nativeConstructorScale=1
+    if particle.nativeGeometry then
+      state.position=hasFlag(state,1) and {0,0,0}
+        or {state.position[1],state.position[2],0}
+    end
+  end
+  if state.nativeCommon then
+    state.nativeConstructorScale=hasFlag(state,0x80) and 1 or actorScale(state,options)
+    visualScalar(state,options,true)
+    if particle.nativeGeometry then
+      state.position=hasFlag(state,1) and {0,0,0} or spawnVector(state,state.position,options)
+    end
+    local yaw=tonumber(particle.nativeSourceYaw)
+    if type(options.resolveNativeYaw)=="function" then
+      local ok,value=pcall(options.resolveNativeYaw,particle)
+      if ok then yaw=tonumber(value) end
+    end
+    if yaw then state.rotation[2]=signed16(state.rotation[2]+yaw) end
+  end
+  if endAge and endAge>0 and endAge<=255 and math.floor(flags/2)%2==0 then
+    state.nativeMaterialEndAge=endAge
+  elseif endAge and endAge>=0 and endAge<=255 and math.floor(flags/2)%2==1 then
+    state.nativeHideAge=endAge
+  end
   state.authoredLifetime = scaleEntry and tonumber(scaleEntry.lifetime) or nil
-  if state.lifetime == nil then
-    addDiagnostic(state, "unsupported-lifetime", "lifetime is unresolved", {
-      kind = "particle",
-      message = "authored lifetime is unresolved; native age termination remains active",
-    })
+  if state.lifetime == nil and state.nativeMaterialEndAge == nil then
+    if state.nativeYTermination.active
+        and particle.nativeFinalY==nil
+        and type(options.resolveNativeFinalY)~="function" then
+      addDiagnostic(state,"unsupported-native-y-termination","+0x24",{
+        kind="particle",message="special native Y termination needs the assembled final position"})
+    elseif not state.nativeAgeEndpoint then
+      addDiagnostic(state, "unsupported-lifetime", "lifetime is unresolved", {
+        kind = "particle",message = "particle has no resolved termination rule",
+      })
+    end
   end
 
   local transform = particle.transform
@@ -294,21 +462,89 @@ function Motion.init(particle, options)
     local rotationOffset = randomVector(transform.rotationOffset, state, rng,
       "rotation-offset")
     state.rotation = add(state.rotation, rotationOffset)
+    if transform.rotationOffset and transform.rotationOffset.mode==4 then
+      for axis=1,3 do state.rotation[axis]=signed16(state.rotation[axis]) end
+    end
     local directional = randomVector(transform.directionalVelocity, state, rng,
       "directional-velocity")
-    if not particle.nativeGeometry and not transform.nativeGeometry then
+    if not particle.nativeGeometry and not transform.nativeGeometry
+        and not (particle.event and particle.event.descriptorKind=="particle") then
       state.velocity = add(state.velocity, directional)
     else
-      -- func_84106C78 adds the directional sample to the initial offset.
+      -- 84106C78 adds this sample to object +0x2c even when the emitter's
+      -- optional geometry block is NULL. It is never a native velocity.
+      if state.nativeCommon or state.nativeScreen then directional=spawnVector(state,directional,options) end
       state.position = {fadd(state.position[1],directional[1]),
         fadd(state.position[2],directional[2]),fadd(state.position[3],directional[3])}
     end
     state.frameRule = copy(transform.frameRule)
     state._scaleController = transform.scaleController
+    state._nativeScaleCurve = copy(transform.nativeScaleCurve)
+    if state._nativeScaleCurve and not state._nativeScaleCurve.unsupported then
+      local bound=number(state._nativeScaleCurve.percentRandom)
+      state.nativeScaleCurvePercent=1000
+      if bound~=0 then
+        local sample,valid=randomScalar(state,1,bound,rng,
+          "native-scale-curve-percent",nil)
+        if valid then
+          state.nativeScaleCurvePercent=signed16(sample+
+            number(state._nativeScaleCurve.percentBase))%65536
+        else
+          state.nativeScaleCurvePercent=nil
+        end
+      end
+    end
     state._motionController = transform.motionController
     state._motionAxes = transform.motionAxes
     state._nativeMotion = copy(particle.nativeMotion or transform.nativeMotion)
+    state._rotationTracks = copy(transform.rotationTracks)
+    if state._rotationTracks then
+      state._rotationTrackReady={}
+      for axis,track in pairs(state._rotationTracks) do
+        -- Native byte age advances before 84101888. A start-age-zero row
+        -- never enters its age-equality setup branch; the existing object
+        -- increment (zero for a new common particle) remains authoritative.
+        if number(track.startAge)==0 then state._rotationTrackReady[axis]=true end
+      end
+    end
+    state._positionTracks = copy(transform.positionTracks)
+    state.nativeSpawnOffset=vector(state.position)
+    if state._positionTracks then
+      state.nativePositionTrackValue={0,0,0}
+      local spawnScale=tonumber(particle.nativeSpawnScale)
+      if spawnScale==nil and type(options.resolveNativeSpawnScale)=="function" then
+        local ok,value=pcall(options.resolveNativeSpawnScale,copy(particle))
+        if ok then spawnScale=tonumber(value) end
+      end
+      if state.nativeCommon or state.nativeScreen then spawnScale=state.nativeConstructorScale end
+      for axis,track in pairs(state._positionTracks) do
+        if track.initial~=nil then
+          state.nativePositionTrackValue[axis]=number(track.initial)
+        elseif track.address and spawnScale~=nil and track.spawnRandom~=nil then
+          -- 841065E0: +6 plus the signed centered sample from +0xC,
+          -- multiplied by the model's +0x661 byte scaled by .01f.
+          local sample,valid=randomScalar(state,1,track.spawnRandom,rng,
+            "position-track-spawn",axis)
+          if valid then
+            state.nativePositionTrackValue[axis]=fmul(number(track.target)+sample,
+              spawnScale)
+          end
+        elseif track.address then
+          addDiagnostic(state,"unresolved-position-track-initial",track.address,{
+            kind="motion",message="native position track needs the model's spawn scale"})
+        end
+      end
+      state.position={fadd(state.position[1],state.nativePositionTrackValue[1]),
+        fadd(state.position[2],state.nativePositionTrackValue[2]),
+        fadd(state.position[3],state.nativePositionTrackValue[3])}
+    end
     applyFrameRule(state, state.frameRule, options)
+    if state.frameRule then
+      -- 84106AF8 sets object flag 0x800 and +0x81 to the initializer's
+      -- selected byte. 841054D4 consumes this countdown before age advances.
+      state.nativeHold=true
+      state.nativeHoldCountdown=math.floor(number(state.frame))%256
+    end
   end
 
   if particle.nativeMotion ~= nil and state._nativeMotion == nil then
@@ -316,6 +552,19 @@ function Motion.init(particle, options)
   end
   local nativeSpeed = state._nativeMotion and state._nativeMotion.direction
     and state._nativeMotion.direction.speed
+  local nativeCurve = state._nativeMotion and state._nativeMotion.direction
+    and state._nativeMotion.direction.curve
+  if type(nativeCurve)=="table" and not nativeCurve.unsupported then
+    local bound=number(nativeCurve.percentRandom)
+    state.nativeMotionCurvePercent=100
+    if bound~=0 then
+      local sample,valid=randomScalar(state,0,bound,options.rng,
+        "native-motion-curve-percent",nil)
+      if valid then
+        state.nativeMotionCurvePercent=signed16(sample+number(nativeCurve.percentBase))
+      end
+    end
+  end
   if type(nativeSpeed) == "table" and tonumber(nativeSpeed.random) ~= nil then
     state._nativeMotionRandomBound = number(nativeSpeed.random)
   end
@@ -334,6 +583,17 @@ function Motion.init(particle, options)
     state.nativeMotionSpeed=fadd(state.nativeMotionSpeed,extra)
   end
   state.nativeMotionOffset = {0, 0, 0}
+  if state.nativeScreen then
+    -- 84107784/90 replace +44/+48 with the screen center, including any
+    -- position-track initialization; Z is retained in native simulation.
+    local tracks=state.nativePositionTrackValue or {0,0,0}
+    state.position[1]=fadd(state.position[1]-tracks[1],160)
+    state.position[2]=fadd(state.position[2]-tracks[2],120)
+    if state.nativePositionTrackValue then
+      state.nativePositionTrackValue[1]=160
+      state.nativePositionTrackValue[2]=120
+    end
+  end
   state.nativeMotionBase = vector(state.position)
   local vertical=state._nativeMotion and state._nativeMotion.verticalRamp
   if vertical then
@@ -351,6 +611,8 @@ function Motion.init(particle, options)
   if particle.initialScale then state.scale = vector(particle.initialScale, state.scale) end
   state._rng = options.rng or particle.rng
   state._options = state._options or copy(options)
+  state.nativeSpawnOffset=state.nativeSpawnOffset or vector(state.position)
+  updateAnchor(state,options,true)
   return state
 end
 
@@ -368,12 +630,18 @@ local function tick(state, delta, options)
     delta = 0
   end
   if not out.alive or delta == 0 then return out end
+  updateAnchor(out,options,false)
 
   -- 0x841054D4 runs before 0x841029DC in the ROM.  Controllers therefore
   -- observe the post-increment age.  Native age is an unsigned byte; the
   -- runtime advances in whole 30 Hz ticks, while synthetic states retain
   -- their ordinary numeric age semantics.
-  if out.nativeAgeEndpoint and out.lifetime == nil then
+  if out.nativeHold then
+    if out.nativeHoldCountdown>0 then
+      out.nativeHoldCountdown=out.nativeHoldCountdown-1
+    end
+    if out.nativeHoldCountdown==0 then out.nativeHold=false end
+  elseif out.nativeAgeEndpoint and out.lifetime == nil then
     out.age = (out.age + delta) % 256
   else
     out.age = out.age + delta
@@ -381,8 +649,7 @@ local function tick(state, delta, options)
 
   -- 0x84101DF8..0x84101EB0: +6 is the START age of the size ramp,
   -- not a lifetime. Each native tick approaches +2 by signed +4 * .001f.
-  -- Keep the persistent unscaled scalar (+0x1c); battle placement performs
-  -- the final source-model/world conversion at the renderer boundary.
+  -- Keep the persistent unscaled scalar (+0x1c) separate from visual +0x18.
   local ramp=out.nativeScaleUpdate
   if ramp and delta==1 and ramp.step~=0 and out.age>=ramp.startAge then
     local current=out.nativeScalar
@@ -396,16 +663,102 @@ local function tick(state, delta, options)
     addDiagnostic(out,"unsupported-scale-step",delta,{
       kind="motion",message="native scale controller requires individual 30 Hz ticks"})
   end
+  if ramp and delta==1 and ramp.step~=0 then visualScalar(out,options,false) end
+
+  -- 84101C00 runs after the geometry size ramp. Its own ROM keyframes
+  -- replace object +0x1c, scaled by the constructor's +0x62 percentage.
+  if out._nativeScaleCurve and delta==1 then
+    local value,err=sampleNativeCurve(out._nativeScaleCurve,out.age,false)
+    if value==nil then
+      addDiagnostic(out,"unsupported-native-scale-curve",
+        out._nativeScaleCurve.address,{kind="motion",message=err})
+    elseif out.nativeScaleCurvePercent==nil then
+      addDiagnostic(out,"unsupported-native-scale-curve-percent",
+        out._nativeScaleCurve.address,{kind="motion",
+          message="native scale percentage sample is unresolved"})
+    else
+      local factor=fmul(fmul(out.nativeScaleCurvePercent%65536,SCALE_UNIT),SCALE_UNIT)
+      out.nativeScalar=fmul(value,factor)
+      out.scale={out.nativeScalar,out.nativeScalar,out.nativeScalar}
+      visualScalar(out,options,false)
+    end
+  end
 
   local transform = out.particle and out.particle.transform
   transform = type(transform) == "table" and transform or {}
+  -- func_84101888 and func_84101A08 update authored angle and float
+  -- tracks after the native age increment. Position tracks feed the base
+  -- position; the separate native direction offset is assembled afterward.
+  if delta==1 then
+    for axis=1,3 do
+      local angle=out._rotationTracks and out._rotationTracks[axis]
+      if angle then
+        local flags=number(angle.flags)
+        local age=out.age%256
+        if number(angle.endAge)==0 or age<number(angle.endAge) then
+          local start=number(angle.startAge)
+          if age==start then
+            local bound=number(angle.random)
+            if bound==0 then
+              out.angularVelocity[axis]=signed16(angle.step)
+              out._rotationTrackReady[axis]=true
+            else
+              -- 841018CC..8410195C: the high flag byte chooses one of
+              -- 81100120, 81100144 or 81100168 for the start increment.
+              local mode=math.floor(flags/256)%256
+              local variant=mode==1 and 0 or 1
+              local sample,valid=randomScalar(out,variant,bound,out._rng,
+                "rotation-track",axis)
+              if valid then
+                local base=number(angle.step)
+                if mode==2 and sample<0 then base=-base end
+                out.angularVelocity[axis]=signed16(sample+base)
+                out._rotationTrackReady[axis]=true
+              end
+            end
+          end
+          if age>=start and out._rotationTrackReady[axis] then
+            local current=signed16(out.rotation[axis])
+            local increment=signed16(out.angularVelocity[axis])
+            local target=signed16(angle.target)
+            if flags~=0 then current=current+increment
+            elseif current<target then current=math.min(target,current+increment)
+            elseif target<current then current=math.max(target,current-increment) end
+            out.rotation[axis]=signed16(current)
+          elseif age>start and not out._rotationTrackReady[axis] then
+            addDiagnostic(out,"unsupported-rotation-track-start",angle.address or axis,{
+              kind="motion",message="native angle track has no resolved start increment"})
+          end
+        end
+      end
+      local position=out._positionTracks and out._positionTracks[axis]
+      if position then
+        local age=out.age%256
+        if (number(position.endAge)==0 or age<number(position.endAge))
+            and age>=number(position.startAge) then
+          local current=out.nativePositionTrackValue[axis]
+          local target=number(position.random)
+          local step=number(position.step)
+          local nextValue=current
+          if current<target then nextValue=math.min(target,fadd(current,step))
+          elseif target<current then nextValue=math.max(target,fadd(current,-step)) end
+          out.nativePositionTrackValue[axis]=nextValue
+          out.nativeMotionBase[axis]=fadd(out.nativeMotionBase[axis],nextValue-current)
+          out.position[axis]=fadd(out.position[axis],nextValue-current)
+        end
+      end
+    end
+  end
   local motionController
   if not out._nativeMotion then
     motionController=resolveController(out._motionController or transform.motionController,
       "motion",out,options)
   end
-  local axes = resolveController(
-    out._motionAxes or transform.motionAxes, "motion-axes", out, options)
+  local axes
+  if not out._positionTracks then
+    axes=resolveController(out._motionAxes or transform.motionAxes,
+      "motion-axes",out,options)
+  end
   local acceleration = vector(out.acceleration)
   local authoredAcceleration = controllerVector(motionController,
     {"acceleration", "velocityDelta", "delta"})
@@ -468,6 +821,21 @@ local function tick(state, delta, options)
     end
     return value
   end
+  local function nativeCurveSpeed(curve)
+    local value,err=sampleNativeCurve(curve,out.age,true)
+    if value==nil then
+      addDiagnostic(out,"unsupported-native-motion-curve",curve.address,{
+        kind="motion",message=err})
+      return 0
+    end
+    local percent=out.nativeMotionCurvePercent
+    if percent==nil then
+      addDiagnostic(out,"unsupported-native-motion-curve-percent",curve.address,{
+        kind="motion",message="native curve percentage sample is unresolved"})
+      return 0
+    end
+    return fmul(fmul(value,SPEED_UNIT),fmul(percent%65536,SPEED_UNIT))
+  end
   local function applyNativeMotion()
     local native = out._nativeMotion
     if type(native) ~= "table" then return end
@@ -495,13 +863,49 @@ local function tick(state, delta, options)
       end
     end
     local spec = type(direction) == "table" and direction.speed
-    if type(direction) == "table" and type(spec) == "table" then
+    local curve=type(direction)=="table" and direction.curve
+    if type(direction) == "table" and (type(spec) == "table"
+        or type(curve)=="table") then
       local mode = tonumber(direction.mode)
-      local speed = nativeSpeed(spec)
+      local speed = type(spec)=="table" and nativeSpeed(spec)
+        or nativeCurveSpeed(curve)
       out.nativeMotionSpeed = speed
       local motion
       if mode == 4 or mode == 5 then
         motion = {0, fmul(speed, mode == 4 and 1 or -1), 0}
+      elseif mode == 0 or mode == 1 or mode == 2 or mode == 3 or mode == 6 then
+        -- 841013F4 -> 811001A0 rotates (0,0,speed) about Y only.
+        -- Modes 0..3 use the live source object's yaw (+0x20), whereas
+        -- mode 6 uses the particle's own yaw (+0x6c), ignoring pitch/roll.
+        local yaw
+        if mode == 6 then
+          local angles = direction.angles or native.angles or out.rotation
+          yaw = number(angles and (angles[2] or angles.y))
+        else
+          yaw = tonumber(out.particle and out.particle.nativeSourceYaw)
+          if type(options.resolveNativeYaw) == "function" then
+            local ok, value = pcall(options.resolveNativeYaw, out.particle)
+            if ok then yaw = tonumber(value) end
+          end
+          if yaw then yaw = yaw + ({[0]=0, 0x8000, 0x4000, 0xC000})[mode] end
+        end
+        if yaw == nil then
+          addDiagnostic(out, "unresolved-native-motion-yaw", mode, {
+            message = "native direction requires live source-object yaw",
+          })
+          motion = {0, 0, 0}
+        else
+          local ta, tb = trig(options.trigTables, "TA", yaw / 16),
+            trig(options.trigTables, "TB", yaw / 16)
+          if ta and tb then
+            motion = {fmul(speed, ta), 0, fmul(speed, tb)}
+          else
+            addDiagnostic(out, "unsupported-native-motion-trig", mode, {
+              message = "native direction mode requires TA/TB tables",
+            })
+            motion = {0, 0, 0}
+          end
+        end
       elseif mode == 7 or mode == 8 then
         local angles = direction.angles or native.angles or out.rotation or {0, 0, 0}
         local x, y = number(angles[1] or angles.x) / 16,
@@ -524,6 +928,11 @@ local function tick(state, delta, options)
         })
         motion = {0, 0, 0}
       end
+      -- Descriptor 0x100 maps to object 0x400: suppress live movement scale.
+      if out.nativeCommon and not hasFlag(out,0x100) then
+        local factor=actorScale(out,options)
+        for axis=1,3 do motion[axis]=fmul(motion[axis],factor) end
+      end
       local prior = out.nativeMotionOffset or {0, 0, 0}
       local next = mode == 8 and motion or {
         fadd(prior[1], motion[1]), fadd(prior[2], motion[2]),
@@ -535,15 +944,10 @@ local function tick(state, delta, options)
       out.position = {fadd(base[1], next[1]), fadd(base[2], next[2]),
         fadd(base[3], next[3])}
     end
-    if type(spec) ~= "table" then
+    if type(spec) ~= "table" and type(curve) ~= "table" then
       local base=out.nativeMotionBase or out.position
       applyVertical(out.nativeMotionOffset)
       out.position[2]=fadd(base[2],out.nativeMotionOffset[2])
-    end
-    if native.curve ~= nil or (type(direction) == "table" and direction.curve ~= nil) then
-      addDiagnostic(out, "unsupported-native-motion-curve", native.curve, {
-        kind = "motion", message = "native curve controller requires an explicit resolver",
-      })
     end
     if native.verticalController ~= nil and not native.verticalRamp then
       addDiagnostic(out, "unsupported-native-motion-vertical-controller",
@@ -575,9 +979,12 @@ local function tick(state, delta, options)
       })
     end
   elseif out.velocity[1] ~= 0 or out.velocity[2] ~= 0 or out.velocity[3] ~= 0
-      or out.angularVelocity[1] ~= 0 or out.angularVelocity[2] ~= 0
-      or out.angularVelocity[3] ~= 0 or motionController or axes
-      or out._scaleController or transform.scaleController then
+      or (out.angularVelocity[1] ~= 0 and not (out._rotationTracks and out._rotationTracks[1]))
+      or (out.angularVelocity[2] ~= 0 and not (out._rotationTracks and out._rotationTracks[2]))
+      or (out.angularVelocity[3] ~= 0 and not (out._rotationTracks and out._rotationTracks[3]))
+      or motionController or axes
+      or ((out._scaleController or transform.scaleController)
+        and not out._nativeScaleCurve) then
     addDiagnostic(out, "unsupported-motion-integration", "native-order", {
       kind = "motion",
       message = "native motion integration order requires disassembly evidence",
@@ -585,6 +992,27 @@ local function tick(state, delta, options)
   end
 
   applyNativeMotion()
+
+  if out.nativeYTermination and out.nativeYTermination.active then
+    local finalY=tonumber(out.particle and out.particle.nativeFinalY)
+    if type(options.resolveNativeFinalY)=="function" then
+      local ok,value=pcall(options.resolveNativeFinalY,copy(out))
+      if ok then finalY=tonumber(value) end
+    end
+    if finalY~=nil then
+      out.nativeFinalY=finalY
+      out.nativeYTermination.status="resolved"
+      if finalY<=0 then out.alive=false end
+    else
+      addDiagnostic(out,"unsupported-native-y-termination","+0x24",{
+        kind="particle",message="special native Y termination needs the assembled final position"})
+    end
+  end
+
+  if out.lifetime==nil and out.nativeMaterialEndAge and out.age==out.nativeMaterialEndAge then
+    out.alive=false
+  end
+  if out.nativeHideAge and out.age==out.nativeHideAge then out.nativeHidden=true end
 
   -- 0x8410009C observes age == 0xff after the category update.  It is an
   -- exact byte equality, not a >= comparison.  The unresolved
@@ -613,6 +1041,7 @@ function Motion.snapshot(state)
   local out = copy(state)
   out._rng, out._options, out._diagnosticKeys = nil, nil, nil
   out._scaleController, out._motionController, out._motionAxes = nil, nil, nil
+  out._rotationTracks, out._positionTracks, out._rotationTrackReady = nil, nil, nil
   out.particle = nil
   return out
 end

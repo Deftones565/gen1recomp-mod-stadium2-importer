@@ -17,9 +17,9 @@ The diagnostic identifies remaining target-height/special-case approximations.
 
 | Control | Action |
 | --- | --- |
-| J / L | Select and play previous / next move (1–251) |
+| J / L | Select and play previous / next FX entry (1–251 moves, 252–301 non-move battle effects) |
 | K / FX button | Replay selected move |
-| O | Switch primary / alternate route and replay |
+| O | Cycle SEQ (default: the source plays its move animation, then move bank, then impact bank at the dispatch hit frame) / PRI / ALT / VAR (two-turn moves only) and replay. A missing species animation or hit frame is reported and the FX still plays. |
 | Tab | Select source actor for the next playback |
 | Space | Pause / resume the viewer |
 | N while paused | Advance FX by exactly one 30 Hz tick |

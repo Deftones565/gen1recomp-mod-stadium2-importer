@@ -86,7 +86,7 @@ wrapping.instances[wid].counter=32767
 wrapping:step(1)
 ok(wrapping:snapshot().instances[1].counter==-32768,"native signed counter wraps")
 
--- Family 12's update window and direct termination are distinct from its draw
+-- Family 12's emission window and direct termination are distinct from its draw
 -- gate: frame 2 draws, frame 50 is terminated before resolver work.
 local twelve = Lifecycle.new({callback = function() end})
 local tid = assert(twelve:spawn(12, {sourceSide = "player"}))
@@ -119,16 +119,17 @@ twenty:step(1)
 ok(not twenty:snapshot().instances[1].active,
   "family 20 direct termination at 181")
 
--- Missing callback diagnostics are frozen-schema and deduplicated, while the
+-- Missing ROM asset diagnostics are frozen-schema and deduplicated, while the
 -- instance and its evidence packet remain available.
 local unsupported = Lifecycle.new()
-assert(unsupported:spawn(7, {targetSide = "enemy"}))
+assert(unsupported:spawn(16, {targetSide = "enemy"}))
 unsupported:step(1)
 unsupported:step(1)
 unsupported:draw()
 unsupported:draw()
 local diagnostics = unsupported:diagnosticSnapshot()
-ok(#diagnostics == 3, "missing phase diagnostics are deduplicated")
+ok(#diagnostics == 1 and diagnostics[1].code == "unresolved-spike-cannon-model",
+  "missing Spike Cannon model diagnostic is deduplicated")
 for _, item in ipairs(diagnostics) do
   ok(item.code and item.severity and (item.effectId == nil
     or type(item.effectId) == "number")

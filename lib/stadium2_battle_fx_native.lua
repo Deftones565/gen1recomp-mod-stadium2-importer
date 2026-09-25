@@ -42,16 +42,26 @@ function Native.execute(program,context)
   local records=program and program.records or {}
   local condition=math.max(0,math.floor(tonumber(context.condition) or 0))
   local alternate=context.alternate==true
-  local scheduled,calls,visited={},{},{}
+  local scheduled,calls,visited,diagnostics={},{},{},{}
+  local function missing(record,code,message)
+    diagnostics[#diagnostics+1]={code=code,severity="warning",kind="program",
+      programId=program and program.id,address=record.address,
+      opcode=record.opcode,message=message}
+  end
+  -- D_84190178: 84107CEC (opcode 1) and 84107D24 (opcode 3) clear it,
+  -- 84108630 (opcode 17) sets it. nil means this program left it unchanged.
+  local markerSelect
   local index,steps=1,0
   while index<=#records and steps<4096 do
     steps=steps+1
     local record=records[index]
     visited[#visited+1]=index
     local opcode=record.opcode
+    if opcode==1 then markerSelect=0 end
     if opcode==0 then break
     elseif opcode==3 then
       condition=0
+      markerSelect=0
     elseif opcode==9 then
       index=seekBranch(records,index,condition)
     elseif opcode==11 then
@@ -59,13 +69,29 @@ function Native.execute(program,context)
     elseif opcode==12 then
       calls[#calls+1]={handler=record.argument,argument=record.argument2,
         argument2=record.argument3,address=record.address}
+      missing(record,"unsupported-native-program-call",
+        "opcode 12 callback is decoded but not executed")
     elseif opcode==16 then
       if type(context.conditionForMove)=="function" then
-        condition=math.max(0,math.floor(tonumber(context.conditionForMove(
-          context.moveId,context,record)) or 0))
+        local ok,value=pcall(context.conditionForMove,context.moveId,context,record,condition)
+        value=ok and tonumber(value) or nil
+        if value and value>=0 and value<math.huge and value==math.floor(value) then
+          condition=value
+        else
+          missing(record,"invalid-native-condition",
+            "opcode 16 resolver failed or returned no nonnegative integer; using current branch")
+        end
+      else
+        missing(record,"unsupported-native-condition",
+          "opcode 16 requires native species/battle-state branch selection (841083B0); using current branch")
       end
     elseif opcode==17 then
       alternate=true
+      markerSelect=1
+    elseif opcode~=1 and opcode~=2 and opcode~=10
+        and not record.emitter then
+      missing(record,"unsupported-native-opcode",
+        "native program command has no implemented handler or decoded emitter")
     end
     if record.emitter then
       local emitter = record.emitter
@@ -105,7 +131,8 @@ function Native.execute(program,context)
     index=index+1
   end
   return {programId=program and program.id,scheduled=scheduled,calls=calls,
-    condition=condition,alternate=alternate,visited=visited}
+    condition=condition,alternate=alternate,nativeMarkerSelect=markerSelect,
+    visited=visited,diagnostics=diagnostics}
 end
 
 function Native.births(execution,previousFrame,frame)

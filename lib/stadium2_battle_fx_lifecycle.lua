@@ -4,10 +4,16 @@
 local Lifecycle = {}
 local Ribbon = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_ribbon")
 local WaveGrid = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_wave_grid")
+local TerrainGrid = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_terrain_grid")
 local Radial = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_radial")
+local TriAttack = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_tri_attack")
+local TexturedStream = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_textured_stream")
+local Stochastic = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_stochastic")
 local Swift = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_swift")
 local Needle = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_needle")
+local Spike = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_spike_cannon")
 local Beam = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_beam")
+local FourStream = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_four_stream")
 local Random = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_random")
 
 local INIT_BASE = 0x84183700
@@ -63,7 +69,7 @@ local DATA = {
     "parameterized-model", nil, nil, 0x841621A4),
   [12] = row(12, 0x8415809C, 0x841580C8, 0x84158308,
     "complex-controller", 0x841A4D00, 50, 0x84164280,
-    {kind = "window", first = 4, last = 49}),
+    {kind = "window", first = 1, last = 3}),
   [13] = row(13, 0x84158E24, 0x84158E58, 0x84158EAC,
     "cadence-controller", 0x841A4D48, nil, 0x84169618,
     {kind = "modulo", modulo = 10}),
@@ -205,6 +211,144 @@ end
 function Manager:_phase(instance, phase, address)
   local signal=self.finishedEffects[instance.context.effectId] and 1 or self.nativeSignal
   if type(self.callback) ~= "function" then
+    if instance.familyId==3 or instance.familyId==15 then
+      if phase=="draw" then return 0 end
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        inputs=ok and value or nil
+      end
+      if not inputs or not (inputs.swiftOrigin or inputs.origin) or not inputs.endpointB then
+        self:_emit(diagnostic("unresolved-stochastic-anchor",nil,address,
+          "native stochastic controller requires live source and target anchors"),instance)
+        return nil
+      end
+      if not instance.stochastic then
+        local state,err=Stochastic.new(self.assets and self.assets.fragment79,
+          self.assets and self.assets.mainKernel,inputs,self.random,instance.familyId)
+        if not state then
+          self:_emit(diagnostic("stochastic-native-kernel-error",nil,address,err,"error"),instance)
+          return nil
+        end
+        instance.stochastic=state
+      elseif phase=="update" then
+        local result=Stochastic.step(instance.stochastic,inputs,signal)
+        if instance.stochastic.error then self:_emit(diagnostic("stochastic-native-kernel-error",nil,address,instance.stochastic.error,"error"),instance)end
+        return result
+      end
+      return 0
+    end
+    if instance.familyId==12 then
+      if phase=="draw" then return 0 end
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        if ok then inputs=value else
+          self:_emit(diagnostic("lifecycle-four-stream-input-error",nil,address,tostring(value),"error"),instance)
+          return nil
+        end
+      end
+      local function valid(v)
+        if type(v)~="table" then return false end
+        for i=1,3 do if type(v[i])~="number" or v[i]~=v[i] or math.abs(v[i])==math.huge then return false end end
+        return true
+      end
+      inputs=type(inputs)=="table" and inputs or nil
+      local origin=inputs and (inputs.sourceCenter or inputs.swiftOrigin or inputs.origin)
+      if not valid(origin) or (inputs.swiftFrameOrigin and not valid(inputs.swiftFrameOrigin)) then
+        self:_emit(diagnostic("unresolved-four-stream-endpoints",nil,address,"Sonic Boom requires the live source center"),instance)
+        return nil
+      end
+      local scale=instance.context.lifecycleScale or inputs.modelScale or 1
+      if type(scale)~="number" or scale~=scale or math.abs(scale)==math.huge then
+        self:_emit(diagnostic("invalid-four-stream-scale",nil,address,"Sonic Boom requires a finite model scale"),instance)
+        return nil
+      end
+      if not (self.assets and self.assets.sonicBoom) then
+        self:_emit(diagnostic("unresolved-four-stream-model",nil,0x84187AB8,"Sonic Boom ROM quad is unavailable"),instance)
+        return nil
+      end
+      if inputs.approximate or not inputs.sourceCenter then
+        self:_emit(diagnostic("approximate-four-stream-inputs",nil,address,"Sonic Boom uses fallback source profile data"),instance)
+      end
+      if not instance.fourStream then instance.fourStream=FourStream.new(inputs.swiftFrameOrigin,scale) end
+      if phase=="update" then return FourStream.step(instance.fourStream,origin,self.random) end
+      return 0
+    end
+    if instance.familyId==7 then
+      if phase=="draw" then return 0 end
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        if ok then inputs=value else
+          self:_emit(diagnostic("lifecycle-terrain-grid-input-error",nil,address,
+            tostring(value),"error"),instance)
+          return nil
+        end
+      end
+      if not instance.terrainGrid then
+        local origin=type(inputs)=="table" and (inputs.swiftOrigin or inputs.origin) or nil
+        if type(origin)~="table" or type(origin[1])~="number" or origin[1]~=origin[1] or math.abs(origin[1])==math.huge then
+          self:_emit(diagnostic("unresolved-terrain-grid-side",nil,address,
+            "terrain grid requires the live secondary-owner anchor X coordinate"),instance)
+          return nil
+        end
+        -- 84156BD4 compares the first float returned by
+        -- BattleAnim_EffectSecondaryOwnerAnchorPosition against 0.0.
+        local terrain,terrainError=TerrainGrid.new(origin[1]<0 and 1 or -1,
+          self.assets and self.assets.fragment79,inputs.terrainCamera)
+        if not terrain then
+          self:_emit(diagnostic("terrain-grid-native-kernel-error",nil,0x8415A9E4,
+            tostring(terrainError),"error"),instance)
+          return nil
+        end
+        instance.terrainGrid=terrain
+        if not inputs.terrainCamera then
+          self:_emit(diagnostic("unresolved-terrain-grid-camera",nil,0x84159D30,"Surf camera cover requires camera eye, focus and projection"),instance)
+        end
+        return 0
+      end
+      if not instance.terrainGrid then return nil end
+      local result,terrainError=TerrainGrid.step(instance.terrainGrid,signal,inputs and inputs.terrainCamera)
+      if result==nil and terrainError then
+        self:_emit(diagnostic("terrain-grid-native-kernel-error",nil,address,
+          tostring(terrainError),"error"),instance)
+      end
+      return result
+    end
+    if instance.familyId==16 then
+      if phase=="draw" then return 0 end
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        if ok then inputs=value else
+          self:_emit(diagnostic("lifecycle-spike-cannon-input-error",nil,address,tostring(value),"error"),instance)
+          return nil
+        end
+      end
+      if not (self.assets and self.assets.needle) then
+        self:_emit(diagnostic("unresolved-spike-cannon-model",nil,0x84188A70,
+          "Spike Cannon ROM needle model is unavailable"),instance)
+        return nil
+      end
+      if not instance.spike then
+        local state,err=Spike.new(inputs,self.random)
+        if not state then
+          self:_emit(diagnostic("unresolved-spike-cannon-endpoints",nil,address,err),instance)
+          return nil
+        end
+        instance.spike=state
+        if inputs.approximate then
+          self:_emit(diagnostic("approximate-spike-cannon-inputs",nil,address,
+            "Spike Cannon uses fallback anchors where imported ROM attachments are unavailable"),instance)
+        end
+      elseif phase=="update" then
+        local result,err=Spike.step(instance.spike,inputs)
+        if err then self:_emit(diagnostic("unresolved-spike-cannon-endpoints",nil,address,err),instance) end
+        return result
+      end
+      return 0
+    end
     if instance.familyId==17 then
       if phase=="draw" then return 0 end
       if not instance.needle then
@@ -237,6 +381,57 @@ function Manager:_phase(instance, phase, address)
           inputs.sourceSpecies,self.random,inputs.swiftFrameOrigin)
       end
       if phase=="update" then return Needle.step(instance.needle) end
+      return 0
+    end
+    if instance.familyId==13 or instance.familyId==8 then
+      if phase=="draw" then return 0 end
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        inputs=ok and value or nil
+      end
+      if not inputs or not inputs.direction or not (inputs.swiftOrigin or inputs.origin)
+        or (instance.familyId==8 and (not inputs.endpointA or not inputs.endpointB or not inputs.cameraEye)) then
+        self:_emit(diagnostic("unresolved-textured-stream-inputs",nil,address,"textured streams require live source and target anchors"),instance)
+        return nil
+      end
+      if not instance.texturedStream then
+        local state,err=TexturedStream.new(self.assets and self.assets.fragment79,inputs,self.random,instance.familyId)
+        if not state then
+          self:_emit(diagnostic("textured-stream-native-kernel-error",nil,address,err,"error"),instance)
+          return nil
+        end
+        instance.texturedStream=state
+      elseif phase=="update" then
+        local result=TexturedStream.step(instance.texturedStream,inputs,signal)
+        if instance.texturedStream.error then self:_emit(diagnostic("textured-stream-native-kernel-error",nil,address,instance.texturedStream.error,"error"),instance)end
+        return result
+      end
+      return 0
+    end
+    if instance.familyId==20 then
+      if phase=="draw" then return 0 end
+      local inputs=instance.context.lifecycleBeam
+      if self.resolveBeam then
+        local ok,value=pcall(self.resolveBeam,copy(instance.context),instance)
+        if ok then inputs=value else inputs=nil end
+      end
+      if not inputs or not inputs.terrainCamera or not inputs.direction or not (inputs.swiftOrigin or inputs.origin) then
+        self:_emit(diagnostic("unresolved-tri-attack-inputs",nil,address,"Tri Attack requires live endpoints and camera"),instance)
+        return nil
+      end
+      if not instance.triAttack then
+        local state,err=TriAttack.new(self.assets.fragment79,inputs,self.random)
+        if not state then
+          self:_emit(diagnostic("tri-attack-native-kernel-error",nil,address,err,"error"),instance)
+          return nil
+        end
+        instance.triAttack=state
+      elseif phase=="update" then
+        local result=TriAttack.step(instance.triAttack,inputs)
+        if instance.triAttack.error then self:_emit(diagnostic("tri-attack-native-kernel-error",nil,address,instance.triAttack.error,"error"),instance)end
+        return result
+      end
       return 0
     end
     if Radial.families[instance.familyId] then
@@ -383,9 +578,41 @@ function Manager:_phase(instance, phase, address)
     end
     if Ribbon.families[instance.familyId] then
       if phase == "init" then
-        instance.ribbon = Ribbon.new(instance.familyId, instance.context)
+        local context=copy(instance.context)
+        if self.resolveBeam then
+          local ok,inputs=pcall(self.resolveBeam,copy(context),instance)
+          if ok and inputs then
+            if context.lifecycleAnchor==nil then
+              if instance.familyId==23 then context.lifecycleAnchor=inputs.ribbonOwnerAnchor
+              else context.lifecycleAnchor=inputs.ribbonAnchor end
+            end
+            if context.lifecycleScale==nil then
+              if instance.familyId==23 then context.lifecycleScale=inputs.ribbonOwnerScale
+              else context.lifecycleScale=inputs.ribbonTargetScale end
+            end
+          elseif not ok then
+            self:_emit(diagnostic("lifecycle-anchor-error",nil,address,tostring(inputs),"error"),instance)
+          end
+        end
+        if context.lifecycleAnchor==nil then
+          self:_emit(diagnostic("approximate-ribbon-anchor",nil,address,
+            "native ribbon setup anchor is unavailable; using zero local origin"),instance)
+        end
+        if context.lifecycleScale==nil then
+          self:_emit(diagnostic("approximate-ribbon-scale",nil,address,
+            "native ribbon setup scale is unavailable; using scale 1"),instance)
+        end
+        instance.ribbon = Ribbon.new(instance.familyId, context)
       elseif phase == "update" then
         local anchor = instance.context.lifecycleAnchor
+        if anchor==nil and self.resolveBeam then
+          local ok,inputs=pcall(self.resolveBeam,copy(instance.context),instance)
+          if ok and inputs then anchor=inputs.ribbonUpdateAnchor end
+          if not ok or anchor==nil then
+            self:_emit(diagnostic("unresolved-ribbon-update-anchor",nil,address,
+              ok and "native ribbon update requires the current owner marker" or tostring(inputs)),instance)
+          end
+        end
         if self.resolveAnchor then
           local ok, value = pcall(self.resolveAnchor, instance.context, instance)
           if ok then anchor = value else
@@ -504,13 +731,6 @@ function Manager:_update(instance)
     return
   end
 
-  -- Family 12 has an exact update window (frames 4..49).  The first three
-  -- increments return through native code without the unresolved work.
-  if family.id == 12 and not gateEligible(family.phaseGate, count) then
-    instance.lastPhase = "update"
-    instance.lastResult = nil
-    return
-  end
   instance.lastPhase = "update"
   instance.lastResult = self:_phase(instance, "update", family.update)
   if instance.lastResult == -1 then instance.active = false end
@@ -583,7 +803,11 @@ function Manager:_draw(invokeResolver)
           context = copy(instance.context),
           counter = instance.counter,
           frame = instance.frame,
-          geometry = instance.needle and Needle.geometry(instance.needle,self.assets.needle) or instance.radial and Radial.geometry(instance.radial) or instance.swift and Swift.geometry(instance.swift) or instance.ribbon and Ribbon.geometry(instance.ribbon)
+          geometry = instance.spike and Spike.geometry(instance.spike,self.assets.needle)
+            or instance.stochastic and Stochastic.geometry(instance.stochastic)
+            or instance.fourStream and FourStream.geometry(instance.fourStream,self.assets.sonicBoom)
+            or instance.texturedStream and TexturedStream.geometry(instance.texturedStream) or instance.triAttack and TriAttack.geometry(instance.triAttack) or instance.needle and Needle.geometry(instance.needle,self.assets.needle) or instance.radial and Radial.geometry(instance.radial) or instance.swift and Swift.geometry(instance.swift) or instance.ribbon and Ribbon.geometry(instance.ribbon)
+            or instance.terrainGrid and TerrainGrid.geometry(instance.terrainGrid)
             or instance.waveGrid and WaveGrid.geometry(instance.waveGrid)
             or instance.beam and Beam.geometry(instance.beam) or nil,
         }
@@ -608,8 +832,12 @@ function Manager:snapshot()
         frame = instance.frame, born = instance.born,
         active = instance.active, gateEligible = instance.gateEligible,
         lastPhase = instance.lastPhase, lastResult = instance.lastResult,
-        nativeState = instance.waveGrid and WaveGrid.snapshot(instance.waveGrid)
-          or instance.beam and Beam.snapshot(instance.beam) or instance.swift and Swift.snapshot(instance.swift) or instance.radial and Radial.snapshot(instance.radial) or instance.needle and Needle.snapshot(instance.needle) or nil,
+        nativeState = instance.spike and Spike.snapshot(instance.spike)
+          or instance.stochastic and Stochastic.snapshot(instance.stochastic)
+          or instance.fourStream and FourStream.snapshot(instance.fourStream)
+          or instance.terrainGrid and TerrainGrid.snapshot(instance.terrainGrid)
+          or instance.waveGrid and WaveGrid.snapshot(instance.waveGrid)
+          or instance.texturedStream and TexturedStream.snapshot(instance.texturedStream) or instance.triAttack and TriAttack.snapshot(instance.triAttack) or instance.beam and Beam.snapshot(instance.beam) or instance.swift and Swift.snapshot(instance.swift) or instance.radial and Radial.snapshot(instance.radial) or instance.needle and Needle.snapshot(instance.needle) or nil,
       }
     end
   end

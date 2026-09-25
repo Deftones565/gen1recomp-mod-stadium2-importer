@@ -120,7 +120,8 @@ function Resources.shape(module,shapeId)
       displayListPointer=displayListPointer,
       displayListOffset=displayListOffset,
       textures=Phase5Geometry.textureSpecs(module,Resources.VRAM_BASE,materialOffset),
-      material=Phase5Geometry.materialSpec(module,Resources.VRAM_BASE,materialOffset,1),
+      -- 841031F4 calls 8100348C, which submits mode 0 (particle context).
+      material=Phase5Geometry.materialSpec(module,Resources.VRAM_BASE,materialOffset,0),
       controller=Phase5Geometry.controllerSpec(module,Resources.VRAM_BASE,materialOffset),
       state=Phase5Geometry.stateSpec(module,Resources.VRAM_BASE,materialOffset),
     }
@@ -151,13 +152,21 @@ function Resources.resolve(data,resourceIds)
   return result
 end
 
-function Resources.shapeFromResolved(resolved,shapeId)
+function Resources.shapeFromResolved(resolved,shapeId,animationId)
   local binding=resolved and resolved.shapes and resolved.shapes[shapeId]
   if not binding then return nil,"battle FX shape symbol was not loaded" end
   local shape,err=Resources.shape(binding.module,shapeId)
   if shape then
     shape.resourceId=binding.resourceId
     shape._module=binding.module
+    if animationId and animationId>0 then
+      local animation=resolved.shapes[animationId]
+      if not animation or animation.export.kind~=4 then
+        return nil,'native model animation export unavailable: '..tostring(animationId)
+      end
+      shape.animation=animation
+      shape.animationId=animationId
+    end
   end
   return shape,err
 end
@@ -232,9 +241,19 @@ function Resources.modelFromShape(shape,name)
   Fragment.setBase(previousBase)
   if not ok then return nil,tostring(model) end
   if not model then return nil,err end
+  -- Direct FRAGMENT models bypass DSM packing. Preserve the same callback
+  -- program/texture bindings that packed models receive in their S2HX data.
+  if shape.compiledLayout then
+    local Handlers=require('mods.STADIUM2_IMPORTER.lib.model_handlers')
+    model.handlers=Handlers.prepare({
+      records=Handlers.compile(model.fx,module,Resources.VRAM_BASE),
+      fragment=module,sourceBase=Resources.VRAM_BASE,
+      render={handlerTextures=model.handlerTextures or {}}})
+  end
   -- Fragment extraction is internally N64-style and zero based. Public live
   -- models use the same one-based texture/index contract as parsed DSM packs.
   for _,primitive in ipairs(model.prims or {}) do
+    primitive.additive=primitive.blend=='add'
     primitive.tex=primitive.tex and primitive.tex>=0
       and primitive.tex+1 or 0x10000
     for index,value in ipairs(primitive.idx or {}) do
@@ -253,7 +272,17 @@ function Resources.modelFromShape(shape,name)
   else
     model.rootScale=tonumber(model.rootScale) or 1
   end
-  model.staticPose=true
+  if shape.animation then
+    local animation,animationError=Fragment.decodeAnimation(shape.animation.module,
+      shape.animation.export.offset,model.bones,Resources.VRAM_BASE)
+    if not animation then return nil,animationError end
+    model.anims={animation}
+    model.battleFxAnimationId=shape.animationId
+  end
+  model.staticPose=not shape.animation
+  model.battleFxGeometryMode=shape.geometryMode
+  -- Kind-3 exports are drawn through the model system, not 84102B3C.
+  model.battleFxCompiledLayout=shape.compiledLayout==true
   return model
 end
 

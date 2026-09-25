@@ -109,3 +109,131 @@ This completes one more lifecycle family: eight previously missing families
 remain (3, 7, 8, 12, 13, 15, 16, 20). Companion common particles can still report
 unsupported color-controller/lifetime diagnostics. Host lighting and floating
 point transforms do not constitute pixel-identical native rendering.
+
+## Sonic Boom and Surf corrections
+
+The initial family-12 reconstruction used an unrelated strip builder and
+continuous four-stream emission. US 841580C8 instead emits on ticks 1, 2, 3,
+updates the pool from tick 2, and terminates at tick 50. The replacement has
+three 40-tick projectiles, fifteen history nodes each, model scale times .75,
+sixteen RNG draws per emission, native return acceleration and Y/Z attraction,
+the ROM quad at 84187A78, and texture export 37. The geometry shares the
+verified needle ribbon builder with explicit Sonic Boom pitch, scale and alpha.
+Source centers are resolved separately from bone attachment endpoints.
+
+Surf now receives the cached fragment image and preserves the native update
+return (including termination). Surface positions wrap to signed Vtx shorts;
+the previous tick's alpha is captured before the native alpha writer runs.
+Geometry is captured once per 30 Hz tick, making redraws side-effect free.
+Placement is arena-wide instead of translated to the attacking actor.
+
+The previously missing camera cover is also executed from 8415ADE0, with live
+camera eye/focus/projection mapped to the native camera contract. Fixed-point
+quad scaling and the primitive-only blue translucent material are preserved.
+The cover's unused texture uploads are omitted because neither combiner cycle
+consumes them. Missing camera data produces an explicit diagnostic; it does not
+prevent the independently valid surface from rendering. Math helper hooks
+implement float32 normalize/cross/scale and host sine/cosine; the unused height
+query slope-angle output is stubbed, but its height calculation is native.
+
+ROM tests compare Sonic Boom's full pool state, RNG, strip vertices/colors and
+head transforms on both sides at two scales. Surf tests independently execute
+the native camera math and draw, comparing all 256 surface vertices, UVs,
+delayed alpha, camera-cover visibility/positions, finish signal and expiry.
+Both move IDs (49 and 57) pass the actual viewer wrapper with both sides,
+texture ownership, persistent mesh reuse and disposal. Full worker checks pass.
+Host floating-point trig/transform differences mean pixel-identical rendering
+is not claimed. Six previously missing families remain: 3, 8, 13, 15, 16, 20.
+
+## Tri Attack (family 20)
+
+The next family uses 84158768 / Radial20 mode 5, not the existing mode-2
+radial ribbons. Its isolated persistent kernel executes the US constructor,
+pool update, random child spawning and draw-list generation. It emits once,
+uses 20 delayed nodes, grows their radius from 2 to 20, and retires the pool
+at tick 61 (the wrapper's tick-181 limit is only an upper bound).
+
+Generated vertex/color data and triangles are captured once per 30 Hz tick.
+Front-cull, back-cull and cap passes stay separate; the renderer preserves
+culling for this geometry. The auxiliary 20-slot spark pool uses the actual
+ROM IA8 quad texture, camera-facing transforms and native sine scale envelope.
+Draw-side RNG advances once per simulation tick, never on repeated host draws.
+ROM tests compare all nodes, vertex/color data, child state, RNG and expiry
+on both sides; independent libultra execution checks billboard positions to
+0.005 native units and tube vertices within one quantized vertex unit.
+The actual viewer wrapper verifies texture ownership, culling, mesh reuse and
+disposal. Host trig/fixed-matrix rounding still prevents a pixel-exact claim.
+
+Five previously missing lifecycle families remain: 3, 8, 13, 15 and 16.
+
+## Ice Beam (family 13)
+
+The persistent isolated ROM kernel now executes 84158E24 / 84158E58,
+including the shared six-slot, twenty-node textured-stream pool. Native
+emission runs every ten ticks; live anchor updates, node delays, scroll,
+alpha fade and finish-signal termination remain in the original US code.
+84169618 generates forty vertices per active strip once per simulation tick.
+The renderer reuses six meshes with native two-cycle selectors, colors,
+scroll/shift settings and export-25 I4 textures. Repeated draws do not step
+the simulation or consume RNG. This establishes the shared stream kernel
+used by family 8, whose separate wrapper is still unimplemented.
+
+Independent full-ROM drawing (including libultra rotation and display-list
+submission) checks every pool byte except scratch pointers, all positions
+(within one quantized vertex unit), exact UV/color values, RNG consumption,
+live anchor changes, repeated emissions and tick-91 termination when signaled
+at tick 40. The actual visual-viewer wrapper checks move 58 on both sides,
+texture format, persistent mesh reuse, finish propagation and disposal.
+Host trigonometric rounding still prevents a pixel-identical claim.
+
+Four previously missing lifecycle families remain: 3, 8, 15 and 16.
+
+## Hyper Beam (family 8)
+
+The native combined wrapper 84159C2C / 84159C6C now drives both its two
+beam-core slots and six repeated stream slots. Constructor arguments for
+the existing beam simulator are decoded directly from the US 841597AC
+calls, including textures, palettes, combiners, scroll/shift and glow.
+The stream emitter 84159A50 and shared stream update run in the isolated VM.
+Both parts share live anchors and the injected presentation RNG; draw
+geometry is captured once per tick and reused by the viewer.
+
+The wrapper returns the beam-core completion result: signaling at tick 40
+ends Hyper Beam at tick 72, rather than Ice Beam's tick 91. ROM-backed
+tests execute the original combined initializer/update and native draw,
+checking the core rings, tube vertices, UVs, materials, stream pool and RNG.
+Move 63 is covered by both-side viewer tests for all nine persistent meshes,
+ROM texture loading, finish propagation and disposal.
+
+Three previously missing lifecycle families remain: 3, 15 and 16.
+
+## Razor Leaf and Petal Dance (families 3 and 15)
+
+The shared 26-slot stochastic controller now executes the US init/update
+wrappers and 84166130/84166270/8416691C directly in an isolated VM.
+Family 3 emits texture export 34 and family 15 emits export 35. Each live
+slot contributes the ROM's transformed textured quad plus its ten-pair,
+vertex-coloured ribbon; all 52 meshes persist across viewer draws. The
+native 84166A64 draw generates the quads' fixed matrices and ribbon vertices
+once per 30 Hz step. RNG is injected and does not touch battle RNG.
+
+ROM tests independently compare the complete pool except scratch pointers,
+RNG consumption, sprite transforms, ribbon vertices/colours, live anchor
+changes, saturation at 26 slots and tick-111 finish when signaled at tick 40.
+The visual viewer checks moves 75 and 80 on both sides, ROM texture loading,
+mesh reuse and disposal.
+
+One previously missing lifecycle family remains: 16.
+
+## Spike Cannon (family 16)
+
+The final lifecycle family now uses the US four-slot projectile pool from
+841647D0/84164924/84164C28/84165008. The wrapper emits three shots at
+ticks 4, 8 and 12; each shot retains fifteen history nodes and expires after
+forty native updates. The viewer draws the ROM needle model at the native
+0.09 head scale and persistent cyan trail geometry, with injected RNG and
+live source/target anchors. The native update returns zero after its slots
+expire, so move completion remains with the battle FX controller.
+
+ROM-backed state and headless viewer checks cover move 131 on both sides.
+All nonempty lifecycle families now have built-in callback implementations.
