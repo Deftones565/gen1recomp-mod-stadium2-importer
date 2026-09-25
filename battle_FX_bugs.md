@@ -24,6 +24,14 @@ Battle follow-up (2026-09-25, moves with no effect data, web session):
   blur / clones); decoded where they live, not implemented yet.
 - Needs your retest.
 
+Battle follow-up (2026-09-25, lines through screen effects, second fix):
+- The lines were a regression from 3429234: taking effect shapes off the
+  arena path also switched their texture filtering from smooth sampling
+  to the 3-point shader filter. Effect shapes are smooth-sampled again
+  (7895ccb); the blend change from that commit stays. The earlier
+  3-point weight fix (795893c) still stands for Pokemon models.
+- Needs your retest (201 and the other screen effects).
+
 Battle follow-up (2026-09-25, lines through screen effects, web session):
 - The dashed diagonal lines and regular stripes across Sandstorm (201) and
   other screen effects came from a bug in the N64-style 3-point texture
