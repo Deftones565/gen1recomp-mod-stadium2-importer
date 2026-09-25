@@ -378,10 +378,10 @@ function Importer.newBattleFxPlayer(options)
   local playerOptions={}
   for key,value in pairs(options) do playerOptions[key]=value end
   playerOptions.catalog=catalog
-  playerOptions.loadBeamTexture=playerOptions.loadBeamTexture or function(moveId,symbol)
+  playerOptions.loadBeamTexture=playerOptions.loadBeamTexture or function(moveId,symbol,format,size)
     local resources,err=Importer.battleFxResources(moveId)
     if not resources then return nil,err end
-    return BattleFxResources.beamTexture(resources,symbol)
+    return BattleFxResources.beamTexture(resources,symbol,format,size)
   end
   playerOptions.loadWaveGridTexture=playerOptions.loadWaveGridTexture or function(moveId,family)
     local resources,err=Importer.battleFxResources(moveId)

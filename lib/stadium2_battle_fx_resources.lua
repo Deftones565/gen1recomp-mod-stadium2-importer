@@ -192,9 +192,29 @@ function Resources.waveGridTexture(resolved,family)
 end
 
 -- 84167D2C: beam texture indices select 32x32 I4 images from 8419CA20.
-function Resources.beamTexture(resolved,symbol)
+-- `format`/`size` are the G_SETTIMG fields of the loading display list. The
+-- beam families load 32x32 I4 (the default); the stochastic families'
+-- 84166A64 loads 32x32 RGBA16 (FD100000 / F5100000, 1024 texels).
+function Resources.beamTexture(resolved,symbol,format,size)
   local binding=resolved and resolved.shapes and resolved.shapes[symbol]
   if not binding then return nil,"beam texture export "..tostring(symbol).." was not loaded" end
+  if format==0 and size==2 then
+    local offset=localOffset(binding.module,binding.export.pointer,2048)
+    if not offset then return nil,"RGBA16 texture export is truncated" end
+    local pixels={}
+    for i=0,1023 do
+      local hi,lo=binding.module:byte(offset+i*2+1,offset+i*2+2)
+      local v=hi*256+lo
+      local function c5(x) return math.floor(x*255/31+0.5) end
+      pixels[#pixels+1]=string.char(c5(math.floor(v/2048)%32),c5(math.floor(v/64)%32),
+        c5(math.floor(v/2)%32),v%2==1 and 255 or 0)
+    end
+    return {w=32,h=32,format=0,size=2,rgba=table.concat(pixels),
+      resourceId=binding.resourceId,symbol=symbol}
+  end
+  if format~=nil and not (format==4 and size==0) then
+    return nil,("unsupported beam texture format %s/%s"):format(tostring(format),tostring(size))
+  end
   local offset=localOffset(binding.module,binding.export.pointer,512)
   if not offset then return nil,"beam texture export is truncated" end
   local pixels={}

@@ -413,7 +413,11 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
                 local ribbon=assets and assets.ribbon
                 ok,value=true,ribbon and {w=8,h=16,format=3,size=1,rgba=ribbon.rgba}
               elseif symbol==-1 then ok,value=true,assets and assets.beamGlow
-              else ok,value=pcall(self.loadBeamTexture or function()end,moveId,symbol) end
+              else
+                local fmt=layer.draw.textureFormat
+                ok,value=pcall(self.loadBeamTexture or function()end,moveId,symbol,
+                  fmt and fmt[1],fmt and fmt[2])
+              end
               if ok then asset[symbol]=value end
               if not asset[symbol] then asset=nil;break end
             end

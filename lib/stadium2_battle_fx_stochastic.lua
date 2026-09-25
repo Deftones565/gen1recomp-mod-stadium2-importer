@@ -13,7 +13,9 @@ local function mux(a,b)
 end
 local function drawSpec(texture,wordA,wordB)
   local c0,c1=mux(wordA,wordB)
-  return {textures=texture and {texture} or {},cycles=1,cycle0=c0,cycle1=c1,
+  -- 84166A64 loads the sprite export as 32x32 RGBA16 (G_SETTIMG FD100000).
+  return {textures=texture and {texture} or {},textureFormat=texture and {0,2} or nil,
+    cycles=1,cycle0=c0,cycle1=c1,
     primary={255,255,255,255},environment={0,0,0,0},lodFraction=0,
     alpha=1,uv={0,0,0,0},scrollAndShift={0,0,0,0,0,0,0,0}}
 end
