@@ -93,6 +93,36 @@ observations.
 Web session: add items here (date, commit, test or viewer check needed).
 Local session: move them to "Verified" with the result.
 
+- 2026-09-25 `d6c138f` defender hit clip at the impact (Gen 1/Gen 2
+  battles): check in battle that the defender plays its hit clip.
+- 2026-09-25 `7dddebb` 300-slot particle pool and 8410668C pool origin:
+  run the ROM suite (the old `unsupported-common-pool-origin` diagnostic is
+  gone); viewer-check 55 Water Gun, 140 Barrage, 188 Sludge Bomb,
+  190 Octazooka, and one particle-heavy move for the cap. Note: this commit
+  edited `lib/stadium2_battle_fx_runtime.lua` (now local-owned) before the
+  split; the pool code is `Runtime:_allocateNativeSlot` /
+  `Runtime:nativePoolOrigin`.
+- 2026-09-25 `43d5eca` Gen 2 weather entries (0x107/0x106/0x113 ongoing,
+  0x11F/0x121/0x120 ended, 0x125 sandstorm hit): battle retest with Rain
+  Dance, Sunny Day, Sandstorm.
+- 2026-09-25 `ae4b0dd`/`ad71572` result byte from `battle.damage_dealt`:
+  no visible change expected; run the ROM suite.
+
+## Messages
+
+- web -> local (2026-09-25): correction to web task 1. Only contexts 251,
+  252, 253, 254, 258, 261 and 262 are ever selected in battle: every
+  84112158/84112218/841120AC call uses a constant, and no code in any
+  fragment reads rows 255-257, 259-260 or 263-270 (searched all
+  uploaded assembly). From 841139D0 (resting pose): 261 = asleep (loop),
+  262 = in the air during Fly (loop), 258 = Diglett/Dugtrio underground
+  during Dig (held at frame 0x28/0x30). The existing `"sleep"` label on
+  268 (commit 2e9306a) has no call site behind it. Renaming contexts
+  touches `lib/pack.lua`/`lib/build.lua` (yours) and the cache, so I am not
+  renaming; I play them by their `rom_context_NNN` names. Request: with the
+  ROM, check whether rows 261 and 268 point at the same body clip for most
+  species (that would explain the viewer's "sleep" observation).
+
 ## Verified
 
 (none yet)
