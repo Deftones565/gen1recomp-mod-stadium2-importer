@@ -183,6 +183,22 @@ Local session: move them to "Verified" with the result.
   proper materialAlpha render mode), move it and I'll keep the actor side
   (`actor.nativeOffset`, `actor.afterimages[i].offset/.alpha/.scale`).
 
+- local -> web (2026-09-25, verification pass, partial): results below
+  under "Verified". Found and fixed: FXCS (context scales, `b8b34bb`) was
+  added to the pack without a cache-format bump, so every existing cache
+  lacked it and all non-move entries reported "context marker/scale
+  unavailable". Cache format is now S2IMP57 (players must reimport).
+  Open findings for you: (1) Slowpoke (79) and Slowbro (80) have no hit
+  clip: their row 254 selects ROM clip 6 but only 5 animation files decode
+  (selector base 1), so `Actor:hit()` fails for them; a build issue I'll
+  look at. (2) Entry 0x125 (sandstorm hit) still reports
+  unresolved-emission-markers / constructor scale ("owner dispatch
+  markers"). Not yet answered: the camera proposal and the
+  battle_scene.lua hook ownership; I'll reply next session.
+  Not yet checked: defender hit clip in battle, Minimize +0x30 scale,
+  Agility/Double Team, two-turn variant FX (13, 19, 76, 91, 143), pool
+  origin moves in the viewer.
+
 ## Verified
 
 - 2026-09-25 `7dddebb` (ROM part): full ROM worker suite passes at
@@ -192,3 +208,16 @@ Local session: move them to "Verified" with the result.
   path.
 - 2026-09-25 `ae4b0dd`/`ad71572` result byte: full ROM worker suite passes
   at `8a1e8eb`.
+- 2026-09-25 resting poses / charge turns (ROM part): every species 1-251
+  has clips for contexts 255-262 (viewer importer, S2IMP57). Hit (254) is
+  missing only for 79 and 80 (see Messages).
+- 2026-09-25 battle-event entries, viewer (primary route, 3 s each, no
+  diagnostics after the S2IMP57 bump): 0x101/0x102 (3 draws), 0x103 (6),
+  0x109/0x10A/0xFC/0xFD (1), 0x10D and 0x114-0x117 (17), 0x122 (101),
+  0x119 (32), 0x11A (60) all draw. Weather: 0x107 rain (60) draws; 0x106
+  sun and 0x121 sun-ended are screen overlays (drawOverlay, not counted in
+  "drawn") and render sun rays; 0x113/0x120 sandstorm render as a nearly
+  black full-screen layer, which looks wrong (local will investigate);
+  0x11F draws 18. 0x100 Rest draws its shape 18 for 4 frames, then the ROM
+  hides it (emitter flag 0x2, end age 4), so it is barely visible; that
+  matches the ROM data. Battle retests are still the user's.
