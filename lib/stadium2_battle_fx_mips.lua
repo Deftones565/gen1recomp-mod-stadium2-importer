@@ -10,6 +10,13 @@ local function s(v)return bit.tobit(v) end
 local function trunc(v)return v<0 and math.ceil(v) or math.floor(v)end
 local function float(v)cell.u[0]=u(v);return tonumber(cell.f[0])end
 local function word(v)cell.f[0]=v;return tonumber(cell.u[0])end
+-- Branch resolution without a per-instruction closure (the closure kept
+-- LuaJIT from compiling the interpreter loop). Returns dest, nextpc.
+local function branch(pc,si,nextpc,dest,yes,likely)
+  if yes then return u(pc+4+si*4),nextpc end
+  if likely then nextpc=u(nextpc+4);return u(nextpc+4),nextpc end
+  return dest,nextpc
+end
 function VM.new(images,hooks)
   local self=setmetatable({images=images or {},hooks=hooks or {},memory={},code={},r={},f={},steps=0},VM)
   for i=0,31 do self.r[i]=0;self.f[i]=0 end
@@ -60,9 +67,6 @@ function VM:call(address,args,limit)
       local c=band(rs(w,11),31);local sh=band(rs(w,6),31);local fn=band(w,63)
       local imm=band(w,65535);local si=imm>=32768 and imm-65536 or imm
       local dest=u(nextpc+4)
-      local function branch(yes,likely)
-        if yes then dest=u(pc+4+si*4) elseif likely then nextpc=u(nextpc+4);dest=u(nextpc+4) end
-      end
       if op==0 then
         if fn==0 then r[c]=bs(r[b],sh)
         elseif fn==2 then r[c]=s(rs(r[b],sh))
@@ -96,14 +100,14 @@ function VM:call(address,args,limit)
       elseif op==1 then
         if b>=16 then r[31]=s(pc+8)end
         local positive=b%2==1
-        branch(positive and r[a]>=0 or not positive and r[a]<0,band(b,2)~=0)
+        dest,nextpc=branch(pc,si,nextpc,dest,positive and r[a]>=0 or not positive and r[a]<0,band(b,2)~=0)
       elseif op==2 or op==3 then
         dest=bor(band(pc+4,0xF0000000),bs(band(w,0x3FFFFFF),2));dest=u(dest)
         if op==3 then r[31]=s(pc+8)end
-      elseif op==4 or op==20 then branch(r[a]==r[b],op==20)
-      elseif op==5 or op==21 then branch(r[a]~=r[b],op==21)
-      elseif op==6 or op==22 then branch(r[a]<=0,op==22)
-      elseif op==7 or op==23 then branch(r[a]>0,op==23)
+      elseif op==4 or op==20 then dest,nextpc=branch(pc,si,nextpc,dest,r[a]==r[b],op==20)
+      elseif op==5 or op==21 then dest,nextpc=branch(pc,si,nextpc,dest,r[a]~=r[b],op==21)
+      elseif op==6 or op==22 then dest,nextpc=branch(pc,si,nextpc,dest,r[a]<=0,op==22)
+      elseif op==7 or op==23 then dest,nextpc=branch(pc,si,nextpc,dest,r[a]>0,op==23)
       elseif op==8 or op==9 then r[b]=s(r[a]+si)
       elseif op==10 then r[b]=r[a]<si and 1 or 0
       elseif op==11 then r[b]=u(r[a])<u(si) and 1 or 0
@@ -116,7 +120,7 @@ function VM:call(address,args,limit)
         elseif a==4 then F[c]=u(r[b])
         elseif a==2 then r[b]=self.fcsr or 0
         elseif a==6 then self.fcsr=r[b]
-        elseif a==8 then branch((b%2==1)==(self.condition==true),band(b,2)~=0)
+        elseif a==8 then dest,nextpc=branch(pc,si,nextpc,dest,(b%2==1)==(self.condition==true),band(b,2)~=0)
         else
           local x=a==17 and self:double(c) or a==20 and s(F[c]) or float(F[c])
           local y=a==17 and self:double(b) or float(F[b]);local v
