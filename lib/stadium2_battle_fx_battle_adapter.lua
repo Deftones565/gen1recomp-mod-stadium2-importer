@@ -589,6 +589,7 @@ function Adapter:impact(moveId, source, nativeResult)
     if not effect and err then self:_warn(err) end
     self.routeMove, self.routeMode = tonumber(moveId), 2
     self:_routeSignal(1)
+    self:_defenderReaction(target, source, moveId)
   elseif action == "owner" then
     -- 8410878C only selects mode 2 and the owner; nothing new is dispatched.
     self.routeMode = 2
@@ -602,6 +603,29 @@ function Adapter:impact(moveId, source, nativeResult)
     end
   end
   return action, effect, err
+end
+
+-- The hit-frame states 84116EB4/841170A0/84117948/84118138/841182E0 run on
+-- the defender and select context 254 (0xFE, its hit clip) through
+-- 84112158. Hosts install `onImpact(target, source, moveId)` to play that
+-- clip. The ROM starts it when the defender's state begins, before the
+-- impact; starting it with the impact is approximate and reported once.
+-- 84117948 also withholds it for results 2/5/6 and move 0xD4, but which
+-- moves run that state is not decoded, so no result gating is applied.
+function Adapter:_defenderReaction(target, source, moveId)
+  if type(self.onImpact) ~= "function" then return false end
+  local ok, played, reason = pcall(self.onImpact, target, source, tonumber(moveId))
+  if not ok then
+    self:_warn({code = "unsupported-defender-reaction", message = tostring(played)})
+    return false
+  end
+  if played then
+    self:_warn({code = "approximate-defender-reaction-timing", message =
+      "defender hit clip (context 254) starts with the impact; the ROM starts it when the defender's hit state begins"})
+  elseif reason then
+    self:_warn({code = "unresolved-defender-reaction", message = tostring(reason)})
+  end
+  return played and true or false
 end
 
 -- 84108A10(owner): release the owner's held particles.

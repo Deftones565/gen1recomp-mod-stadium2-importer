@@ -104,3 +104,32 @@ species table at actor+67C (the 8411E358 table) or dispatch rows 253/254.
 - 84103394 second draw pass (object flag 0x1000, gated by D_80094910+0x18).
 - Meaning of each non-move entry 252..301 and the host events that trigger
   them.
+
+## Battle result byte and defender reaction (2026-09-25)
+
+Source: decompiled C in michiiik/pokestadiumgs `7fc529e5`
+(fragment79_37A6E0.c); matches decomp C, not checked against ROM execution.
+Consumers of the result byte D_84193DD0+9 found in C:
+
+- 84117880 at defender hit frame + 1 calls 8410B578 (writes
+  D_841911E0+0x8C, zeroes +0x96) with 15.0 for low bits 0, 10.0 for 2,
+  20.0 for 3, 25.0 for 4; nothing for 1, 5, 6. The reader of +0x8C is still
+  asm, so its visual meaning is unconfirmed.
+- 84117948 selects context 254 (0xFE) through 84112158 unless the low bits
+  are 6, 2 or 5 or the move (+0x618) is 0xD4; event code (+4) 0xE forces it.
+  841179C4 withholds its 84111D64/84111DB4 pair for 6, 2 and 5.
+- Bit 0x10: 84116B40 lengthens the defender's hit timer to at least 40
+  frames after +0x620, and 841176E0 (from 84118138) signals entry 0xFD with
+  sound 0x10 at the hit frame.
+- 84114600/84114678 pass mode 2 instead of 0 to 800231A0 when the low bits
+  are 1.
+- 84118138 and 841182E0 select 0xFE at state counter 0 unconditionally and
+  signal entry 0xFE at counter 8.
+
+Which host outcome writes each value is not in C (the writer is asm), so
+hosts still pass no result byte. Implemented: the adapter calls the host's
+`onImpact(target, source, moveId)` when 841087B8 plays the impact, and the
+Gen 1/Gen 2 hosts play the defender's own hit clip (Actor:hit, no fallback).
+Timing is approximate (the ROM starts the clip when the defender state
+begins) and the 84117948 result gating is not applied because the move to
+hit-state mapping is not decoded.

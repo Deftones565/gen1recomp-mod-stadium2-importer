@@ -1,5 +1,20 @@
 Move bug list
 
+Battle follow-up (2026-09-25, defender hit reaction):
+- In Gen 1 and Gen 2 battles the defender now plays its own hit clip
+  (context 254) when the impact bank starts, as the viewer's SEQ mode
+  already did. A species without a hit clip is reported and keeps its
+  current clip. Timing is approximate: the ROM starts the clip when the
+  defender's hit state begins, slightly before the impact.
+- Not applied: the ROM withholds the reaction for some results (84117948);
+  the battles don't pass the result byte yet (see
+  docs/luna/research/sequencing-render-emission.md).
+- Found while auditing: the per-move table's "84107998 not implemented"
+  rows are out of date; secondary/all-marker emission is implemented
+  (see the 2026-09-25 implementation follow-up below). Retest 54, 73, 108,
+  114, 123, 139, 207, 223, 234, 235, 236.
+- Needs your retest in battle.
+
 Viewer follow-up (2026-09-25, full move sequence):
 - The viewer's new default mode, SEQ, plays the source battler's own clip
   for the move, the move bank at once, and the impact bank at the dispatch

@@ -127,6 +127,14 @@ function Scene.new(battle,context)
   self.substituteActive={player=false,enemy=false}
   self.vanish={player={active=false},enemy={active=false}}
   self.battleFx=newBattleFx()
+  if self.battleFx then
+    -- The defender plays its own hit clip (context 254) at the impact.
+    self.battleFx.onImpact=function(target)
+      local actor=self.actors and self.actors[target]
+      if not actor or not actor.hit then return false,"no defender actor" end
+      return actor:hit()
+    end
+  end
   self.battleFxUpdateError=nil
   return self
 end

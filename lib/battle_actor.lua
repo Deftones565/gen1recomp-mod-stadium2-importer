@@ -8,7 +8,7 @@ local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 local Actor = {}
 Actor.__index = Actor
 
-local STATE_RANK = { idle=0, entrance=1, attack=2, attack_default=2, faint=3 }
+local STATE_RANK = { idle=0, entrance=1, attack=2, attack_default=2, hit=2, faint=3 }
 local SHINY_ATTACK = {
   [2]=true,[3]=true,[6]=true,[7]=true,[10]=true,[11]=true,[14]=true,[15]=true,
 }
@@ -154,6 +154,23 @@ function Actor:attack(moveIndex, strict)
   if not ok then ok=self:play("attack",false) end
   if ok then self.context="attack" end
   return ok
+end
+
+-- Context 254: the species' own hit clip, played once with no generic
+-- fallback. Returns false and a reason when the clip is unavailable.
+function Actor:hit()
+  if not self.renderer then return false,"actor has no model" end
+  if self.context=="faint" then return false,"actor is fainting" end
+  if (STATE_RANK[self.context] or 0)>STATE_RANK.hit then
+    return false,("actor is busy (%s)"):format(tostring(self.context))
+  end
+  local ok=self.renderer.setContext and self.renderer:setContext("hit",false) or false
+  if not ok then
+    return false,("species %s has no hit clip"):format(tostring(self.dex))
+  end
+  self.context="hit"
+  self.renderer.finished=false
+  return true
 end
 
 function Actor:entrance()

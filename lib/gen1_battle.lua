@@ -96,6 +96,12 @@ function Scene.new(battle)
   -- importer mock from an older host is intentionally a no-op.
   local battleFx,battleFxError=BattleFxAdapter.new(Importer,{warn=warn})
   if battleFx then self.battleFx=battleFx
+    -- The defender plays its own hit clip (context 254) at the impact.
+    battleFx.onImpact=function(target)
+      local actor=self.actors and self.actors[target]
+      if not actor or not actor.hit then return false,"no defender actor" end
+      return actor:hit()
+    end
   elseif battleFxError then warn("Gen 1 battle FX unavailable: "..tostring(battleFxError)) end
   return self
 end
