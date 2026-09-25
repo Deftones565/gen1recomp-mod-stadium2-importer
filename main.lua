@@ -137,6 +137,8 @@ return function(mod)
       help="Select contextual Stadium fields for Gen 2 trainers. With Kenney environments enabled, also provides arena fallback for unbuilt environments in either game." },
     { key="stadium2_beta_arena_tod", label="BETA PARK TIME OF DAY", type="toggle", default=false,
       help="Experimental: when context arenas are enabled, tint Free Battle Park for Gen 2 morning, day, or night. Turn OFF for the arena's normal lighting." },
+    { key="stadium2_beta_battle_fx", label="BETA STADIUM 2 BATTLE FX", type="toggle", default=false,
+      help="Experimental: Stadium 2 move and battle effects decoded from your imported ROM, with Stadium's own per-move Pokemon routines (Agility, Double Team, Minimize). OFF keeps the game's normal battle effects. Takes effect from the next battle." },
   })
 
   -- DSM animations are authored at 30 Hz, but advance from presented-frame
@@ -155,7 +157,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.14.5"
+  mod.exports.version = "0.15.0"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
@@ -190,6 +192,7 @@ return function(mod)
   mod.exports.rapidashCutEffectEnabled = Importer.rapidashCutEffectEnabled
   mod.exports.betaArenaEnabled = Importer.betaArenaEnabled
   mod.exports.betaArenaTimeOfDayEnabled = Importer.betaArenaTimeOfDayEnabled
+  mod.exports.betaBattleFxEnabled = Importer.betaBattleFxEnabled
   mod.exports.battleStatus = Battle.status
   mod.exports.configureGame = Battle.configureGame
   mod.exports.presentation = BattlePresentation
@@ -206,6 +209,13 @@ return function(mod)
   mod.exports.loadModel = Importer.loadModel
   mod.exports.createModel = Importer.createModel
   mod.exports.createSpecialModel = Importer.createSpecialModel
+  mod.exports.battleFxCatalog = Importer.battleFxCatalog
+  mod.exports.battleFxResource = Importer.battleFxResource
+  mod.exports.battleFxResources = Importer.battleFxResources
+  mod.exports.battleFxShape = Importer.battleFxShape
+  mod.exports.battleFxShapeModel = Importer.battleFxShapeModel
+  mod.exports.battleFxProgram = Importer.battleFxProgram
+  mod.exports.newBattleFxPlayer = Importer.newBattleFxPlayer
   mod.exports.releaseModel = Importer.releaseModel
   mod.exports.newRenderer = Importer.newRenderer
   mod.exports.newRendererFromModel = Importer.newRendererFromModel
@@ -362,6 +372,9 @@ return function(mod)
   mod.events:on("world.stepped",function() pendingEncounter=nil end)
 
   mod.events:on("battle.started", function(ev)
+    local fxOk, FxAdapter = pcall(require,
+      "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
+    if fxOk then FxAdapter.clearHits() end
     local current=mod.world and mod.world.current and mod.world:current() or nil
     local mapId=current and current.mapId or mapContext and mapContext.mapId
     local mapped=mapContext and mapContext.mapId==mapId and mapContext or nil
@@ -392,6 +405,13 @@ return function(mod)
       battleTower=battle and battle.inBattleTowerBattle==true,
     })
     pendingEncounter=nil
+  end)
+
+  -- Hit facts for the battle FX result byte (Sequence.resultByte).
+  mod.events:on("battle.damage_dealt", function(ev)
+    local ok, Adapter = pcall(require,
+      "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
+    if ok then Adapter.recordHit(ev) end
   end)
 
   mod.events:on("battle.ended", function(ev)

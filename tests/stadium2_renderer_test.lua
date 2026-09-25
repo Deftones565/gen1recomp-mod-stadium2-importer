@@ -149,6 +149,34 @@ ok(not carrierState.castsShadow,
 local colorState = Renderer.primitiveRenderState({}, { lighting = false, cull = true })
 ok(not colorState.lightingEnabled and colorState.cullEnabled,
   "source vertex-colour geometry disables lighting without disabling culling")
+-- Combiner colour input A selector 7 is the RDP's NOISE (Sandstorm's
+-- grain layer, shape 147 prim 2); it must not read as zero.
+local rendererSource = io.open("mods/STADIUM2_IMPORTER/lib/renderer.lua"):read("*a")
+ok(rendererSource:find("vec3 rgb=(n64ColorA(selectors.x", 1, true)
+    and rendererSource:find("vec3 rgb=(mobileColorA(selectors.x", 1, true)
+    and select(2, rendererSource:gsub("return n64Noise;", "")) == 2,
+  "both shaders feed NOISE to colour input A")
+-- Battle-FX shapes keep the smooth sampling they had as arena models.
+ok(Renderer.smoothSampled({ staticPose = true, species = 0, battleFx = true }),
+  "static battle-FX shapes are smooth-sampled")
+ok(Renderer.smoothSampled({ staticPose = true, species = 0 }),
+  "arena fields are smooth-sampled")
+ok(not Renderer.smoothSampled({ species = 25 }),
+  "Pokemon models keep the 3-point filter")
+-- FX combiners without SHADE ignore lighting (sandstorm shape 147).
+local lit = { lightingEnabled = true }
+local sandstorm = { phase5 = true, combiner = { cycles = 2,
+  color0 = { 2, 1, 14, 1 }, color1 = { 3, 5, 0, 5 } } }
+ok(not Renderer.surfaceLit(lit, { battleFx = true }, sandstorm),
+  "a battle-FX combiner without SHADE is drawn unlit")
+local shaded = { phase5 = true, combiner = { cycles = 1,
+  color0 = { 1, 0, 4, 0 }, color1 = { 1, 0, 4, 0 } } }
+ok(Renderer.surfaceLit(lit, { battleFx = true }, shaded),
+  "a battle-FX combiner that reads SHADE stays lit")
+ok(Renderer.surfaceLit(lit, { species = 25 }, sandstorm),
+  "a Pokemon model without a display-list state keeps its lighting")
+ok(not Renderer.surfaceLit({ lightingEnabled = false }, { battleFx = true }, shaded),
+  "an unlit primitive stays unlit")
 local arenaPrimitive = { lighting = true, cull = true }
 local arenaCullState = Renderer.primitiveRenderState(
   { species = 0, staticPose = true }, arenaPrimitive)

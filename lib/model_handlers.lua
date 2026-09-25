@@ -148,6 +148,20 @@ local function renderBytes(renderInfo)
     out[#out + 1] = p16(row.h or 0)
     out[#out + 1] = string.char(row.format or 0, row.size or 0)
   end
+  local markers=renderInfo and renderInfo.attachments
+  local dispatch=renderInfo and renderInfo.fxDispatch
+  if markers or dispatch then
+    markers=markers or {};dispatch=dispatch or ""
+    out[#out+1]="FXAT"..p16(#markers)..p16(#dispatch)
+    for _,m in ipairs(markers) do out[#out+1]=pi16(m.label)..pi16(m.bone) end
+    out[#out+1]=dispatch
+  end
+  local profile=renderInfo and renderInfo.fxBattleProfile
+  if type(profile)=="string" and #profile==0x30 then
+    out[#out+1]="FXBP"..profile
+  end
+  local scales=renderInfo and renderInfo.fxContextScales
+  if type(scales)=='string' and #scales==0x50 then out[#out+1]='FXCS'..scales end
   return table.concat(out)
 end
 
@@ -193,6 +207,28 @@ local function readRenderBytes(data)
       format = byte(data, cursor + 14), size = byte(data, cursor + 15),
     }
     cursor = cursor + 16
+  end
+  if data:sub(cursor+1,cursor+4)=="FXAT" then
+    if cursor+8>#data then return nil end
+    local markers,length=u16le(data,cursor+4),u16le(data,cursor+6)
+    cursor=cursor+8
+    if cursor+markers*4+length>#data then return nil end
+    out.attachments={}
+    for i=1,markers do
+      out.attachments[i]={label=i16le(data,cursor),bone=i16le(data,cursor+2)}
+      cursor=cursor+4
+    end
+    out.fxDispatch=data:sub(cursor+1,cursor+length)
+    cursor=cursor+length
+  end
+  if data:sub(cursor+1,cursor+4)=="FXBP" then
+    if cursor+4+0x30>#data then return nil end
+    out.fxBattleProfile=data:sub(cursor+5,cursor+4+0x30)
+    cursor=cursor+4+0x30
+  end
+  if data:sub(cursor+1,cursor+4)=='FXCS' then
+    if cursor+4+0x50>#data then return nil end
+    out.fxContextScales=data:sub(cursor+5,cursor+4+0x50)
   end
   return out
 end
@@ -432,9 +468,10 @@ function Handlers.prepare(extension)
     if record.family == "dynamic-object-renderer" then
       program.geometry = dynamicObjectGeometry(extension, record)
     elseif record.family == "render-time-geometry-pipeline" then
+      local contract=Registry.info(record.descriptor)
       program.phase5Material = Phase5Geometry.materialSpec(extension.fragment,
         extension.sourceBase, record.argOffset,
-        record.descriptor == 0x81000148 and 2 or 1)
+        contract and contract.submissionMode or 1)
       program.phase5Controller = Phase5Geometry.controllerSpec(extension.fragment,
         extension.sourceBase, record.argOffset)
     end

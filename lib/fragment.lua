@@ -28,6 +28,10 @@ function StadiumFragment.setBase(value)
   BASE = assert(tonumber(value), "fragment base must be numeric")
 end
 
+function StadiumFragment.getBase()
+  return BASE
+end
+
 local CMD_SIZES = {
   [0x00] = 0x08, [0x01] = 0x04, [0x02] = 0x08, [0x03] = 0x08, [0x04] = 0x04,
   [0x05] = 0x04, [0x06] = 0x04, [0x07] = 0x08, [0x08] = 0x0C, [0x09] = 0x04,
@@ -400,6 +404,7 @@ function Model:walk(o, depth, stageRenderProfile)
       self.stack[#self.stack] = idx
     elseif cmd == 0x23 then                           
       self.curTex = f:s16(o + 8)
+      self.curTexBone = self:curBone()
       self.curTlut = f:s16(o + 0xA)
       self.curMat = f:ptr(o + 4)
       self.curTexAnim = f:s16(o + 2)
@@ -409,6 +414,14 @@ function Model:walk(o, depth, stageRenderProfile)
       self.curNodeColor = {
         f:u8(o + 0xC), f:u8(o + 0xD), f:u8(o + 0xE), f:u8(o + 0xF),
       }
+      if self.options.trackRdpState then
+        -- 8003C10C: byte 1 is the combiner selector; selector 1 uses white
+        -- instead of the authored colour.
+        local selector = f:u8(o + 1)
+        self.nodeMaterial = { selector = selector,
+          primitive = selector == 1 and 0xFFFFFFFF or f:u32(o + 0xC) }
+        self.nodeMaterialCache = self.nodeMaterialCache or {}
+      end
       -- A local texture/material command supersedes callback RDP state for
       -- this node and its descendants. The slime models' uniform 4x4 input is
       -- the exception: it is a body placeholder consumed by the inherited
@@ -427,12 +440,36 @@ function Model:walk(o, depth, stageRenderProfile)
       end
     elseif cmd == 0x22 then                           
       local layer = self.options.stageLayout and f:u8(o + 1) or nil
+      -- Byte 1 is the node's submission layer (node+3), which 8003D888
+      -- turns into the node's RDP render mode.
+      local oldLayer = self.curNodeLayer
+      if self.options.trackRdpState then
+        self.curNodeLayer = f:u8(o + 1)
+        self:applyNodeMaterial()
+      end
       self:runNodeDL(f:ptr(o + 4), self:curBone(), stageRenderProfile, layer)
-    elseif cmd == 0x1E then                           
+      self.curNodeLayer = oldLayer
+    elseif cmd == 0x18 then
+      -- 800404AC -> node type 0F -> 8003C390 registers label 100 at
+      -- the current matrix before testing whether shadows are enabled.
+      self.attachments=self.attachments or {}
+      local found=false
+      for _,marker in ipairs(self.attachments) do
+        if marker.label==100 then found=true;break end
+      end
+      if not found then
+        self.attachments[#self.attachments+1]={label=100,bone=self:curBone()}
+      end
+    elseif cmd == 0x24 then
+      self.attachments=self.attachments or {}
+      self.attachments[#self.attachments+1]={label=f:s16(o+2),bone=self:curBone()}
+    elseif cmd == 0x1E then
       local named = self.boneById[f:s16(o + 2)]
       self:runNodeDL(f:ptr(o + 4), named or self:curBone())
     elseif cmd == 0x20 or cmd == 0x21 then            
       self:runNodeDL(f:ptr(o + (cmd == 0x20 and 0x10 or 0xC)), self:curBone())
+    elseif cmd == 0x25 and self.options.trackRdpState then
+      self:resetNodeMaterial()
     elseif cmd == 0x25 and self.options.stageLayout then
       -- This sets graph-node flag 0x04. Display-list renderers pass it to
       -- func_8003DA20, which calls func_8003CD84 after the list and resets
@@ -460,6 +497,82 @@ function Model:nodeCallback(bone)
   return callback and not callback.blocked and callback or nil
 end
 
+-- D_80094AAC: the model combiners 8003CB3C selects by material selector
+-- (layout 0x23 byte 1), sixteen gDPSetCombineLERP selectors each.
+local MODEL_COMBINERS = {
+  { 0x1F1F1F03, 0x07070703, 0x001F041F, 0x00070607 },
+  { 0x011F031F, 0x07070701, 0x001F041F, 0x00070607 },
+  { 0x01030803, 0x07070307, 0x001F041F, 0x00070607 },
+  { 0x011F031F, 0x07070703, 0x001F041F, 0x00070607 },
+  { 0x011F031F, 0x01070307, 0x001F041F, 0x00070607 },
+  { 0x1F1F1F03, 0x07070703, 0x1F1F1F00, 0x00070607 },
+  { 0x011F031F, 0x07070701, 0x1F1F1F00, 0x00070607 },
+  { 0x01030803, 0x07070307, 0x1F1F1F00, 0x00070607 },
+  { 0x011F031F, 0x07070703, 0x1F1F1F00, 0x00070607 },
+  { 0x011F031F, 0x01070307, 0x1F1F1F00, 0x00070607 },
+  { 0x1F1F1F04, 0x07070704, 0x1F1F1F00, 0x00070607 },
+  { 0x011F041F, 0x07070701, 0x1F1F1F00, 0x00070607 },
+  { 0x01040804, 0x07070307, 0x1F1F1F00, 0x00070607 },
+  { 0x011F041F, 0x07070704, 0x1F1F1F00, 0x00070607 },
+  { 0x011F041F, 0x01070407, 0x1F1F1F00, 0x00070607 },
+}
+StadiumFragment.MODEL_COMBINERS = MODEL_COMBINERS
+
+local function modelCombiner(selector, alpha)
+  local row = MODEL_COMBINERS[(tonumber(selector) or -1) + 1]
+  if not row then return nil end
+  local mux = {}
+  for _, word in ipairs(row) do
+    for shift = 24, 0, -8 do mux[#mux + 1] = floor(word / 2 ^ shift) % 256 end
+  end
+  -- 8003CB3C: a fully opaque object passes cycle-1 alpha through unchanged.
+  if alpha == 0xFF then mux[13], mux[14], mux[15], mux[16] = 7, 7, 7, 0 end
+  return Phase5Geometry.combinerFromSelectors(mux)
+end
+
+-- RDP state is copied on write so primitives can key on its identity.
+function Model:setRdpState(changes)
+  local rdp = {}
+  for key, value in pairs(self.rdpState or {}) do rdp[key] = value end
+  for key, value in pairs(changes) do rdp[key] = value end
+  rdp.key = table.concat({
+    rdp.combiner and table.concat(rdp.combiner.selectors, ".") or "-",
+    tostring(rdp.primitive), tostring(rdp.lodFraction), tostring(rdp.environment),
+  }, "/")
+  self.rdpState = rdp
+end
+
+-- 8003D888, before a node's list: D0C8 submits the material colour (the
+-- object alpha as LOD fraction) and D188 the selector's table combiner, each
+-- only when it differs from the model context's cached value. Display-list
+-- commands do not update those caches. Visual objects are drawn fully
+-- opaque here (alpha 0xFF); the object colour that C10C multiplies in is
+-- not modelled and is treated as white.
+function Model:applyNodeMaterial()
+  local material = self.nodeMaterial
+  if not material then return end
+  local cache = self.nodeMaterialCache
+  local changes = {}
+  if cache.primitive ~= material.primitive then
+    changes.primitive, changes.lodFraction = material.primitive, 0xFF
+    cache.primitive = material.primitive
+  end
+  if cache.selector ~= material.selector then
+    changes.combiner = modelCombiner(material.selector, 0xFF)
+    cache.selector = material.selector
+  end
+  if next(changes) then self:setRdpState(changes) end
+end
+
+-- 8003CD84, after a flag-4 node's list (8003DA20): resubmits the cached
+-- colour and the cached selector's combiner.
+function Model:resetNodeMaterial()
+  local cache = self.nodeMaterialCache
+  if not (cache and cache.selector ~= nil) then return end
+  self:setRdpState({ primitive = cache.primitive, lodFraction = 0xFF,
+    combiner = modelCombiner(cache.selector, 0xFF) })
+end
+
 function Model:runNodeDL(offset, bone, stageRenderProfile, stageSubmissionClass)
   local oldOffset, oldDescriptor, oldBlocked = self.curCallbackOffset,
     self.curCallbackDescriptor, self.curBlockedCallback
@@ -475,7 +588,10 @@ function Model:runNodeDL(offset, bone, stageRenderProfile, stageSubmissionClass)
     self.curStageSubmissionClass
   self.curStageRenderProfile = stageRenderProfile
   self.curStageSubmissionClass = stageSubmissionClass
+  local oldDrawBone = self.curDrawBone
+  self.curDrawBone = bone
   self:runDL(offset, bone, 0)
+  self.curDrawBone = oldDrawBone
   if stageSubmissionClass ~= nil and self.currentDrawPrims then
     self.lastStageDrawPrims = self.currentDrawPrims
   end
@@ -507,6 +623,8 @@ function Model:primFor(tex, tlut, mat, texAnim, cull)
               .. table.concat(self.curNodeColor or {}, ":") .. ","
               .. tostring(self.curStageRenderProfile) .. ","
               .. tostring(self.curStageSubmissionClass)
+              .. "," .. (self.rdpState and self.rdpState.key or "-")
+              .. "," .. tostring(self.curNodeLayer)
   local p = self.primsByKey[key]
   if p == nil then
     p = { tex = tex, tlut = tlut, mat = mat, texAnim = texAnim, cull = cull,
@@ -517,7 +635,20 @@ function Model:primFor(tex, tlut, mat, texAnim, cull)
           nodeColor = self.curNodeColor,
           arenaRenderProfile = self.curStageRenderProfile,
           arenaSubmissionClass = self.curStageSubmissionClass,
+          rdpState = self.rdpState,
+          nodeLayer = self.curNodeLayer,
           verts = {}, nverts = 0, tris = {}, ntris = 0, remap = {} }
+    -- A 0x23 texture applies to its node and descendants; record draws that
+    -- only inherited it from an unrelated node through the global state.
+    if tex >= 0 and self.curTexBone ~= nil and self.curDrawBone ~= nil then
+      local bone, related = self.curDrawBone, false
+      while bone and bone >= 0 do
+        if bone == self.curTexBone then related = true; break end
+        local row = self.bones[bone + 1]
+        bone = row and row.parent or -1
+      end
+      p.foreignTexture = not related
+    end
     self.primsByKey[key] = p
     self.prims[#self.prims + 1] = p
   end
@@ -597,8 +728,15 @@ function Model:runDL(o, bone, depth)
       local n = floor(w0 / 0x1000) % 256
       local v0 = floor((w0 % 0x1000) / 2) - n
       local a = f:off(w1)
-      if a then
-        for i = 0, n - 1 do
+      if a and a >= 0 and a < #f.d then
+        local available = math.max(0, floor((#f.d - a) / 0x10))
+        local count = math.min(n, available)
+        if count < n then
+          self.warnings[#self.warnings + 1] =
+            ("truncated vertex load at 0x%X: requested %d, available %d")
+              :format(a, n, count)
+        end
+        for i = 0, count - 1 do
           local p = a + i * 0x10
           local slot = v0 + i
           if slot >= 0 and slot < 64 then
@@ -608,6 +746,10 @@ function Model:runDL(o, bone, depth)
                            f:u8(p + 15), bone }
           end
         end
+      elseif a then
+        self.warnings[#self.warnings + 1] =
+          ("vertex pointer 0x%08X is outside the resource module")
+            :format(w1)
       end
     elseif op == 0xD9 then                            
       -- F3DEX2 stores a 24-bit keep mask in w0 and the bits to set in w1.
@@ -616,6 +758,19 @@ function Model:runDL(o, bone, depth)
       -- geometry state, and separate graph-node submissions do not clear it.
       self.geometryMode = bor(band(self.geometryMode, w0 % 0x1000000, 24),
         w1 % 0x1000000, 24)
+    elseif self.options.trackRdpState
+        and (op == 0xFC or op == 0xFA or op == 0xFB) then
+      -- Battle-FX node lists set their own combiner, primitive and
+      -- environment colours (often in a list that draws nothing). RDP state
+      -- persists into later node lists: 8003D888 re-submits a combiner only
+      -- when the node's selector differs from the cached one.
+      if op == 0xFC then
+        self:setRdpState({ combiner = Phase5Geometry.combinerFromWords(w0 % 0x1000000, w1) })
+      elseif op == 0xFA then
+        self:setRdpState({ primitive = w1, lodFraction = w0 % 0x100 })
+      else
+        self:setRdpState({ environment = w1 })
+      end
     elseif op == 0xD7 then
       -- gSPTexture is persistent RSP state, just like G_GEOMETRYMODE. Stadium
       -- field callbacks consume the scale left by an earlier display list;
@@ -697,14 +852,14 @@ function Model:bakePhase5Geometry()
   local f = self.f
   local seen = {}
   for _, node in ipairs(self.fx) do
-    if (node.handler == 0x81000140 or node.handler == 0x81000030
+    if (node.handler == 0x81000140 or node.handler == 0x81000138 or node.handler == 0x81000030
         or node.handler == 0x81000040 or node.handler == 0x81000070) and node.arg then
       local item = node.handler == 0x81000140 and f:ptr(node.arg) or nil
       local staticPhase5 = item and f:u32(item + 4) == 0
       -- The static 0x140 path only changes render state. Its argument is not
       -- a display-list table; scanning 0x400 bytes crosses into adjacent data
       -- and manufactured hundreds of triangles for Misdreavus and its peers.
-      if node.handler == 0x81000140 then
+      if node.handler == 0x81000140 or node.handler == 0x81000138 then
         -- func_810024E0 only emits render-state commands before delegating
         -- texture loading to func_81001F14. item[4] controls dynamic state;
         -- it is not a geometry pointer or display-list table.
@@ -763,7 +918,9 @@ function Model:mergePrimitivesByCallback()
       source.texAnim, source.cull, tostring(source.callbackOffset),
       tostring(source.callbackDescriptor), nodeColor,
       tostring(source.arenaRenderProfile), tostring(source.arenaSubmissionClass),
-      tostring(source.arenaResetAfterDraw) }, ",")
+      tostring(source.arenaResetAfterDraw),
+      source.rdpState and source.rdpState.key or "-",
+      tostring(source.nodeLayer) }, ",")
     local target = byKey[key]
     if not target then
       target = source
@@ -1003,26 +1160,40 @@ local function decodeTexture(f, tex, tlut, palette)
   local d = f.d
   local out = {}
 
+  -- Callback resources are dynamically linked by Stadium. If a corrupt or
+  -- unsupported descriptor points outside its owning module, keep the model
+  -- drawable instead of indexing nil bytes and terminating the battle.
+  local function sample(offset)
+    return (offset and offset >= 0 and offset < #d) and byte(d, offset + 1) or 0
+  end
+
   local function nibble(i)
-    local v = byte(d, addr + floor(i / 2) + 1)
+    local v = sample(addr + floor(i / 2))
     if i % 2 == 1 then return v % 16 end
     return floor(v / 16)
   end
 
   if fmt == 0 and siz == 2 then                       
     for i = 0, n - 1 do
-      local a, b = byte(d, addr + i * 2 + 1, addr + i * 2 + 2)
+      local a, b = sample(addr + i * 2), sample(addr + i * 2 + 1)
       out[i + 1] = char(rgba5551(a * 256 + b))
     end
   elseif fmt == 0 and siz == 3 then                   
-    return w, h, sub(d, addr + 1, addr + n * 4)
+    local rgba = sub(d, addr + 1, addr + n * 4)
+    local expected = n * 4
+    if #rgba < expected then
+      rgba = rgba .. string.rep("\255\0\255\255",
+        math.ceil((expected - #rgba) / 4))
+      rgba = sub(rgba, 1, expected)
+    end
+    return w, h, rgba
   elseif fmt == 2 then                                
     local pal, np = {}, 0
     if tlut ~= nil and tlut.data ~= nil then
       local base = tlut.data + (siz == 0 and palette * 16 * 2 or 0)
       np = (siz == 0) and 16 or 256
       for i = 0, np - 1 do
-        local a, b = byte(d, base + i * 2 + 1, base + i * 2 + 2)
+        local a, b = sample(base + i * 2), sample(base + i * 2 + 1)
         pal[i + 1] = char(rgba5551(a * 256 + b))
       end
     end
@@ -1031,17 +1202,17 @@ local function decodeTexture(f, tex, tlut, palette)
       for i = 1, np do pal[i] = "\255\0\255\255" end
     end
     for i = 0, n - 1 do
-      local idx = (siz == 0) and nibble(i) or byte(d, addr + i + 1)
+      local idx = (siz == 0) and nibble(i) or sample(addr + i)
       out[i + 1] = pal[idx % np + 1]
     end
   elseif fmt == 3 then                                
     for i = 0, n - 1 do
       local l, a
       if siz == 2 then
-        local x, y = byte(d, addr + i * 2 + 1, addr + i * 2 + 2)
+        local x, y = sample(addr + i * 2), sample(addr + i * 2 + 1)
         l, a = x, y
       elseif siz == 1 then
-        local v = byte(d, addr + i + 1)
+        local v = sample(addr + i)
         l, a = floor(v / 16) * 17, v % 16 * 17
       else
         local v = nibble(i)
@@ -1050,9 +1221,13 @@ local function decodeTexture(f, tex, tlut, palette)
       out[i + 1] = char(l, l, l, a)
     end
   elseif fmt == 4 then                                
+    -- The RDP's I formats replicate the intensity into all four channels,
+    -- so TEXEL0 alpha equals the intensity. Model imports keep the opaque
+    -- decode their caches were built with; battle FX opt in.
+    local intensityAlpha = f.intensityAlpha == true
     for i = 0, n - 1 do
-      local l = (siz == 1) and byte(d, addr + i + 1) or nibble(i) * 17
-      out[i + 1] = char(l, l, l, 255)
+      local l = (siz == 1) and sample(addr + i) or nibble(i) * 17
+      out[i + 1] = char(l, l, l, intensityAlpha and l or 255)
     end
   else
     for i = 0, n - 1 do out[i + 1] = "\255\0\255\255" end
@@ -1061,6 +1236,99 @@ local function decodeTexture(f, tex, tlut, palette)
 end
 
 StadiumFragment.decodeTexture = decodeTexture
+
+-- Decode standalone F3DEX2 display lists from a relocated FRAGMENT module.
+-- Battle FX resource modules do not contain Pokemon model roots, but their
+-- kind-2 shape exports use the same vertex/display-list format. Keeping this
+-- path on Model:runDL also preserves the persistent 64-entry N64 vertex cache.
+function StadiumFragment.extractDisplayLists(data,draws,name,sourceBase,options)
+  local previousBase=BASE
+  BASE=tonumber(sourceBase) or 0x8FF00000
+  local frag,err=StadiumFragment.open(data,name or "<battle-fx-resource>")
+  if not frag then BASE=previousBase; return nil,err end
+  frag.intensityAlpha=type(options)=="table" and options.intensityAlpha==true
+  local m=setmetatable({
+    f=frag,species=0,textures={},tluts={},bones={{parent=-1,boneId=0,chan=-1,
+      t={0,0,0},r={0,0,0},s={1,1,1}}},
+    prims={},primsByKey={},vbuf={},geometryMode=0,drawSerial=0,
+    curTex=-1,curTlut=-1,curMat=nil,curTexAnim=-1,curNodeColor=nil,
+    warnings={},options={},
+  },Model)
+  local textures,textureByKey={},{ }
+  local function register(spec)
+    local key=table.concat({spec.pointer,spec.w,spec.h,spec.format,spec.size},":")
+    local slot=textureByKey[key]
+    if slot~=nil then return slot end
+    local offset=spec.pointer-BASE
+    local w,h,rgba=decodeTexture(frag,{w=spec.w,h=spec.h,fmt=spec.format,
+      siz=spec.size,data=offset},nil,0)
+    slot=#textures
+    textureByKey[key]=slot
+    textures[slot+1]={index=-1,w=w,h=h,rgba=rgba,format=spec.format,
+      size=spec.size,sourcePointer=spec.pointer,callback=true}
+    m.textures[slot+1]={w=w,h=h,fmt=spec.format,siz=spec.size,data=offset}
+    return slot
+  end
+  for _,draw in ipairs(draws or {}) do
+    local slots={}
+    for _,spec in ipairs(draw.textures or {}) do slots[#slots+1]=register(spec) end
+    local firstPrim=#m.prims+1
+    m.curTex=slots[1] or -1
+    m.curMat=draw.materialOffset
+    m.geometryMode=tonumber(draw.geometryMode) or m.geometryMode
+    m:runDL(draw.displayListOffset,0,0)
+    for index=firstPrim,#m.prims do
+      local prim=m.prims[index]
+      prim.fxFrames=slots
+      prim.battleFxMaterial=draw.material
+      prim.battleFxController=draw.controller
+      prim.battleFxState=draw.state
+      prim.battleFxRenderState=draw.renderState
+      prim.battleFxSampler=draw.textures and draw.textures[1]
+        and draw.textures[1].sampler or nil
+    end
+  end
+  local prims={}
+  for _,p in ipairs(m.prims) do
+    if p.ntris>0 then
+      local texture=textures[(p.tex or -1)+1]
+      local tw,th=texture and texture.w or 32,texture and texture.h or 32
+      local pos,uv,nrm,color,skin,idx={},{},{},{},{},{}
+      for i=1,p.nverts do
+        local v=p.verts[i]
+        pos[i*3-2],pos[i*3-1],pos[i*3]=v[1],v[2],v[3]
+        uv[i*2-1],uv[i*2]=(v[4]/32)/tw,(v[5]/32)/th
+        nrm[i*3-2],nrm[i*3-1],nrm[i*3]=v[6]/127,v[7]/127,v[8]/127
+        color[i*4-3]=(v[6]<0 and v[6]+256 or v[6])
+        color[i*4-2]=(v[7]<0 and v[7]+256 or v[7])
+        color[i*4-1]=(v[8]<0 and v[8]+256 or v[8])
+        color[i*4]=v[9]
+        skin[i]=0
+      end
+      local n=0
+      for _,tri in ipairs(p.tris) do
+        idx[n+1],idx[n+2],idx[n+3]=tri[1],tri[2],tri[3]; n=n+3
+      end
+      local semantics=VertexSemantics.classify(nrm)
+      local material=p.battleFxMaterial or {
+        primitiveColor={1,1,1,1},environmentColor={1,1,1,1},textureEnabled=true}
+      prims[#prims+1]={
+        tex=p.tex,cull=floor((p.cull or 0)/0x400)%2==1,
+        geometryMode=p.cull or 0,lighting=semantics=="normal",
+        vertexSemantics=semantics,color=color,texAnim=-1,texMap=nil,
+        fxFrames=p.fxFrames,sampler=p.battleFxSampler,
+        material=material,battleFxController=p.battleFxController,
+        battleFxState=p.battleFxState,battleFxRenderState=p.battleFxRenderState,
+        blend="alpha",alphaMode="blend",decal=false,
+        pos=pos,uv=uv,nrm=nrm,skin=skin,nverts=p.nverts,idx=idx,nidx=n,
+      }
+    end
+  end
+  BASE=previousBase
+  return {species=0,staticPose=false,file=name or "battle-fx",rootScale={1,1,1},
+    bones=m.bones,textures=textures,prims=prims,anims={},auxAnims={},fx={},
+    moveAnim={},contextAnim={},warnings=m.warnings}
+end
 
 
 local function compress(values, n, nd)
@@ -1246,9 +1514,39 @@ function StadiumFragment.inspectFx(data, name, sourceBase)
   }
 end
 
+-- Material for a primitive drawn under display-list RDP state (see
+-- trackRdpState). A colour the model never sets is inherited from earlier
+-- draws in the frame; it stays nil so the renderer keeps its default.
+local function rdpColor(word)
+  if word == nil then return nil end
+  return { floor(word / 0x1000000) / 255, floor(word / 0x10000) % 256 / 255,
+    floor(word / 0x100) % 256 / 255, word % 256 / 255 }
+end
+
+-- Without a list-authored SETPRIMCOLOR, 8003D0C8 submits the node colour
+-- (layout 0x23 RGBA) with the object alpha as the LOD fraction; a fully
+-- visible object has alpha 0xFF.
+local function rdpMaterial(state, nodeColor)
+  if not (state and state.combiner) then return nil end
+  local primitive = rdpColor(state.primitive)
+  if primitive == nil and nodeColor then
+    primitive = { nodeColor[1] / 255, nodeColor[2] / 255, nodeColor[3] / 255,
+      nodeColor[4] / 255 }
+  end
+  return {
+    phase5 = true,
+    displayListState = true,
+    combiner = state.combiner,
+    primitiveColor = primitive,
+    environmentColor = rdpColor(state.environment),
+    primitiveLodFraction = (state.lodFraction or 0xFF) / 255,
+  }
+end
+
 function StadiumFragment.extract(data, name, options)
   local frag, err = StadiumFragment.open(data, name)
   if not frag then return nil, err end
+  frag.intensityAlpha = type(options) == "table" and options.intensityAlpha == true
   local m, mErr = newModel(frag, options)
   if not m then return nil, mErr end
   m:build()
@@ -1338,7 +1636,7 @@ function StadiumFragment.extract(data, name, options)
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 4 + i * 4), 64, 32, 0, 2) end
       elseif handler == 0x81000070 then
         for i = 0, 7 do registerCallback(node, frag:u32(arg + 8 + i * 4), 32, 32, 4, 0) end
-      elseif handler == 0x81000140 or handler == 0x81000148 then
+      elseif handler == 0x81000138 or handler == 0x81000140 or handler == 0x81000148 then
         for _, texture in ipairs(Phase5Geometry.textureSpecs(frag.d, BASE, arg)) do
           registerCallback(node, texture.pointer, texture.w, texture.h,
             texture.format, texture.size, texture.sampler, texture.descriptorOffset)
@@ -1348,7 +1646,7 @@ function StadiumFragment.extract(data, name, options)
   end
 
 
-  local callbackTextureBySite, callbackStateBySite = {}, {}
+  local callbackTextureBySite, callbackStateBySite, callbackMaterialBySite = {}, {}, {}
   for _, row in ipairs(handlerTextures) do
     -- Phase-5 callbacks register TEXEL0 followed by TEXEL1.  Mesh UVs are
     -- authored against TEXEL0's render tile; retaining the last registration
@@ -1360,8 +1658,13 @@ function StadiumFragment.extract(data, name, options)
     end
   end
   for _, node in ipairs(m.fx) do
-    if (node.handler == 0x81000140 or node.handler == 0x81000148) and node.arg then
+    if (node.handler == 0x81000138 or node.handler == 0x81000140
+        or node.handler == 0x81000148) and node.arg then
       callbackStateBySite[node.commandOffset] = Phase5Geometry.stateSpec(frag.d, BASE, node.arg)
+      local submissionMode=node.handler==0x81000138 and 0
+        or (node.handler==0x81000148 and 2 or 1)
+      callbackMaterialBySite[node.commandOffset] = Phase5Geometry.materialSpec(
+        frag.d,BASE,node.arg,submissionMode)
     end
   end
 
@@ -1371,6 +1674,14 @@ function StadiumFragment.extract(data, name, options)
     if p.ntris > 0 then
       local pal = m:tilePalette(p.mat)
       local ti = texIndexMap[p.tex .. "," .. p.tlut .. "," .. pal] or -1
+      -- 810024E0 loads a 0x81000138 callback's own texture (81001F14) before
+      -- its node's list. A 0x23 texture left in the global state by an
+      -- unrelated node does not survive that load (Swords Dance: six swords
+      -- whose guard/blade nodes follow the grip node's authored texture).
+      if ti >= 0 and p.foreignTexture and p.callbackDescriptor == 0x81000138
+          and callbackTextureBySite[p.callbackOffset] ~= nil then
+        ti = -1
+      end
       local texMap = nil
       if p.texAnim >= 0 then
         for _, a in ipairs(auxAnims) do
@@ -1422,7 +1733,8 @@ function StadiumFragment.extract(data, name, options)
       local lighting = vertexSemantics == "normal"
       local callbackOffset, callbackDescriptor = p.callbackOffset,
         p.callbackDescriptor
-      if callbackDescriptor == 0x81000140 or callbackDescriptor == 0x81000148 then
+      if callbackDescriptor == 0x81000138 or callbackDescriptor == 0x81000140
+          or callbackDescriptor == 0x81000148 then
         inheritedPhase5Offset = callbackOffset
         inheritedPhase5Descriptor = callbackDescriptor
       elseif ti >= 0 then
@@ -1487,7 +1799,10 @@ function StadiumFragment.extract(data, name, options)
         blend = (p.callbackDescriptor == 0x81000038 or p.callbackDescriptor == 0x81000068)
           and "add" or "alpha",
         materialOffset = p.mat, callbackOffset = callbackOffset,
+        material = callbackMaterialBySite[callbackOffset]
+          or rdpMaterial(p.rdpState, p.nodeColor),
         nodeColor = p.nodeColor,
+        battleFxNodeLayer = p.nodeLayer,
         arenaRenderProfile = p.arenaRenderProfile,
         arenaSubmissionClass = p.arenaSubmissionClass,
         arenaResetAfterDraw = p.arenaResetAfterDraw == true,
@@ -1594,6 +1909,7 @@ function StadiumFragment.extract(data, name, options)
     file = name,
     rootScale = m.rootScale,
     bones = m.bones,
+    attachments = m.attachments,
     textures = texOut,
     prims = prims,
     anims = anims,
@@ -1770,6 +2086,26 @@ local function crystal251DecodeOne(frag, off, bones)
     tracks = tracks,
     sourceOffset = off,
   }
+end
+
+-- FX animations are independent kind-4 exports, sometimes in a different
+-- resource from their kind-3 skeleton. Decode against the supplied bones.
+function StadiumFragment.decodeAnimation(data, offset, bones, sourceBase)
+  local previous=BASE
+  if sourceBase then StadiumFragment.setBase(sourceBase) end
+  local ok,anim,err=pcall(function()
+    local frag,openError=StadiumFragment.open(data,'battle-fx-animation')
+    if not frag then return nil,openError end
+    if not offset or offset<0 or offset+28>#data then
+      return nil,'animation header outside resource'
+    end
+    local frames=frag:u16(offset+10)
+    if frames<1 or frames>4096 then return nil,'invalid animation frame count' end
+    return crystal251DecodeOne(frag,offset,bones)
+  end)
+  StadiumFragment.setBase(previous)
+  if not ok then return nil,tostring(anim) end
+  return anim,err
 end
 
 local function crystal251DecodeOffsets(frag, offsets, bones)

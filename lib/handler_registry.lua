@@ -17,6 +17,11 @@ Registry.BY_DESCRIPTOR = {
   [0x81000078] = { target = 0x81003680, phases = { 2 }, family = "attribute-transform", confidence = "partial" },
   [0x81000080] = { target = 0x81005F80, phases = { 0 }, family = "model-context-register", confidence = "verified-behavior" },
   [0x81000088] = { target = 0x81003DAC, phases = { 0, 2 }, family = "runtime-dispatch-bridge", confidence = "partial" },
+  -- Mode 0 is used by graph-layout resource exports compiled at load time.
+  -- It submits the authored material without Pokemon alpha or arena colour
+  -- overrides (fragment 26 descriptor 0x138 -> func_810024E0 mode 0).
+  [0x81000138] = { target = 0x8100337C, phases = { 5 }, family = "render-time-geometry-pipeline", confidence = "verified-behavior",
+    submissionMode = 0 },
   [0x81000140] = { target = 0x810033DC, phases = { 5 }, family = "render-time-geometry-pipeline", confidence = "verified-structure",
     submissionMode = 1 },
   -- Stadium fields use the same func_810024E0 submission pipeline as model

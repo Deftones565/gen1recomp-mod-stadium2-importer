@@ -10,6 +10,8 @@ local ArenaFragment
 local ArenaHandlers
 local ArenaMaterials
 local ArenaPack
+local BattleFxPreview
+local BattleFxPack
 local root
 local loadError
 local paused = false
@@ -51,6 +53,7 @@ local rapidashCutEffect = os.getenv("STADIUM2_VISUAL_RAPIDASH_CUT_FX") ~= "0"
 local rapidashButtonHeld = false
 local arenaButtonHeld = false
 local cameraButtonHeld = false
+local battleFxButtonHeld = false
 local arenaSceneEnabled = os.getenv("STADIUM2_VISUAL_SCENE") ~= "classic"
 local arenaIndex = math.max(0, math.min(29,
   math.floor(tonumber(os.getenv("STADIUM2_VISUAL_ARENA")) or 0)))
@@ -63,6 +66,22 @@ local arenaModel
 local arenaSource
 local arenaError
 local arenaUnhook
+local battleFxUnhook
+local battleFxBackgroundUnhook
+local battleFxMove=math.max(1,math.min(251,
+  math.floor(tonumber(os.getenv("STADIUM2_VISUAL_MOVE_FX")) or 7)))
+-- Route mode: "sequence" (move animation + move bank + impact bank at the
+-- hit frame, the default), false (move bank only), true (impact bank only)
+-- or "variant" (route mode 1 of two-turn moves).
+local battleFx={active=false,frame=0,error=nil,
+  alternate=os.getenv("STADIUM2_VISUAL_FX_ALTERNATE")=="1" or "sequence"}
+local function routeLabel(long)
+  local mode=battleFx.alternate
+  if mode=="sequence" then return long and "sequence" or "SEQ" end
+  if mode=="variant" then return long and "variant" or "VAR" end
+  if mode==true then return long and "alternate" or "ALT" end
+  return long and "primary" or "PRI"
+end
 local tagData
 local tagFilePath
 local tagEditing = false
@@ -609,6 +628,99 @@ local function installArenaHook()
     drawArena, 1000, "stadium2-arena-visual")
 end
 
+local function releaseBattleFx()
+  if battleFx.preview then battleFx.preview:release() end
+  battleFx.active=false
+end
+
+local function startBattleFx()
+  releaseBattleFx()
+  battleFx.error=nil
+  if not battleFx.preview then
+    battleFx.preview=BattleFxPreview.new({rom=arenaRomData, importer=Importer,
+      releaseModel=BattleFxPack.release,
+      shaderStyleProvider=function() return shaderStyle end,
+      warn=function(d)
+        battleFx.error=tostring(d.code)..": "..tostring(d.message)
+        warn("ROM_FX "..battleFx.error)
+      end,
+    })
+  end
+  -- The source battler plays its own clip for this move. Testing must show
+  -- a missing clip, so there is no generic fallback, and the FX still plays.
+  local animationNote
+  if battleFxMove<=251 then
+    local actor=actorForSide(selectedSide)
+    local ok,reason=false,"no actor on this side"
+    if actor and actor.attack then ok,reason=actor:attack(battleFxMove,true) end
+    if not ok then
+      animationNote="animation skipped: "..tostring(reason)
+      warn("ROM_FX "..animationNote)
+    end
+  end
+  -- The hit-frame states (84116EB4/841170A0/84117948/84118138/841182E0) run
+  -- on the defender: they select context 254 (hit) and fire the impact bank.
+  -- The ROM starts that clip when the defender's state begins; the viewer
+  -- starts it with the impact, so its lead time is approximate.
+  local targetSide=selectedSide=="player" and "enemy" or "player"
+  battleFx.preview.onImpact=function()
+    local target=actorForSide(targetSide)
+    local renderer=target and target.renderer
+    local ok=renderer and renderer.setContext and renderer:setContext("hit",false)
+    if ok then
+      target.context="hit"
+      renderer.finished=false
+    else
+      local note=("hit animation skipped: species %s has no hit clip")
+        :format(tostring(target and target.dex))
+      warn("ROM_FX "..note)
+      showMessage(note)
+    end
+  end
+  local effect, err=battleFx.preview:start(battleFxMove, selectedSide,
+    battleFx.alternate, battleFx.sceneContext)
+  battleFx.active=effect~=nil
+  battleFx.frame=0
+  if not effect then battleFx.error=tostring(err) end
+  local impactNote=battleFx.preview.impactNote
+  if impactNote then warn("ROM_FX "..impactNote) end
+  local message=effect and ("Playing ROM FX #%03d (%s)"):format(battleFxMove,routeLabel(true))
+    or "move FX unavailable: "..tostring(err)
+  for _,note in ipairs({animationNote,impactNote}) do
+    if note then message=message.."\n"..note end
+  end
+  showMessage(message)
+  return battleFx.active
+end
+
+local function cycleBattleFx(delta)
+  -- FX table entries 252..301 are the non-move battle effects.
+  battleFxMove=((battleFxMove-1+(tonumber(delta) or 0))%301)+1
+  return startBattleFx()
+end
+
+local function drawBattleFx(nextDraw,context)
+  battleFx.sceneContext=context
+  local result=nextDraw()
+  if battleFx.active then battleFx.preview:draw(context) end
+  return result
+end
+
+local function installBattleFxHook()
+  local Runtime=require("src.mods.Runtime")
+  if type(Runtime.hooks.wrap)~="function" then
+    local Hooks=require("src.mods.Hooks")
+    Runtime.install(Runtime.events,Hooks.new(),Runtime.errors)
+  end
+  battleFxUnhook=Runtime.hooks:wrap("battle.scene.geometry.v1",
+    drawBattleFx,1100,"stadium2-rom-fx-visual")
+  battleFxBackgroundUnhook=Runtime.hooks:wrap("battle.scene.background.v1",
+    function(nextDraw,context)
+      if battleFx.active then battleFx.preview:drawBackground(context) end
+      return nextDraw()
+    end,1100,"stadium2-rom-fx-background")
+end
+
 local function animationTagPath()
   local supplied = os.getenv("STADIUM2_ANIMATION_TAGS_EXPORT")
   if supplied and supplied ~= "" then return supplied end
@@ -1036,7 +1148,8 @@ end
 
 local function shinyButtonBounds()
   local width = love.graphics.getWidth()
-  return width - 252, 100, 240, 36
+  -- Below the FX move buttons (battleFxButtonBounds, y 100).
+  return width - 252, 144, 240, 36
 end
 
 local function drawShinyButton(g)
@@ -1095,6 +1208,48 @@ local function drawCameraButtons(g)
   g.printf(">",x+previousWidth+labelWidth,y+9,nextWidth,"center")
 end
 
+local function battleFxButtonBounds()
+  local x,y,previousWidth,labelWidth,nextWidth,height=cameraButtonBounds()
+  return x,y+44,previousWidth,labelWidth,nextWidth,height
+end
+
+local function drawBattleFxButtons(g)
+  local x,y,previousWidth,labelWidth,nextWidth,height=battleFxButtonBounds()
+  g.setColor(.12,.14,.19,.94)
+  g.rectangle("fill",x,y,previousWidth,height,6,6)
+  g.rectangle("fill",x+previousWidth+labelWidth,y,nextWidth,height,6,6)
+  g.setColor(battleFx.active and .18 or .25,battleFx.active and .55 or .24,
+    battleFx.active and .28 or .42,.94)
+  g.rectangle("fill",x+previousWidth+3,y,labelWidth-6,height,6,6)
+  g.setColor(.9,.93,1,1)
+  g.printf("<",x,y+9,previousWidth,"center")
+  g.printf(("FX %03d %s%s"):format(battleFxMove,
+    routeLabel(false),
+    battleFx.active and ("  %dF"):format(math.floor(battleFx.frame)) or ""),
+    x+previousWidth,y+9,labelWidth,"center")
+  g.printf(">",x+previousWidth+labelWidth,y+9,nextWidth,"center")
+  if battleFx.preview and battleFx.active then
+    local preview=battleFx.preview
+    local impact=""
+    if preview.pendingImpact then impact=("   Impact @%dF"):format(preview.pendingImpact.hit)
+    elseif preview.impactEffectId then impact="   Impact played"
+    elseif preview.impactNote then impact="   Impact skipped" end
+    g.printf(("Drawn: %d   Diagnostics: %d%s"):format(
+      preview.drawn or 0,#preview.diagnostics,impact),
+      x,y+height+4,previousWidth+labelWidth+nextWidth,"right")
+  end
+  if battleFx.error then
+    g.setColor(1,.72,.35,1)
+    g.printf(battleFx.error,x,y+height+24,previousWidth+labelWidth+nextWidth,"left")
+  end
+  local color=battleFx.active and battleFx.preview and battleFx.preview.nativeColor
+  if color then
+    g.setColor(.9,.93,1,1)
+    g.printf(("Native background RGBA: %d %d %d %d"):format(color[1],color[2],color[3],color[4]),
+      x,y+height+64,previousWidth+labelWidth+nextWidth,"right")
+  end
+end
+
 local function initialise()
   -- LOVE's distro boot scripts do not all honor conf.lua's appendidentity
   -- field.  Select it explicitly before SaveData or Storage touches the
@@ -1135,6 +1290,9 @@ local function initialise()
     ArenaHandlers = require("mods.STADIUM2_IMPORTER.lib.model_handlers")
     ArenaMaterials = require("mods.STADIUM2_IMPORTER.lib.materials")
     ArenaPack = require("mods.STADIUM2_IMPORTER.lib.pack")
+    BattleFxPreview=require(
+      "mods.STADIUM2_IMPORTER.tests.stadium2_koffing_croconaw_visual.battle_fx")
+    BattleFxPack=ArenaPack
     loadAnimationTags()
     local shadowBias=tonumber(os.getenv("STADIUM2_VISUAL_SHADOW_BIAS"))
     if os.getenv("STADIUM2_VISUAL_DISABLE_SUN_SHADOW") == "1" or shadowBias then
@@ -1154,6 +1312,7 @@ local function initialise()
       arenaError = tostring(arenaSourceError)
       warn("ARENA_UNAVAILABLE " .. arenaError)
     end
+    installBattleFxHook()
     if not Importer.available(251) then
       local started, err = Importer.autoImport()
       if not started then error(err or "Stadium 2 cache is stale and automatic re-import failed") end
@@ -1184,7 +1343,7 @@ local function drawText(g)
   local enemyMark = selectedSide == "enemy" and "> " or "  "
   local playerMark = selectedSide == "player" and "> " or "  "
   g.setColor(0, 0, 0, .72)
-  local panelHeight = help and (debugPanel and 382 or 242) or (debugPanel and 264 or 124)
+  local panelHeight = help and (debugPanel and 400 or 260) or (debugPanel and 264 or 124)
   g.rectangle("fill", 12, 12, 430, panelHeight, 6, 6)
   g.setColor(1, 1, 1, 1)
   g.print(enemyMark .. "Enemy " .. modelLabel(enemyDex), 24, 22)
@@ -1211,13 +1370,14 @@ local function drawText(g)
     g.print(("TAB select side   LEFT/RIGHT model   UP/DOWN +/-10   (1-%d)"):format(MODEL_COUNT), 24, 158)
     g.print("Drag mouse orbit/pitch   Wheel zoom", 24, 176)
     g.print("Q/E animation   R recenter   SPACE pause", 24, 194)
-    g.print("Y or SHINY button toggles the selected Pokemon's shiny", 24, 212)
+    g.print("Y or SHINY button toggles the selected Pokemon's shiny (Y finishes FX while one plays)", 24, 212)
     g.print("G force selected FX   [ / ] age   X suppress FX draw   F Rapidash FX", 24, 230)
     g.print("0 all primitives   1-9 isolate   ,/. arena   B scene   C camera   V shader   S shot", 24, 248)
+    g.print("J/L move FX   K replay   O route   N step (paused)   Y finish FX   M stop",24,266)
   end
   if debugPanel then
     local d = gasSnapshot()
-    local y = help and 254 or 134
+    local y = help and 290 or 134
     g.print(("Selected %s #%03d  bones:%d prims:%d textures:%d"):format(
       selectedSide, selected and selected.dex or 0, #(model.bones or {}),
       #(model.prims or {}), #(model.textures or {})), 24, y)
@@ -1248,6 +1408,7 @@ local function drawText(g)
   end
   drawArenaButtons(g)
   drawCameraButtons(g)
+  drawBattleFxButtons(g)
   drawShinyButton(g)
   drawRapidashButton(g)
 end
@@ -1298,6 +1459,10 @@ function love.update(dt)
     Camera.update(dt)
     if arenaRenderer then arenaRenderer:step(dt) end
     for _, actor in pairs(scene.actors or {}) do actor:update(dt) end
+    if battleFx.active then
+      battleFx.preview:update(dt)
+      battleFx.frame=battleFx.preview.frame
+    end
     applyDebugControls()
     ensureForcedGas()
     local ok = scene:render()
@@ -1380,6 +1545,31 @@ function love.keypressed(key)
     cycleArena(1)
   elseif key == "c" then
     cycleCameraMode(1)
+  elseif key == "j" then
+    cycleBattleFx(-1)
+  elseif key == "k" then
+    startBattleFx()
+  elseif key == "l" then
+    cycleBattleFx(1)
+  elseif key == "o" then
+    -- Sequence -> primary -> alternate -> variant (two-turn moves only).
+    local entry=battleFx.preview and battleFx.preview.catalog
+      and battleFx.preview.catalog.moves[battleFxMove]
+    if battleFx.alternate=="sequence" then battleFx.alternate=false
+    elseif battleFx.alternate==false then battleFx.alternate=true
+    elseif battleFx.alternate==true and entry and entry.variantDispatch then
+      battleFx.alternate="variant"
+    else battleFx.alternate="sequence" end
+    startBattleFx()
+  elseif key == "n" and paused and battleFx.active then
+    -- Keep the move animation on the same 30 Hz tick as the FX.
+    for _, actor in pairs(scene and scene.actors or {}) do actor:update(1/30) end
+    battleFx.preview:step()
+    battleFx.frame=battleFx.preview.frame
+  elseif key == "y" and battleFx.active then
+    if battleFx.preview:finish() then showMessage("ROM FX completion signaled") end
+  elseif key == "m" then
+    releaseBattleFx()
   elseif key == "b" then
     toggleSceneMode()
   elseif key == "t" then
@@ -1476,6 +1666,25 @@ function love.mousepressed(x, y, button)
       return
     end
   end
+  local fx,fy,fxPreviousWidth,fxLabelWidth,fxNextWidth,fxHeight=battleFxButtonBounds()
+  if y>=fy and y<=fy+fxHeight then
+    if x>=fx and x<=fx+fxPreviousWidth then
+      battleFxButtonHeld=true
+      cycleBattleFx(-1)
+      return
+    end
+    if x>=fx+fxPreviousWidth and x<=fx+fxPreviousWidth+fxLabelWidth then
+      battleFxButtonHeld=true
+      startBattleFx()
+      return
+    end
+    local nextX=fx+fxPreviousWidth+fxLabelWidth
+    if x>=nextX and x<=nextX+fxNextWidth then
+      battleFxButtonHeld=true
+      cycleBattleFx(1)
+      return
+    end
+  end
   local bx, by, width, height = rapidashButtonBounds()
   if x >= bx and y >= by and x <= bx + width and y <= by + height then
     rapidashButtonHeld = true
@@ -1488,12 +1697,13 @@ function love.mousereleased(_, _, button)
     rapidashButtonHeld = false
     arenaButtonHeld = false
     cameraButtonHeld = false
+    battleFxButtonHeld=false
   end
 end
 
 function love.mousemoved(x, y, dx, dy)
   if Camera and not rapidashButtonHeld and not arenaButtonHeld
-      and not cameraButtonHeld and love.mouse.isDown(1) then
+      and not cameraButtonHeld and not battleFxButtonHeld and love.mouse.isDown(1) then
     Camera.mouseOrbit(dx)
     Camera.mousePitch(dy)
   end
@@ -1511,6 +1721,9 @@ function love.quit()
     arenaRenderer = nil
   end
   if arenaModel and ArenaPack then ArenaPack.release(arenaModel); arenaModel = nil end
+  if battleFxUnhook then pcall(battleFxUnhook); battleFxUnhook=nil end
+  if battleFxBackgroundUnhook then pcall(battleFxBackgroundUnhook); battleFxBackgroundUnhook=nil end
+  releaseBattleFx()
   if scene then scene:release() end
   if Importer then Importer.releaseModels() end
 end

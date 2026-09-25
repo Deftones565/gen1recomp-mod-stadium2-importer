@@ -87,6 +87,10 @@ function Scene.init(self,opts)
   self.arenaEnvironment=type(opts.arenaEnvironment)=="table"
     and opts.arenaEnvironment
     or (self.arena and self.arena.environment) or Scene.ARENA_ENVIRONMENT
+  -- Generation scenes may inject the opt-in Stadium 2 FX bridge.  Keeping
+  -- this as an injected seam means the default battle path does not load or
+  -- allocate any FX runtime state when the beta toggle is off.
+  self.battleFx=type(opts.battleFx)=="table" and opts.battleFx or nil
   return self
 end
 
@@ -109,6 +113,11 @@ function Scene.new(opts)
 end
 
 function Scene:release()
+  local battleFx=self.battleFx
+  self.battleFx=nil
+  if battleFx and type(battleFx.release)=="function" then
+    pcall(battleFx.release,battleFx)
+  end
   if self.weather then self.weather:release();self.weather=nil end
   if self.visitors then self.visitors:release();self.visitors=nil end
   if self.statusOverlay and self.statusOverlay.release then self.statusOverlay:release() end
@@ -131,6 +140,17 @@ function Scene:release()
   Hud.invalidate()
   AA.release()
   Camera.reset()
+end
+
+-- Generation-specific update loops call this after their host presentation
+-- state has advanced.  The shared scene deliberately does not own battle
+-- timing, but provides one guarded seam for the persistent FX clock.
+function Scene:updateBattleFx(dt)
+  local battleFx=self.battleFx
+  if not battleFx or type(battleFx.update)~="function" then return nil end
+  local ok,result=pcall(battleFx.update,battleFx,dt)
+  if not ok and self.warn then pcall(self.warn,tostring(result)) end
+  return ok and result or nil
 end
 
 function Scene:stepArena(dt)
@@ -338,19 +358,27 @@ end
 -- animation timeline. Apply in world space so scaling cannot cancel it.
 function Scene:picElevation() return 0 end
 
-function Scene:modelMatrix(side,actor)
+-- `image` (optional) is one of actor.afterimages: its offset and scale
+-- replace the battler's own (lib/battle_special_moves.lua).
+function Scene:modelMatrix(side,actor,image)
   actor=actor or self.actors[side]
   local metrics=actor.renderer:worldMetrics()
   local elevation=self:picElevation(side)
   if self.arenaMode then
-    local k=self.arenaScale*actor:scale()*self:picScale(side)
+    -- Agility copies the battler's scale (84120E7C); Double Team sets 1.0
+    -- (84121CAC), taken here as the battler's base scale.
+    local size=image and image.scale or actor:scale()
+    local k=self.arenaScale*size*self:picScale(side)
     local slot,yaw=StadiumBattleLayout.slot(side,actor.dex)
+    -- Native per-move sway (Agility) or afterimage position, Stadium units.
+    local o=image and image.offset or actor.nativeOffset or {0,0,0}
     -- Stadium model bounds and field vertices use the same source units.
     -- Fragment 79 authors X/Z and facing globally for every field. Ground the
     -- extracted model's real floor to reproduce its model-derived Y offset.
-    return mul(translate(slot[1]*self.arenaScale,
-        self.arenaGroundY-metrics.floor*k+elevation*metrics.height*self.arenaScale,
-        slot[3]*self.arenaScale),
+    return mul(translate((slot[1]+o[1])*self.arenaScale,
+        self.arenaGroundY-metrics.floor*k+o[2]*self.arenaScale
+          +elevation*metrics.height*self.arenaScale,
+        (slot[3]+o[3])*self.arenaScale),
       mul(rotateY(yaw),scale(k))),yaw
   end
   local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
@@ -466,6 +494,9 @@ function Scene:render(requestedWidth,requestedHeight)
 
     local bands=self.environment and self.environment.bands
     local clear=bands and bands[1] or {0,0,0}
+    if self.battleFx and type(self.battleFx.backgroundColor)=="function" then
+      clear=self.battleFx:backgroundColor(clear)
+    end
     g.setShader()
     if g.setDepthMode then g.setDepthMode("always",false) end
     g.clear(clear[1] or 0,clear[2] or 0,clear[3] or 0,1,true,true)
@@ -547,6 +578,16 @@ function Scene:render(requestedWidth,requestedHeight)
     restoreWorldTarget(self,g)
     Extensions.geometry(ext)
     restoreWorldTarget(self,g)
+    -- Move FX are presented after the arena geometry has established the
+    -- world target.  The bridge owns its renderer state, so restore the
+    -- target both before and after the call even when a provider changes
+    -- shader, blend, or depth state internally.
+    if self.battleFx and type(self.battleFx.draw)=="function" then
+      restoreWorldTarget(self,g)
+      local fxOk,fxError=pcall(self.battleFx.draw,self.battleFx,ext)
+      restoreWorldTarget(self,g)
+      if not fxOk and self.warn then pcall(self.warn,tostring(fxError)) end
+    end
     local box=frame.letterbox
     self.uiAnchors={
       player={(marks.player.x-box.lx)/box.scale,(marks.player.y-box.ly)/box.scale},
@@ -581,21 +622,39 @@ function Scene:render(requestedWidth,requestedHeight)
         if resolvedModes[side]=="host" and not modelFailed[side]
             and entry and actor.renderer then
           local base=self.environment.modelTint or {1,1,1}
-          local drawn,drawErr=actor.renderer:drawScene(pass,entry[1],{
-            viewProjection=vp,viewMatrix=frame.view,
-            normalMatrix=Renderer.normalMatrix(entry[2],0,false),
-            bindTorchLighting=natureActive and environmentScene.bindTorchLighting or nil,
-            sceneWatercolor=natureActive,
-            lightDir=self.environment.light,ambient=self.environment.ambient,
-            diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
-            modernLighting=self.sceneMode==Scene.MODE_ARENA,
-            flipWinding=true,disableCulling=true,
-            tint={base[1],base[2],base[3],1},
-            flashAmount=actor.flash>0 and .5 or 0,
-            sunMap=shadow and shadow.map,sunVP=shadow and shadow.sunVP,
-            sunDark=shadow and shadow.sunDark,sunBias=shadow and shadow.sunBias,
-            sunTexel=shadow and shadow.sunTexel,
-          })
+          local nativeColor=ext.nativeModelColors and ext.nativeModelColors[side]
+          local opacity=nativeColor and nativeColor.opacity
+            and nativeColor.opacity/255 or 1
+          local function drawModel(matrix,alphaByte)
+            return actor.renderer:drawScene(pass,matrix,{
+              viewProjection=vp,viewMatrix=frame.view,
+              normalMatrix=Renderer.normalMatrix(entry[2],0,false),
+              bindTorchLighting=natureActive and environmentScene.bindTorchLighting or nil,
+              sceneWatercolor=natureActive,
+              lightDir=self.environment.light,ambient=self.environment.ambient,
+              diffuse=self.environment.diffuse,skipHandlers=pass=="additive",
+              modernLighting=self.sceneMode==Scene.MODE_ARENA,
+              flipWinding=true,disableCulling=true,
+              -- Stadium model materialAlpha (+0x1D), 255 unless a native
+              -- routine (Double Team) sets it.
+              tint={base[1],base[2],base[3],opacity*(alphaByte or 255)/255},
+              nativeModelColor=nativeColor and nativeColor.color,
+              flashAmount=actor.flash>0 and .5 or 0,
+              sunMap=shadow and shadow.map,sunVP=shadow and shadow.sunVP,
+              sunDark=shadow and shadow.sunDark,sunBias=shadow and shadow.sunBias,
+              sunTexel=shadow and shadow.sunTexel,
+            })
+          end
+          local drawn,drawErr=drawModel(entry[1],actor.modelAlphaByte)
+          -- Afterimage copies (Agility, Double Team): same pose, own
+          -- position and alpha, drawn after the battler.
+          if drawn and self.arenaMode and actor.afterimages then
+            for _,image in ipairs(actor.afterimages) do
+              if (image.alpha or 0)>0 then
+                drawModel((self:modelMatrix(side,actor,image)),image.alpha)
+              end
+            end
+          end
           if not drawn then
             if self.warn then
               pcall(self.warn,self.label.." "..side.." "..pass
@@ -621,6 +680,7 @@ function Scene:render(requestedWidth,requestedHeight)
       self.weather:draw(g,frame,self.weatherDT or 0)
     end
     restoreWorldTarget(self,g)
+    if ext.nativeOverlayDraw then ext.nativeOverlayDraw();restoreWorldTarget(self,g) end
     Extensions.overlay(ext)
     restoreWorldTarget(self,g)
     g.setColor(1,1,1,1)

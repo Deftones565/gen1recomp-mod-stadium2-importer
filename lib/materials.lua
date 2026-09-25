@@ -29,6 +29,14 @@ function Materials.rootRenderMode(profile, submissionClass)
   return row and layer and row[layer + 1] or nil, layer
 end
 
+-- The table word for an unmapped layer (8003D808 remaps layers 1-4 only
+-- while the object alpha is below 0xFF).
+function Materials.layerRenderMode(profile, layer)
+  local row = ROOT_RENDER_MODES[tonumber(profile)]
+  layer = tonumber(layer)
+  return row and layer and row[layer + 1] or nil
+end
+
 local SUPPORTED = {
   [0x00] = true, [0xD7] = true, [0xD8] = true, [0xD9] = true,
   [0xDA] = true, [0xDB] = true, [0xDC] = true, [0xDD] = true,

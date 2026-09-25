@@ -374,6 +374,11 @@ function Pack.parse(bytes)
     attachMoveMetadata(m)
     if r.p - 1 ~= baseEnd then error("unexpected DSM4 base payload length", 0) end
     m.handlers = Handlers.readExtension(bytes)
+    local render=m.handlers and m.handlers.render
+    m.attachments=render and render.attachments
+    m.fxDispatch=render and render.fxDispatch
+    m.fxBattleProfile=render and render.fxBattleProfile
+    m.fxContextScales=render and render.fxContextScales
     Materials.attach(m)
     local textureReport = TextureParity.audit(m, { indexBase = 1 })
     if #textureReport.issues > 0 then

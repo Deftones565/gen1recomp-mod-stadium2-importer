@@ -14,6 +14,10 @@ local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 local ArenaSelector = require("mods.STADIUM2_IMPORTER.lib.arena_selector")
 local ArenaLighting = require("mods.STADIUM2_IMPORTER.lib.arena_lighting")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
+local FxSequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
+local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
+local BattleFxAdapter = require(
+  "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
 local Unown = require("src.core.gen2.Unown")
 local GameVersion = require("src.core.GameVersion")
 
@@ -83,6 +87,23 @@ local function gen2ActorOptions()
   return {warn=warn,dexOf=dexOf,shiny=shiny,formFor=unownPack,label="Gen 2 battle"}
 end
 
+-- The ROM move-FX player is presentation-only and remains opt-in.  Keep the
+-- construction boundary defensive: an unavailable cache, renderer, or
+-- partially initialized importer must leave the ordinary Gen 2 scene intact.
+local function newBattleFx()
+  local enabledOk,enabled=pcall(Importer.betaBattleFxEnabled)
+  if not enabledOk or enabled~=true then return nil end
+  local ok,player,err=pcall(BattleFxAdapter.new,Importer,{warn=warn})
+  if not ok then
+    warn("BETA BATTLE FX could not be initialized: "..tostring(player))
+    return nil
+  end
+  if not player and err then
+    warn("BETA BATTLE FX could not be initialized: "..tostring(err))
+  end
+  return player
+end
+
 function Scene.new(battle,context)
   local actorOpts=gen2ActorOptions()
   local self=setmetatable({},Scene)
@@ -117,6 +138,19 @@ function Scene.new(battle,context)
   self.eventVisuals=setmetatable({},{__mode="k"})
   self.recordedSubstitute={player=0,enemy=0}
   self.vanish={player={active=false},enemy={active=false}}
+  -- Major status as presented so far. Gold resolves the whole turn before
+  -- presenting it, so the live mon.status can run ahead of the screen.
+  self.presentedStatus={}
+  self.battleFx=newBattleFx()
+  if self.battleFx then
+    -- The defender plays its own hit clip (context 254) at the impact.
+    self.battleFx.onImpact=function(target,_,moveId)
+      local actor=self.actors and self.actors[target]
+      if not actor or not actor.hit then return false,"no defender actor" end
+      return actor:hit(moveId)
+    end
+  end
+  self.battleFxUpdateError=nil
   return self
 end
 
@@ -192,6 +226,41 @@ function Scene:volatileFor(side)
   return ok and value or nil
 end
 
+-- Fly and Dig share EFFECT_FLY in Gen 2; the stored charge move tells them
+-- apart (Battle.lua keeps it as the move name; accept the ID too).
+local function chargeKind(volatile)
+  local move=volatile and volatile.chargeMove
+  if move=="FLY" or tonumber(move)==19 then return "flying" end
+  if move=="DIG" or tonumber(move)==91 then return "underground" end
+  return nil
+end
+
+-- Condition for the Stadium resting pose (battle_rest_pose.lua), from what
+-- has been presented: the vanish state once its departing animation has
+-- finished, and the presented major status.
+function Scene:restCondition(side)
+  local condition={}
+  local volatile=self:volatileFor(side)
+  local vanish=self.vanish and self.vanish[side] or {}
+  if vanish.mode==nil and (vanish.active or (volatile and volatile.vanished)) then
+    local kind=chargeKind(volatile)
+    if kind then condition[kind]=true end
+  end
+  local status=self.presentedStatus and self.presentedStatus[side]
+  condition.asleep=status=="sleep"
+  condition.frozen=status=="freeze"
+  return condition
+end
+
+-- Stadium keeps a flying Pokemon (context 262) and an underground Diglett
+-- or Dugtrio (context 258) on screen; other species underground are hidden.
+function Scene:restVisible(side)
+  local actor=self.actors[side]
+  local condition=self:restCondition(side)
+  local pose=RestPose.select(condition,actor and actor.dex)
+  return (condition.flying or condition.underground) and not pose.hidden
+end
+
 function Scene:visualState(side, screen)
   screen=screen or self.screen
   if not self:ownsSlot(side,screen) then return "trainer" end
@@ -254,6 +323,8 @@ function Scene:visualState(side, screen)
     -- the stored move's return animation.
     if not (volatile and volatile.vanished) and not screen.anim then
       vanish.active=false
+    elseif self:restVisible(side) then
+      return actor.renderer and "pokemon" or "defect"
     else
       return "hidden"
     end
@@ -261,7 +332,10 @@ function Scene:visualState(side, screen)
   if state and state.hidden and not actor.grow then return "hidden" end
   -- Gold's BG animation state exists only while the current script runs.
   -- `vanished` is the persistent truth between Fly/Dig's two turns.
-  if volatile and volatile.vanished then return "hidden" end
+  if volatile and volatile.vanished then
+    if self:restVisible(side) and actor.renderer then return "pokemon" end
+    return "hidden"
+  end
   if substituted then return "substitute" end
   if not actor.renderer then return "defect" end
   return "pokemon"
@@ -347,6 +421,44 @@ function Scene:handleEvent(event)
   if event.kind=="move" and side then
     local data=self.screen and self.screen.game and self.screen.game.data
     local def=data and data.moves and data.moves[event.move]
+    -- BattleState presents each queue event once and marks a miss on the same
+    -- event object before it reaches this hook.  Trigger only that presented,
+    -- successful move; mechanics and the host battle RNG remain untouched.
+    -- `event.move` is the BattleState move ID.  Keep it authoritative; the
+    -- data record's index/number is only a fallback for legacy presenters
+    -- that supplied a symbolic move key.
+    local moveId=tonumber(event.move)
+      or (def and tonumber(def.id or def.index or def.number))
+    if self.battleFx and event.missed~=true and moveId then
+      -- Presented (non-missed) moves play the move bank now and the impact
+      -- bank at the attacker's dispatch hit frame (84108728/841087B8).
+      local ok,err
+      -- Gold's charge turn (BattleCommand_Charge sets animParam 1): Stadium's
+      -- charge state plays the variant route, not the move and impact.
+      if event.animParam==1 and FxSequence.CHARGE_ENTRIES[moveId]
+          and self.battleFx.playCharge then
+        ok,err=pcall(self.battleFx.playCharge,self.battleFx,moveId,side,
+          self.actors and self.actors[side])
+      elseif event.alternate~=true and self.battleFx.playMoveAndImpact then
+        ok,err=pcall(self.battleFx.playMoveAndImpact,self.battleFx,moveId,side,
+          self.actors and self.actors[side],nil,
+          self.actors and self.actors[side=="player" and "enemy" or "player"])
+      else
+        ok,err=pcall(self.battleFx.trigger,self.battleFx,moveId,side,
+          event.alternate==true)
+      end
+      if ok then self.battleFxMovePending=true;self.battleFxAnimation=nil end
+      if not ok and not self.battleFxTriggerError then
+        self.battleFxTriggerError=true
+        warn("Gen 2 battle FX trigger failed: "..tostring(err))
+      end
+    end
+    -- The clip starts from the animForMove hook (installScreenHooks), when
+    -- Gold's move animation actually starts; a charge turn plays the
+    -- species' charge row there instead of the move clip.
+    self.chargeTurn=self.chargeTurn or {}
+    self.chargeTurn[side]=(event.animParam==1 and moveId
+      and FxSequence.CHARGE_ENTRIES[moveId] and not event.missed) and moveId or nil
     if def and def.effect=="EFFECT_FLY" and not event.missed then
       local flight=self.vanish[side]
       local volatile=self:volatileFor(side)
@@ -361,8 +473,12 @@ function Scene:handleEvent(event)
     local actor = self.actors[side]
     -- Explicit anim fields describe residual effects or silent HP costs,
     -- not a direct impact. Zero-damage bookkeeping must not flinch either.
-    if actor and event.anim==nil and (tonumber(event.amount) or 0)>0
+    -- With battle FX on, the hit clip plays at the Stadium impact instead
+    -- (the adapter's onImpact hook), so it is not replayed here.
+    if actor and not self.battleFx and event.anim==nil and (tonumber(event.amount) or 0)>0
         and not self.substituteActive[side] then actor:hit() end
+  elseif event.kind == "status" and side then
+    self.presentedStatus[side] = event.status
   elseif event.kind == "faint" and side then
     local actor = self.actors[side]
     -- Gold first chases the HP bar and begins its native sink.  Starting the
@@ -373,6 +489,9 @@ function Scene:handleEvent(event)
     self.substituteActive[side]=false
     self.vanish[side]={active=false}
     self:sync()
+    -- Status carries over with the mon being sent out.
+    local sent=self.actors[side] and self.actors[side].mon
+    self.presentedStatus[side]=sent and sent.status or nil
     local actor = self.actors[side]
     if actor then actor:entrance() end
   elseif event.kind == "sendout" then
@@ -380,6 +499,8 @@ function Scene:handleEvent(event)
     self.substituteActive.player=false
     self.vanish.player={active=false}
     self:sync()
+    local sent=self.actors.player and self.actors.player.mon
+    self.presentedStatus.player=sent and sent.status or nil
     self.actors.player:entrance()
   elseif event.kind == "transform" and side and event.mon then
     local data = self.screen and self.screen.game and self.screen.game.data
@@ -388,6 +509,136 @@ function Scene:handleEvent(event)
     self.actors[side]:load(data, shown, dexOf(data, {species=species or shown.species}))
     self.actors[side]:play("entrance", false)
   end
+  self:signalEventFx(event)
+end
+
+-- Stadium's weather entries (Sequence.WEATHER_ENTRIES). Gold emits the
+-- ongoing-weather line as a plain message and the end as a weather event
+-- with no weather, both built with Strings() from the engine's own tables,
+-- so the same lookup identifies them exactly. Sandstorm damage is a damage
+-- event tagged ANIM_IN_SANDSTORM on the side that took it.
+local function weatherFrom(tableName, text)
+  if type(text) ~= "string" then return nil end
+  local okE, Effects = pcall(require, "src.battle.gen2.Effects")
+  local okS, Strings = pcall(require, "src.core.Strings")
+  local texts = okE and type(Effects) == "table" and Effects[tableName]
+  if not okS or type(texts) ~= "table" then return nil end
+  for weather, source in pairs(texts) do
+    local ok, shown = pcall(Strings, source)
+    if ok and shown == text then return weather end
+  end
+  return nil
+end
+
+-- Gold's DRAIN effects (pokecrystal EFFECT_LEECH_HIT / EFFECT_DREAM_EATER).
+local DRAIN_EFFECTS = {EFFECT_LEECH_HIT = true, EFFECT_DREAM_EATER = true}
+
+local function sideOk(side) return side == "player" or side == "enemy" end
+
+-- Gold's AI switch prints "<trainer> withdrew <mon>!" (Battle:switchEnemy)
+-- before the send event, while the outgoing mon is still shown. Rebuilt
+-- with the engine's own Strings call so only that line matches. Gold's
+-- player switch has no withdraw step, so Stadium's recall has nothing to
+-- pair with there.
+function Scene:isEnemyWithdraw(text)
+  if type(text) ~= "string" or not text:find("withdrew", 1, true) then return false end
+  local battle = self.battle or (self.screen and self.screen.battle)
+  -- The shown mon, not battle.enemy: the engine has already swapped it in.
+  local mon = self:shownMon("enemy")
+  if not (battle and mon and battle.monName) then return false end
+  local okS, Strings = pcall(require, "src.core.Strings")
+  if not okS then return false end
+  local trainerName = (battle.trainer and battle.trainer.name) or "TRAINER"
+  local okN, name = pcall(battle.monName, battle, mon)
+  local ok, shown = pcall(Strings, "%s withdrew %s!", trainerName, okN and name or "?")
+  return ok and shown == text
+end
+
+-- Stadium's non-move effects for presented Gold events (Sequence tables).
+-- Damage events name their cause with Gold's own anim constant; heal and
+-- stage events are attributed to the move being presented. Leftovers heals
+-- carry no source and are not signalled.
+-- The attacker's clip when Gold's move animation starts (animForMove hook):
+-- the species' charge row on a charge turn noted by handleEvent, else the
+-- move clip (Actor:attack times it from the dispatch row).
+function Scene:startMoveClip(side, moveId)
+  local actor=self.actors and self.actors[side]
+  if not actor then return false end
+  local charging=self.chargeTurn and self.chargeTurn[side]
+  if charging and charging==moveId and actor.charge then
+    self.chargeTurn[side]=nil
+    local model=actor.renderer and actor.renderer.model
+    local entry,start=FxSequence.chargeFrames(model and model.fxDispatch,moveId)
+    if actor:charge(entry,start) then return true end
+  end
+  return actor:attack(moveId)
+end
+
+function Scene:signalEventFx(event)
+  local fx = self.battleFx
+  if not fx or not fx.signalEffect then return end
+  if event.kind == "move" and sideOk(event.side) then
+    self.presentedMove = {side = event.side, move = tonumber(event.move)}
+  end
+  local entry, owner
+  if event.kind == "damage" and sideOk(event.side) then
+    local anim = event.anim
+    owner = event.side
+    if anim == "ANIM_PSN" then entry = FxSequence.RESIDUAL_ENTRIES.poison
+    elseif anim == "ANIM_BRN" then entry = FxSequence.RESIDUAL_ENTRIES.burn
+    elseif anim == "ANIM_SAP" then entry = FxSequence.RESIDUAL_ENTRIES.leechSeed
+    elseif anim == "ANIM_IN_NIGHTMARE" then
+      -- Gold's Curse arm borrows ANIM_IN_NIGHTMARE; the cursed flag decides.
+      local volatile = self:volatileFor(event.side)
+      entry = (volatile and volatile.cursed) and FxSequence.RESIDUAL_ENTRIES.curse
+        or FxSequence.RESIDUAL_ENTRIES.nightmare
+    elseif anim == false and event.animMove then
+      -- HandleWrap's tick names the trapping move (Sequence.TRAP_ENTRIES).
+      entry = FxSequence.TRAP_ENTRIES[tonumber(event.animMove)]
+    end
+  elseif event.kind == "heal" and sideOk(event.side) then
+    owner = event.side
+    local moving = self.presentedMove
+    if event.anim == "RECOVER" then
+      entry = FxSequence.HEAL_ENTRY -- held berry (ItemRecoveryAnim)
+    elseif moving and moving.side == event.side then
+      local data = self.screen and self.screen.game and self.screen.game.data
+      local def = data and data.moves and data.moves[moving.move]
+      if def and DRAIN_EFFECTS[def.effect] then
+        entry = FxSequence.DRAIN_ENTRIES[moving.move] or FxSequence.HEAL_ENTRY
+      end
+    end
+  elseif event.kind == "stage" and sideOk(event.side) then
+    local moving = self.presentedMove or {}
+    local volatile = self:volatileFor(event.side)
+    owner = event.side
+    entry = FxSequence.statChangeEntry({side = event.side, stages = event.stages,
+      moveSide = moving.side, moveId = moving.move, rage = volatile and volatile.rage})
+  elseif (event.kind == "send" or event.kind == "sendout") then
+    owner = sideOk(event.side) and event.side or "player"
+    entry = FxSequence.SEND_OUT_ENTRY
+  end
+  if entry then
+    pcall(fx.signalEffect, fx, entry, owner)
+    return
+  end
+  if event.kind == "message" and self:isEnemyWithdraw(event.text) then
+    pcall(fx.signalEffect, fx, FxSequence.RECALL_ENTRY, "enemy")
+    return
+  end
+  if event.kind == "message" then
+    local weather = weatherFrom("WEATHER_TURN_TEXT", event.text)
+    entry = weather and FxSequence.WEATHER_ENTRIES[weather].turn
+    owner = FxSequence.WEATHER_OWNER
+  elseif event.kind == "weather" and event.weather == nil then
+    local weather = weatherFrom("WEATHER_END_TEXT", event.text)
+    entry = weather and FxSequence.WEATHER_ENTRIES[weather].ended
+    owner = FxSequence.WEATHER_OWNER
+  elseif event.kind == "damage" and event.anim == "ANIM_IN_SANDSTORM"
+      and (event.side == "player" or event.side == "enemy") then
+    entry, owner = FxSequence.SANDSTORM_HIT_ENTRY, event.side
+  end
+  if entry then pcall(fx.signalEffect, fx, entry, owner) end
 end
 
 -- Gold's ReturnMon BG effect shrinks the native pic through its authored
@@ -406,7 +657,9 @@ function Scene:picScale(side, screen)
   local state=screen and screen.animPicState and screen:animPicState(side)
   if state and state.pic=="minimize" then self.minimized[side]=actor and actor.mon
   elseif state and state.pic~=nil and state.pic~="substitute" then self.minimized[side]=nil end
-  if actor and self.minimized[side]==actor.mon and actor.mon
+  -- With battle FX on, Stadium's own Minimize routine (84122998, actor
+  -- sizeScale 0.8) shrinks the model; the Game Boy 0.35 applies otherwise.
+  if actor and not self.battleFx and self.minimized[side]==actor.mon and actor.mon
       and not (state and state.pic=="substitute") and not self.substituteActive[side] then return .35 end
   if not (screen and screen.anim and state) then return 1 end
   if not screen.ballThrow then return 1 end
@@ -414,24 +667,51 @@ function Scene:picScale(side, screen)
   return (PIC_SCALE[side] and PIC_SCALE[side][size]) or 1
 end
 
+function Scene:syncBattleFxAnimation(started)
+  if self.battleFxMovePending then
+    local runner=self.screen and self.screen.anim
+    local ended=(self.battleFxAnimation and runner~=self.battleFxAnimation)
+      or (started and not runner)
+    if runner and not self.battleFxAnimation then self.battleFxAnimation=runner end
+    if runner and type(runner.done)=="function" then
+      local ok,done=pcall(runner.done,runner)
+      ended=ok and done or ended
+    end
+    if ended then
+      if self.battleFx and self.battleFx.finish then self.battleFx:finish() end
+      self.battleFxMovePending=false;self.battleFxAnimation=nil
+    end
+  end
+end
+
 function Scene:update(dt)
   self:sync()
+  self:syncBattleFxAnimation()
   for _,side in ipairs({"player","enemy"}) do
     local actor=self.actors[side]
     if actor.pendingFaint then
       local shown=self.screen and self.screen.shownHp and self.screen.shownHp[side]
       local slide=self.screen and self.screen.faintSlide
-      if (shown==nil or shown<=0) and slide and slide.side==side then actor:faint() end
+      if (shown==nil or shown<=0) and slide and slide.side==side then
+        if actor:faint() and self.battleFx and self.battleFx.playFaint then
+          pcall(self.battleFx.playFaint,self.battleFx,side,actor)
+        end
+      end
     end
   end
   self:stepArena(dt)
   Camera.stickOrbit(self.stickX,dt)
   Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
+  for _,which in ipairs({"player","enemy"}) do
+    local actor=self.actors[which]
+    if actor.setRest then actor:setRest(self:restCondition(which)) end
+  end
   self.actors.player:update(dt)
   self.actors.enemy:update(dt)
   self.substituteActors.player:update(dt)
   self.substituteActors.enemy:update(dt)
+  self:updateBattleFx(dt)
   return self:render()
 end
 
@@ -690,7 +970,7 @@ local function installScreenHooks()
       if started and scene and scene.actors[side] then
         local data=self.game and self.game.data
         local def=data and data.moves and data.moves[move]
-        if def then scene.actors[side]:attack(tonumber(def.index or def.number)) end
+        if def then scene:startMoveClip(side,tonumber(def.index or def.number)) end
       end
       return started
     end
@@ -707,6 +987,7 @@ local function installScreenHooks()
       scene:handleEvent(event)
     end
     local result = originalAdvance(self, ...)
+    if scene and event and event.kind=="move" then scene:syncBattleFxAnimation(true) end
     if scene and event and after then
       scene.screen = self
       scene:handleEvent(event)

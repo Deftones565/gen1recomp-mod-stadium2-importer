@@ -7,6 +7,7 @@ local EffectRenderer = require("mods.STADIUM2_IMPORTER.lib.effect_renderer")
 local Sampler = require("mods.STADIUM2_IMPORTER.lib.sampler")
 local RenderContract = require("mods.STADIUM2_IMPORTER.lib.render_contract")
 local DualTexture = require("mods.STADIUM2_IMPORTER.lib.render_callbacks.dual_texture_material")
+local BattleFxRenderMode = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_render_mode")
 
 local Renderer = {}
 Renderer.__index = Renderer
@@ -81,6 +82,7 @@ uniform float alphaCutoff;
 uniform vec2 primarySize;
 uniform vec2 secondarySize;
 uniform vec4 sceneTint;
+uniform vec4 nativeModelColor;
 uniform float flashAmount;
 uniform Image sunMap;
 uniform float sunEnabled;
@@ -106,6 +108,10 @@ uniform float n64CoveragePassthrough;
 uniform float primaryIntensityAlpha;
 uniform float secondaryIntensityAlpha;
 uniform float primitiveLodFraction;
+uniform float n64NoiseSeed;
+// RDP combiner NOISE (colour input A, selector 7): one grey value per pixel,
+// new every frame. Filled in effect() before the combiner runs.
+vec3 n64Noise = vec3(0.0);
 uniform vec4 n64ColorCycle0;
 uniform vec4 n64AlphaCycle0;
 uniform vec4 n64ColorCycle1;
@@ -169,10 +175,13 @@ vec4 sample3(Image image, STADIUM_FLOAT vec2 uv, vec2 size, vec2 wrapMode) {
       + Texel(image, o + vec2(texel.x,0.0)) * f.x
       + Texel(image, o + vec2(0.0,texel.y)) * f.y;
   }
+  // Upper triangle: T11 + (1-fx)(T01-T11) + (1-fy)(T10-T11). T01 is the
+  // texel left of T11 and T10 the one above it, so they take (1-fx) and
+  // (1-fy); swapped weights break continuity along every texel diagonal.
   vec2 o = (base + vec2(1.5)) * texel;
   return Texel(image, o) * (f.x+f.y-1.0)
-    + Texel(image, o - vec2(texel.x,0.0)) * (1.0-f.y)
-    + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.x);
+    + Texel(image, o - vec2(texel.x,0.0)) * (1.0-f.x)
+    + Texel(image, o - vec2(0.0,texel.y)) * (1.0-f.y);
 }
 vec3 n64ColorAB(float source, vec4 combined, vec4 texel0, vec4 texel1,
     vec4 primitive, vec4 shade, vec4 environment) {
@@ -184,6 +193,11 @@ vec3 n64ColorAB(float source, vec4 combined, vec4 texel0, vec4 texel1,
   if (source < 5.5) return environment.rgb;
   if (source < 6.5) return vec3(1.0);
   return vec3(0.0);
+}
+vec3 n64ColorA(float source, vec4 combined, vec4 texel0, vec4 texel1,
+    vec4 primitive, vec4 shade, vec4 environment) {
+  if (source > 6.5 && source < 7.5) return n64Noise;
+  return n64ColorAB(source,combined,texel0,texel1,primitive,shade,environment);
 }
 vec3 n64ColorC(float source, vec4 combined, vec4 texel0, vec4 texel1,
     vec4 primitive, vec4 shade, vec4 environment) {
@@ -237,7 +251,7 @@ float n64AlphaC(float source, vec4 combined, vec4 texel0, vec4 texel1,
 }
 vec4 n64Cycle(vec4 selectors, vec4 alphaSelectors, vec4 combined,
     vec4 texel0, vec4 texel1, vec4 primitive, vec4 shade, vec4 environment) {
-  vec3 rgb=(n64ColorAB(selectors.x,combined,texel0,texel1,primitive,shade,environment)
+  vec3 rgb=(n64ColorA(selectors.x,combined,texel0,texel1,primitive,shade,environment)
       -n64ColorAB(selectors.y,combined,texel0,texel1,primitive,shade,environment))
     *n64ColorC(selectors.z,combined,texel0,texel1,primitive,shade,environment)
     +n64ColorD(selectors.w,combined,texel0,texel1,primitive,shade,environment);
@@ -286,6 +300,8 @@ void effect() {
     return;
   }
   if (n64CombinerEnabled > 0.5) {
+    n64Noise=vec3(fract(sin(dot(floor(love_PixelCoord)
+      +vec2(n64NoiseSeed*7.13,n64NoiseSeed*3.71),vec2(12.9898,78.233)))*43758.5453));
     vec4 combined=n64Cycle(n64ColorCycle0,n64AlphaCycle0,vec4(0.0),
       texel0,texel1,primitiveColor,color,environmentColor);
     if (n64CombinerCycles > 1.5)
@@ -352,6 +368,7 @@ void effect() {
     shaded=mix(shaded,watercolor,mangaAmount);
   }
   shaded=mix(shaded,vec3(1.0),flashAmount);
+  shaded=mix(shaded,nativeModelColor.rgb,nativeModelColor.a);
   love_PixelColor=vec4(shaded,
     texel.a * mix(1.0, environmentColor.a, environmentMix) * sceneTint.a);
 }
@@ -405,6 +422,7 @@ uniform float secondaryMix;
 uniform vec4 textureScroll;
 uniform float alphaCutoff;
 uniform vec4 sceneTint;
+uniform vec4 nativeModelColor;
 uniform float flashAmount;
 uniform float effectIntensityMode;
 uniform float lightingEnabled;
@@ -420,6 +438,10 @@ uniform float n64CombinerEnabled;
 uniform float n64CombinerCycles;
 uniform float n64CombinerCoverage;
 uniform float primitiveLodFraction;
+uniform float n64NoiseSeed;
+// RDP combiner NOISE (colour input A, selector 7): one grey value per pixel,
+// new every frame. Filled in effect() before the combiner runs.
+vec3 n64Noise = vec3(0.0);
 uniform vec4 n64ColorCycle0;
 uniform vec4 n64AlphaCycle0;
 uniform vec4 n64ColorCycle1;
@@ -430,6 +452,11 @@ vec3 mobileColorAB(float source,vec4 combined,vec4 texel0,vec4 texel1,
   if(source<2.5)return texel1.rgb;if(source<3.5)return primitive.rgb;
   if(source<4.5)return shade.rgb;if(source<5.5)return environment.rgb;
   if(source<6.5)return vec3(1.0);return vec3(0.0);
+}
+vec3 mobileColorA(float source,vec4 combined,vec4 texel0,vec4 texel1,
+    vec4 primitive,vec4 shade,vec4 environment) {
+  if(source>6.5&&source<7.5)return n64Noise;
+  return mobileColorAB(source,combined,texel0,texel1,primitive,shade,environment);
 }
 vec3 mobileColorC(float source,vec4 combined,vec4 texel0,vec4 texel1,
     vec4 primitive,vec4 shade,vec4 environment) {
@@ -457,7 +484,7 @@ float mobileAlphaC(float source,vec4 combined,vec4 texel0,vec4 texel1,
 }
 vec4 mobileN64Cycle(vec4 selectors,vec4 alphaSelectors,vec4 combined,
     vec4 texel0,vec4 texel1,vec4 primitive,vec4 shade,vec4 environment) {
-  vec3 rgb=(mobileColorAB(selectors.x,combined,texel0,texel1,primitive,shade,environment)
+  vec3 rgb=(mobileColorA(selectors.x,combined,texel0,texel1,primitive,shade,environment)
     -mobileColorAB(selectors.y,combined,texel0,texel1,primitive,shade,environment))
     *mobileColorC(selectors.z,combined,texel0,texel1,primitive,shade,environment)
     +mobileColorAB(selectors.w,combined,texel0,texel1,primitive,shade,environment);
@@ -491,6 +518,8 @@ void effect() {
     return;
   }
   if(n64CombinerEnabled>0.5) {
+    n64Noise=vec3(fract(sin(dot(floor(love_PixelCoord)
+      +vec2(n64NoiseSeed*7.13,n64NoiseSeed*3.71),vec2(12.9898,78.233)))*43758.5453));
     vec4 combined=mobileN64Cycle(n64ColorCycle0,n64AlphaCycle0,vec4(0.0),
       texel0,texel1,primitiveColor,color,environmentColor);
     if(n64CombinerCycles>1.5)
@@ -526,6 +555,7 @@ void effect() {
     shaded=clamp(pigment,0.0,1.0);
   }
   shaded=mix(shaded,vec3(1.0),flashAmount);
+  shaded=mix(shaded,nativeModelColor.rgb,nativeModelColor.a);
   love_PixelColor=vec4(shaded,
     texel.a*mix(1.0,environmentColor.a,environmentMix)*sceneTint.a);
 }
@@ -1057,6 +1087,49 @@ local function sendTextureWrapMode(shader, uniform, wrapS, wrapT)
     {Sampler.wrapCode(wrapS), Sampler.wrapCode(wrapT)})
 end
 
+-- An FX surface drawn through an N64 combiner (a node display list, or any
+-- battle-FX model's phase-5 material) is lit only through SHADE; a combiner
+-- that never reads SHADE ignores the RSP lighting state (shape 147, the
+-- sandstorm sheet, drew near-black when lit).
+function Renderer.surfaceLit(renderState, model, material)
+  if not (renderState and renderState.lightingEnabled) then return false end
+  local listState = material and material.displayListState
+  local fxCombiner = (listState or (model and model.battleFx == true))
+    and material and material.phase5 and material.combiner
+  return not (fxCombiner and not Renderer.combinerUsesShade(fxCombiner))
+end
+
+-- CPU reference for the shader's sample3 (RDP 3-point filter) at texel
+-- fraction (fx, fy): t00 at the base texel, t10 one right, t01 one down,
+-- t11 diagonal.
+function Renderer.threePoint(t00, t10, t01, t11, fx, fy)
+  if fx + fy < 1 then
+    return t00 * (1 - fx - fy) + t10 * fx + t01 * fy
+  end
+  return t11 * (fx + fy - 1) + t01 * (1 - fx) + t10 * (1 - fy)
+end
+
+function Renderer.smoothSampled(model)
+  return type(model) == "table" and model.staticPose == true
+    and tonumber(model.species) == 0 or false
+end
+
+function Renderer.combinerUsesShade(combiner)
+  if type(combiner) ~= "table" then return true end
+  local SHADE, SHADE_ALPHA = 4, 11
+  for index, equation in ipairs({ combiner.color0, combiner.color1 }) do
+    if index == 1 or combiner.cycles ~= 1 then
+      for position = 1, 4 do
+        local source = equation[position]
+        if source == SHADE or (position == 3 and source == SHADE_ALPHA) then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
 local function sendN64Combiner(shader, material)
   if not (shader and shader.send) then return false end
   local combiner = material and material.phase5 and material.combiner
@@ -1072,6 +1145,10 @@ local function sendN64Combiner(shader, material)
   pcall(shader.send, shader, "n64CombinerCoverage", combiner.coverage and 1 or 0)
   pcall(shader.send, shader, "primitiveLodFraction",
     tonumber(material.primitiveLodFraction) or 0)
+  -- NOISE changes every frame; 30 steps a second matches the battle tick.
+  local timer = love and love.timer and love.timer.getTime
+  pcall(shader.send, shader, "n64NoiseSeed",
+    timer and math.floor(timer() * 30) % 997 or 0)
   pcall(shader.send, shader, "n64CombinerEnabled", 1)
   return true
 end
@@ -1152,8 +1229,21 @@ function Renderer.shouldReceiveModelSunShadows(options)
   return not Renderer.isMobileGraphics()
 end
 
+-- Direct battle-FX shape entries carry the 84102E84 render-mode selector.
+local function battleFxRenderMode(prim)
+  if not prim or (prim.battleFxRenderState == nil
+      and prim.battleFxNodeLayer == nil) then return nil end
+  if prim.battleFxRenderModeDecoded == nil then
+    prim.battleFxRenderModeDecoded = (prim.battleFxRenderState ~= nil
+      and BattleFxRenderMode.decode(prim.battleFxRenderState)
+      or BattleFxRenderMode.fromNodeLayer(prim.battleFxNodeLayer)) or false
+  end
+  return prim.battleFxRenderModeDecoded or nil
+end
+
 local function isArenaModel(model)
   return model and model.staticPose == true and tonumber(model.species) == 0
+    and model.battleFx ~= true
 end
 
 function Renderer.arenaCombinerCoveragePassthrough(model, prim, material)
@@ -1285,7 +1375,11 @@ function Renderer.new(model, options)
   if type(model) ~= "table" or not model.prims then return nil, "model required" end
   options = type(options) == "table" and options or {}
   model = RapidashCut.augment(model)
-  local smoothArenaTextures = isArenaModel(model)
+  -- Static field and battle-FX shapes keep ordinary filtered sampling.
+  -- 3429234 took battle-FX shapes off the arena blend path; their texture
+  -- filtering was not meant to change with it (the 3-point path draws
+  -- creases through magnified full-screen FX such as Sandstorm).
+  local smoothArenaTextures = Renderer.smoothSampled(model)
     and options.arenaTextureFilter ~= "nearest"
   local idleIndex = Pack.contextIndex(model, "idle") or (model.anims[1] and 1 or nil)
   local self = setmetatable({
@@ -1654,6 +1748,7 @@ function Renderer:setAnimation(value, loop, auxIndex)
   end
   if not (index and self.model.anims[index]) then return false end
   self.animIndex = index
+  self.fxDispatchRow = nil
   self.loop = loop ~= false
   self.auxIndex = auxIndex
   self.time = 0
@@ -1668,13 +1763,19 @@ function Renderer:setMove(move, loop)
   if not index then return false end
   local aux=self.model.moveAux and self.model.moveAux[move]
   if aux and aux>=0 then aux=aux+1 else aux=nil end
-  return self:setAnimation(index, loop, aux)
+  local ok=self:setAnimation(index, loop, aux)
+  if ok then self.fxDispatchRow=move-1 end
+  return ok
 end
 
 function Renderer:setContext(name, loop)
   local index = Pack.contextIndex(self.model, name)
   if not index then return false end
-  return self:setAnimation(index, loop)
+  local ok=self:setAnimation(index, loop)
+  if ok then
+    self.fxDispatchRow=require("mods.STADIUM2_IMPORTER.lib.animation_dispatch").CONTEXT_ENTRY[name]
+  end
+  return ok
 end
 
 function Renderer:setHandlerRuntime(runtime, defer)
@@ -1780,6 +1881,17 @@ function Renderer:updatePose(force)
     end
   end
   local root = (self.model.rootScale or 1) * stageScale
+  self.attachmentPositions={}
+  for i,marker in ipairs(self.model.attachments or {}) do
+    if i>12 then break end -- native registration capacity
+    local matrix=mats[marker.bone+1]
+    if matrix and not self.attachmentPositions[marker.label] then
+      self.attachmentPositions[marker.label]={matrix[1][4]*root,
+        matrix[2][4]*root,matrix[3][4]*root}
+    elseif marker.bone==-1 and not self.attachmentPositions[marker.label] then
+      self.attachmentPositions[marker.label]={0,0,0}
+    end
+  end
   self.handlerBoneAnchors = {}
   for key, item in pairs(self.handlerState and self.handlerState.operations or {}) do
     if item.result and item.result.operation == "dynamic-object-renderer" then
@@ -1985,13 +2097,48 @@ function Renderer:callbackUsesMaterialFx(prim)
   -- opaque local eye atlas at the same node keeps its display-list material.
   -- Field phase-5 nodes are different: their locally textured floor carrier
   -- is TEXEL0 and must still receive the callback's TEXEL1 mask/combiner.
-  if record.descriptor == 0x81000140 or record.descriptor == 0x81000148 then
+  if record.descriptor == 0x81000138 or record.descriptor == 0x81000140
+      or record.descriptor == 0x81000148 then
     return isArenaModel(self.model) or prim.callbackTextureRequired == true
   end
   return false
 end
 
+-- Resource-owned battle FX use the same decoded phase-5 controllers as
+-- model callbacks, but have no model handler site. Evaluate once per tick.
+function Renderer:battleFxMaterialState(prim)
+  if prim and prim.battleFxTextures then
+    return {material=prim.material,textures=prim.battleFxTextures}
+  end
+  if not (prim and prim.battleFxController) then return nil end
+  local frame=self.handlerRuntime and self.handlerRuntime.callbackFrame or 0
+  self.battleFxMaterialCache=self.battleFxMaterialCache or {}
+  local cached=self.battleFxMaterialCache[prim]
+  if cached and cached.frame==frame then return cached end
+  local evaluator=require("mods.STADIUM2_IMPORTER.lib.render_callbacks.phase5_geometry")
+  local material,pointers,scroll=evaluator.evaluateController(prim.battleFxController,prim.material,frame)
+  local byPointer=self.battleFxTexturePointers
+  if not byPointer then
+    byPointer={}
+    for index,texture in ipairs(self.model.textures or {}) do
+      if texture.sourcePointer then byPointer[texture.sourcePointer]=index end
+    end
+    self.battleFxTexturePointers=byPointer
+  end
+  local set={phase5=true,scroll=scroll,samplers={}}
+  for _,item in ipairs(prim.battleFxController.items or {}) do
+    local unit=item.textureUnit+1
+    set[unit]=byPointer[pointers[unit]]
+    set.samplers[unit]=item.sampler
+  end
+  cached={frame=frame,material=material,textures=set}
+  self.battleFxMaterialCache[prim]=cached
+  return cached
+end
+
 function Renderer:currentMaterial(prim)
+  local battle=self:battleFxMaterialState(prim)
+  if battle then return battle.material end
   local site = prim and prim.callbackOffset
   local dynamic = self.handlerState and self.handlerState.materialBySite
   local material = site and dynamic and dynamic[site] or nil
@@ -2005,6 +2152,24 @@ function Renderer:currentMaterial(prim)
     -- retains its display-list material.
     material = nil
   end
+  local listState = prim and prim.material
+  if material and listState and listState.displayListState
+      and material.combiner == nil then
+    -- A phase-5 callback without a colour block submits only colours
+    -- (810024E0 path 81002A7C); the combiner set earlier by the node's
+    -- display list stays in effect.
+    self.displayListMaterialCache = self.displayListMaterialCache
+      or setmetatable({}, { __mode = "k" })
+    local cached = self.displayListMaterialCache[material]
+    if not (cached and cached.base == listState) then
+      local merged = {}
+      for key, value in pairs(listState) do merged[key] = value end
+      for key, value in pairs(material) do merged[key] = value end
+      cached = { base = listState, merged = merged }
+      self.displayListMaterialCache[material] = cached
+    end
+    return cached.merged
+  end
   return material or (prim and prim.material)
 end
 
@@ -2015,6 +2180,8 @@ function Renderer.callbackTextureScroll(set, primaryOwned)
 end
 
 function Renderer:currentTexture(prim)
+  local battle=self:battleFxMaterialState(prim)
+  if battle and battle.textures[1] then return battle.textures[1] end
   local dynamic = self.handlerState and self.handlerState.textureBySite
   local site = prim and prim.callbackOffset
   if dynamic and site and dynamic[site]
@@ -2058,6 +2225,11 @@ function Renderer:worldMetrics(out)
   out.rootScale = tonumber(model.rootScale) or 1
   out.bounds = bounds
   return out
+end
+
+function Renderer:attachmentPosition(label)
+  local p=self.attachmentPositions and self.attachmentPositions[label]
+  return p and {p[1],p[2],p[3]} or nil
 end
 
 -- Draw into the caller's currently-bound color/depth target. The battle scene
@@ -2322,6 +2494,9 @@ function Renderer:drawScene(pass, model, options)
     end
     pcall(self.shader.send, self.shader, "sceneTint", tint)
     pcall(self.shader.send, self.shader, "flashAmount", options.flashAmount or 0)
+    local modelColor=options.nativeModelColor or {0,0,0,0}
+    pcall(self.shader.send,self.shader,"nativeModelColor",
+      {modelColor[1]/255,modelColor[2]/255,modelColor[3]/255,modelColor[4]/255})
     pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
     pcall(self.shader.send, self.shader, "n64CoveragePassthrough", 0)
     pcall(self.shader.send, self.shader, "primaryIntensityAlpha", 0)
@@ -2364,14 +2539,29 @@ function Renderer:drawScene(pass, model, options)
     end
     local drawParts = Renderer.arenaRenderOrder(self.model, self.parts, pass,
       model, options.viewMatrix)
+    local battleFxBlendChanged = false
     for drawIndex, part in ipairs(drawParts) do
       local partIndex = part.sourcePartIndex or drawIndex
       local additive = part.prim.additive == true
       local renderState = Renderer.primitiveRenderState(self.model, part.prim, options)
+      local fxMode = not additive and battleFxRenderMode(part.prim) or nil
       if part.mesh and renderState.drawStatic
           and (not self.debugOnlyPrimitive or self.debugOnlyPrimitive == partIndex)
           and ((additiveOnly and additive) or (opaqueOnly and not additive)
           or (not additiveOnly and not opaqueOnly)) then
+        if g.setBlendMode and fxMode and fxMode.blend then
+          -- 84102E84 translucent entries blend; cutout/opaque entries write
+          -- the combined color (cutout texels are discarded below).
+          if fxMode.blend == "blend" then
+            g.setBlendMode("alpha", "alphamultiply")
+          else
+            g.setBlendMode("replace", "premultiplied")
+          end
+          battleFxBlendChanged = true
+        elseif g.setBlendMode and battleFxBlendChanged then
+          g.setBlendMode(additiveOnly and "add" or "alpha", "alphamultiply")
+          battleFxBlendChanged = false
+        end
         if g.setBlendMode and isArenaModel(self.model) then
           if additive then
             g.setBlendMode("add", "alphamultiply")
@@ -2393,14 +2583,30 @@ function Renderer:drawScene(pass, model, options)
         local attribute = site and attributes and attributes[site]
         local color = attribute and attribute.color or
           (material and material.primitiveColor) or {1,1,1,1}
+        local fxColors=options.battleFxColors
+        -- Node display lists and phase-5 callbacks submit their primitive and
+        -- environment colours after the object state, so they take precedence.
+        local listState=material and material.displayListState
+        if listState then fxColors=nil end
+        if fxColors and fxColors.primaryColor then
+          local c=fxColors.primaryColor
+          color={c[1]/255,c[2]/255,c[3]/255,1}
+        elseif fxColors then
+          color={color[1],color[2],color[3],1}
+        end
         pcall(self.shader.send, self.shader, "effectIntensityMode",
           part.prim.effect == "fire" and 2
             or (material and material.intensity and 1 or 0))
         pcall(self.shader.send, self.shader, "primitiveColor", color)
         pcall(self.shader.send, self.shader, "lightingEnabled",
-          renderState.lightingEnabled and 1 or 0)
+          Renderer.surfaceLit(renderState, self.model, material) and 1 or 0)
         if g.setDepthMode then
           local compare, write = RenderContract.depthState(part.prim, not additiveOnly)
+          if fxMode and fxMode.depthCompare ~= nil then
+            compare = fxMode.depthCompare and RenderContract.MODEL_DEPTH_COMPARE or "always"
+            write = fxMode.depthWrite == true and not additiveOnly
+          end
+          if options.screenSpace or part.prim.battleFxNoDepth then compare,write="always",false end
           g.setDepthMode(compare, write)
         end
         local decalBias = self.decalDepthBias
@@ -2414,7 +2620,10 @@ function Renderer:drawScene(pass, model, options)
         pcall(self.shader.send,self.shader,"decalDepthBias",
           (part.prim.decal or part.prim.coplanarLayer) and decalBias or 0)
         pcall(self.shader.send, self.shader, "environmentColor",
-          material and material.environmentColor or {1,1,1,1})
+          fxColors and fxColors.secondaryColor and {
+            fxColors.secondaryColor[1]/255,fxColors.secondaryColor[2]/255,
+            fxColors.secondaryColor[3]/255,fxColors.secondaryColor[4]/255}
+            or (material and material.environmentColor or {1,1,1,1}))
         local n64Combiner = sendN64Combiner(self.shader, material)
         pcall(self.shader.send, self.shader, "n64CoveragePassthrough",
           Renderer.arenaCombinerCoveragePassthrough(
@@ -2425,6 +2634,8 @@ function Renderer:drawScene(pass, model, options)
         local sets = self.handlerState and self.handlerState.textureSetBySite
         local set = self:callbackUsesMaterialFx(part.prim)
           and site and sets and sets[site] or nil
+        local battleState=self:battleFxMaterialState(part.prim)
+        if battleState then set=battleState.textures end
         local textureIndex = self:currentTexture(part.prim)
         local primaryIntensity, secondaryIntensity =
           Renderer.phase5IntensityAlpha(material, set, self.model, textureIndex)
@@ -2432,7 +2643,7 @@ function Renderer:drawScene(pass, model, options)
           primaryIntensity and 1 or 0)
         pcall(self.shader.send, self.shader, "secondaryIntensityAlpha",
           secondaryIntensity and 1 or 0)
-        local primaryOwned = set and self:callbackOwnsTexture(part.prim) or false
+        local primaryOwned = battleState~=nil or (set and self:callbackOwnsTexture(part.prim) or false)
         local wrapS, wrapT = Renderer.callbackPrimaryWrap(part.prim, material,
           set, primaryOwned)
         sendTextureWrapMode(self.shader, "primaryWrapMode", wrapS, wrapT)
@@ -2480,11 +2691,16 @@ function Renderer:drawScene(pass, model, options)
         else
           pcall(self.shader.send, self.shader, "secondaryEnabled", 0)
           sendTextureWrapMode(self.shader, "secondaryWrapMode", "clamp", "clamp")
-          pcall(self.shader.send, self.shader, "textureScroll", {0,0,0,0})
+          local scroll=set and set.scroll and set.scroll[1]
+          local s,t=foldedTextureScroll(scroll,wrapS,wrapT,self.boundedTextureUV)
+          pcall(self.shader.send, self.shader, "textureScroll", {s,t,0,0})
         end
         local arenaAlphaMode = part.prim.arenaAlphaMode
         pcall(self.shader.send, self.shader, "alphaCutoff",
-          additive and 0.001 or arenaAlphaMode == "cutout" and 0.05
+          additive and 0.001
+            or (fxMode and fxMode.blend == "cutout"
+              and BattleFxRenderMode.CUTOUT_ALPHA - 0.5 / 255)
+            or arenaAlphaMode == "cutout" and 0.05
             or (arenaAlphaMode == "blend" and 0.001 or 0.01))
         if texture then
           if texture.setFilter then pcall(texture.setFilter, texture, self.textureFilter,
@@ -2506,6 +2722,9 @@ function Renderer:drawScene(pass, model, options)
         sendFlameBillboard(self.shader, part, options.viewMatrix, model)
         g.draw(part.mesh)
       end
+    end
+    if battleFxBlendChanged and g.setBlendMode then
+      g.setBlendMode(additiveOnly and "add" or "alpha", "alphamultiply")
     end
     self:drawDynamicObjects(pass, model, options)
   end)
@@ -2606,6 +2825,7 @@ function Renderer:renderToCanvas(width, height, options)
       pcall(self.shader.send, self.shader, "fireflyEnabled", 0)
       pcall(self.shader.send, self.shader, "localTorchEnabled", 0)
       pcall(self.shader.send, self.shader, "flashAmount", 0)
+      pcall(self.shader.send, self.shader, "nativeModelColor", {0,0,0,0})
       pcall(self.shader.send, self.shader, "effectIntensityMode", 0)
       pcall(self.shader.send, self.shader, "n64CoveragePassthrough", 0)
       pcall(self.shader.send, self.shader, "primaryIntensityAlpha", 0)

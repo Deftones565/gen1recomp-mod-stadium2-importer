@@ -14,6 +14,10 @@ local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
+local BattleFxAdapter = require(
+  "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
+local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
+local FxSequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
 local UILayers = require("mods.STADIUM2_IMPORTER.lib.battle_ui_layers")
 
 local Gen1={COUNT=251}
@@ -117,6 +121,17 @@ function Scene.new(battle,context)
   self.lastPicKind={player=nil,enemy=nil}
   self.animWasPlaying=false
   self.hudSnapped=false
+  -- The adapter owns the persistent FX player. A missing beta option or an
+  -- importer mock from an older host is intentionally a no-op.
+  local battleFx,battleFxError=BattleFxAdapter.new(Importer,{warn=warn})
+  if battleFx then self.battleFx=battleFx
+    -- The defender plays its own hit clip (context 254) at the impact.
+    battleFx.onImpact=function(target,_,moveId)
+      local actor=self.actors and self.actors[target]
+      if not actor or not actor.hit then return false,"no defender actor" end
+      return actor:hit(moveId)
+    end
+  elseif battleFxError then warn("Gen 1 battle FX unavailable: "..tostring(battleFxError)) end
   return self
 end
 
@@ -216,6 +231,24 @@ function Scene:ensureSubstitute(side)
   return actor
 end
 
+-- Condition for the Stadium resting pose (battle_rest_pose.lua). Red's
+-- engine runs in step with its queue, so the battler's live state is what is
+-- being presented. Fly/Dig count once the charge turn's animation is over.
+function Scene:restCondition(side)
+  local battle,b=self.battle,self:shownBattler(side)
+  local condition={}
+  if not b then return condition end
+  if b.invulnerable and b.charging and not (battle and battle.animPlaying) then
+    local id=b.charging.id
+    if id=="FLY" then condition.flying=true
+    elseif id=="DIG" then condition.underground=true end
+  end
+  local status=b.mon and b.mon.status
+  condition.asleep=status=="SLP"
+  condition.frozen=status=="FRZ"
+  return condition
+end
+
 function Scene:visualState(side)
   local battle,b=self.battle,self:shownBattler(side)
   if not self:ownsSlot(side) then return "native" end
@@ -235,6 +268,10 @@ function Scene:visualState(side)
   if self:hostHidden(side) then return "hidden" end
   if (battle.introSlide or 0)>0 and side=="player" then return "empty" end
   if self:substituteVisible(side) then return "substitute" end
+  -- 8411EE74: Stadium hides a species underground unless it has a dig pose.
+  if RestPose.select(self:restCondition(side),self.actors[side].dex).hidden then
+    return "hidden"
+  end
   return actor.renderer and "pokemon" or "native"
 end
 
@@ -250,7 +287,9 @@ function Scene:picScale(side)
   if grow then return clamp(grow,0,1) end
   local battler=self:shownBattler(side)
   local fx=battler and self.battle.picFx and self.battle.picFx[battler]
-  return fx and fx.minimized and not self:substituteVisible(side) and .35 or 1
+  -- With battle FX on, Stadium's Minimize routine (sizeScale 0.8) applies.
+  return fx and fx.minimized and not self.battleFx
+    and not self:substituteVisible(side) and .35 or 1
 end
 
 function Scene:picElevation(side)
@@ -280,15 +319,33 @@ function Scene:syncPresentationState()
     local activeGrow=grow~=nil and grow>0 and grow<1
     if grow and not self.lastGrow[side] then
       self.actors[side]:play("entrance",false)
+      -- 8411BCC8: the send-out state signals entry 0x122 as it starts.
+      if self.battleFx and self.battleFx.signalEffect then
+        pcall(self.battleFx.signalEffect,self.battleFx,FxSequence.SEND_OUT_ENTRY,side)
+      end
     end
     self.lastGrow[side]=grow and true or false
+
+    -- Red's switch-out: RetreatMon's text, then AnimateRetreatingPlayerMon
+    -- (host shrinkOut) before the swap. Stadium's recall (8411ABAC) signals
+    -- 0x126 on the outgoing mon; the host's retreat is its only cue.
+    if side=="player" then
+      local shrink=battle.shrinkOut
+      local recalling=type(shrink)=="table" and shrink.battler==battle.player
+      if recalling and not self.lastRecall and self.battleFx and self.battleFx.signalEffect then
+        pcall(self.battleFx.signalEffect,self.battleFx,FxSequence.RECALL_ENTRY,"player")
+      end
+      self.lastRecall=recalling or false
+    end
 
     local b=self:shownBattler(side)
     local fainted=b and b.fainted and true or false
     local faintFx=b and safeCall(battle,"fxFaintActive",b) or false
     if (faintFx or fainted) and not self.lastFainted[side]
         and self.actors[side].renderer then
-      self.actors[side]:faint()
+      if self.actors[side]:faint() and self.battleFx and self.battleFx.playFaint then
+        pcall(self.battleFx.playFaint,self.battleFx,side,self.actors[side])
+      end
     end
     self.lastFainted[side]=fainted or faintFx or false
 
@@ -310,10 +367,74 @@ function Scene:syncPresentationState()
       or battle.animAttackerIsPlayer~=self.lastAnimAttacker) then
     local name=battle.animName
     local def=battle.data and battle.data.moves and battle.data.moves[name]
+    local rowSide=battle.animAttackerIsPlayer and "player" or "enemy"
+    -- Red's residual rows (core.asm:490-517): BURN_PSN_ANIM on the suffering
+    -- side, and Leech Seed's drain as an ABSORB row from the healing side
+    -- with no hit data (a real Absorb carries its hit row). Stadium signals
+    -- 0x101/0x102 and 0x103 on the suffering (seeded) side instead.
+    local residual
+    if name=="BURN_PSN_ANIM" then
+      local b=self:shownBattler(rowSide)
+      local status=b and b.mon and b.mon.status
+      residual=status=="BRN" and FxSequence.RESIDUAL_ENTRIES.burn
+        or status=="PSN" and FxSequence.RESIDUAL_ENTRIES.poison or nil
+      if residual then residual={entry=residual,side=rowSide} end
+    elseif name=="ABSORB" and battle.pendingHit==nil then
+      residual={entry=FxSequence.RESIDUAL_ENTRIES.leechSeed,
+        side=rowSide=="player" and "enemy" or "player"}
+      def=nil
+    end
+    if residual and self.battleFx and self.battleFx.signalEffect then
+      pcall(self.battleFx.signalEffect,self.battleFx,residual.entry,residual.side)
+    end
+    -- Red's charge turn cancels the move row and queues a charge row
+    -- (XSTATITEM_ANIM / XSTATITEM_DUPLICATE_ANIM, TELEPORT for Fly,
+    -- SLIDE_DOWN_ANIM for Dig) while the battler holds `charging`. Stadium's
+    -- charge state plays the charge clip and the variant route instead.
+    local chargeRow={XSTATITEM_ANIM=true,XSTATITEM_DUPLICATE_ANIM=true,
+      TELEPORT=true,SLIDE_DOWN_ANIM=true}
+    local charger=self:shownBattler(rowSide)
+    local charging=charger and charger.charging
+    if chargeRow[name] and charging then
+      local cdef=battle.data and battle.data.moves and battle.data.moves[charging.id]
+      local chargeId=cdef and tonumber(cdef.index or cdef.number)
+      if chargeId and FxSequence.CHARGE_ENTRIES[chargeId] then
+        def=nil
+        local actor=self.actors[rowSide]
+        local model=actor and actor.renderer and actor.renderer.model
+        local entry,start=FxSequence.chargeFrames(model and model.fxDispatch,chargeId)
+        if actor and actor.charge and not actor:charge(entry,start) and actor.attack then
+          actor:attack(chargeId)
+        end
+        if self.battleFx and self.battleFx.playCharge then
+          pcall(self.battleFx.playCharge,self.battleFx,chargeId,rowSide,actor)
+        end
+      end
+    end
     if def then
       local side=battle.animAttackerIsPlayer and "player" or "enemy"
-      self.actors[side]:attack(tonumber(def.index or def.number))
+      local moveId=tonumber(def.index or def.number)
+      if moveId then
+        self.actors[side]:attack(moveId)
+        if self.battleFx then
+          -- Gen 1 skips the move animation when a move misses, so a started
+          -- animation is presented as an ordinary result: move bank now and
+          -- impact bank at the dispatch hit frame. A host-supplied alternate
+          -- selector still plays that single bank.
+          if battle.animAlternate==true then
+            self.battleFx:trigger(moveId,side,true)
+          elseif self.battleFx.playMoveAndImpact then
+            self.battleFx:playMoveAndImpact(moveId,side,self.actors[side],nil,
+              self.actors[side=="player" and "enemy" or "player"])
+          else
+            self.battleFx:trigger(moveId,side,false)
+          end
+        end
+      end
     end
+  end
+  if self.animWasPlaying and not playing and self.battleFx and self.battleFx.finish then
+    self.battleFx:finish()
   end
   self.animWasPlaying=playing
   self.lastAnimName=battle.animName
@@ -327,10 +448,15 @@ function Scene:update(dt)
   Camera.stickOrbit(self.stickX,dt)
   Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
+  for _,which in ipairs({"player","enemy"}) do
+    local actor=self.actors[which]
+    if actor.setRest then actor:setRest(self:restCondition(which)) end
+  end
   self.actors.player:update(dt)
   self.actors.enemy:update(dt)
   self.substituteActors.player:update(dt)
   self.substituteActors.enemy:update(dt)
+  self:updateBattleFx(dt)
   return self:render()
 end
 

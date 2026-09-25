@@ -4,7 +4,8 @@
 -- does not rewrite and verify hundreds of separate records during import.
 local Cache = {}
 
-Cache.FORMAT = "S2IMP54"
+-- S2IMP58: merge of main (S2IMP54) and codex/battle-fx-parity (S2IMP57).
+Cache.FORMAT = "S2IMP58"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"
@@ -53,7 +54,7 @@ local function isModelPack(bytes)
 end
 
 local function encodeBlob(bytes)
-  if type(bytes) ~= "string" or #bytes < 1024 or not isModelPack(bytes) then
+  if type(bytes) ~= "string" or #bytes < 1024 then
     return bytes
   end
   local data = love and love.data
@@ -75,8 +76,7 @@ local function decodeBlob(bytes)
     return nil, "compressed cache payload cannot be decoded"
   end
   local ok, raw = pcall(data.decompress, "string", "lz4", bytes:sub(9))
-  if not ok or type(raw) ~= "string" or #raw ~= rawLength
-      or not isModelPack(raw) then
+  if not ok or type(raw) ~= "string" or #raw ~= rawLength then
     return nil, "compressed cache payload is corrupt"
   end
   return raw

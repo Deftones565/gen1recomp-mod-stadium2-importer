@@ -4,9 +4,23 @@
 -- playback, send-out growth, hit flash, and the terminal faint pose. Battle
 -- simulation remains entirely in the host generation's battle engine.
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
+local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
+local Sequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
+local Special = require("mods.STADIUM2_IMPORTER.lib.battle_special_moves")
+local Dispatch = require("mods.STADIUM2_IMPORTER.lib.animation_dispatch")
 
 local Actor = {}
 Actor.__index = Actor
+
+-- 84114804 sets a per-move behaviour kind at actor+0x61F; 8411845C runs its
+-- start routine (84123F60) at the move's hit frame and its update routine
+-- (84124104) every later frame of the attack state. Kind 9 (Minimize) is
+-- 84122998: uniform scale Math_StepToF(scale, 0.8, 0.01, 0.01). Kinds 6
+-- (Agility) and 7 (Double Team) move the battler and draw two translucent
+-- copies (lib/battle_special_moves.lua). Other kinds (4/8/0xA/0xC/0xD/0xE/
+-- 0x13/0x18/0x19/0x1A) are not decoded yet and do nothing here.
+Actor.SPECIAL_KINDS = Special.KINDS
+Actor.MINIMIZE_TARGET, Actor.MINIMIZE_STEP = 0.8, 0.01
 
 local STATE_RANK = { idle=0, entrance=1, attack=2, attack_default=2, hit=2, faint=3 }
 local SHINY_ATTACK = {
@@ -64,6 +78,45 @@ function Actor:release()
   self.flash=0
   self.faintFinished=false
   self.pendingFaint=false
+  self.rest,self.restKey,self.restHold,self.restHidden=nil,nil,nil,false
+  self.sizeScale,self.special=1,nil
+  self.nativeMarkerRow,self.nativeScaleSource=nil,nil
+  self:clearNative()
+end
+
+-- Presentation left behind by kinds 6/7: the sway offset (Stadium units,
+-- relative to the home slot), the afterimage copies and the model alpha.
+-- The "BETA STADIUM 2 BATTLE FX" option (Importer.betaBattleFxEnabled);
+-- tests may set Actor.forceFx.
+function Actor.fxEnabled()
+  if Actor.forceFx ~= nil then return Actor.forceFx end
+  local ok, enabled = pcall(Importer.betaBattleFxEnabled)
+  return ok and enabled == true
+end
+
+function Actor:clearNative()
+  self.nativeOffset,self.afterimages=nil,nil
+  self.modelAlphaByte=255
+end
+
+-- ROM trig tables (D_80087E50/D_80088E50) for the native routines; tests
+-- inject Actor.trigTables.
+function Actor:nativeTrig()
+  if Actor.trigTables then return Actor.trigTables end
+  local catalog=Importer.battleFxCatalog and Importer.battleFxCatalog()
+  return catalog and catalog.trigTables
+end
+
+function Actor:startNative(kind)
+  local model=self.renderer and self.renderer.model
+  local profile=Dispatch.battleProfile(model and model.fxBattleProfile)
+  local state,err=Special.new({kind=kind,yaw=Special.facing(self.side),
+    trig=self:nativeTrig(),bodyHeight=profile and profile.bodyHeight})
+  if not state and self.warn then
+    pcall(self.warn,("%s species %s: %s; move shown without it")
+      :format(self.label,tostring(self.dex),tostring(err)))
+  end
+  return state
 end
 
 function Actor:retire(reason)
@@ -97,7 +150,45 @@ function Actor:play(context, loop)
   end
   self.context=ok and actual or "idle"
   if ok then self.renderer.finished=false end
+  -- Any explicit clip replaces the resting pose until it ends; an explicit
+  -- idle loop already is the plain resting pose.
+  self.restKey=(ok and actual=="idle" and loop) and RestPose.key({context="idle"}) or nil
+  self.restHold=nil
   return ok and true or false
+end
+
+-- Host battle condition for the resting pose (flying, underground, frozen,
+-- asleep). Applied while the actor is idle; see battle_rest_pose.lua.
+function Actor:setRest(condition)
+  self.rest=type(condition)=="table" and condition or nil
+end
+
+-- 841139D0 as re-run by the idle state every frame: pick the pose for the
+-- current condition and switch only when it changes. Held poses stay on
+-- their frame. Returns the selected pose.
+function Actor:applyRest()
+  local pose=RestPose.select(self.rest,self.dex)
+  self.restHidden=pose.hidden==true
+  local key=RestPose.key(pose)
+  if pose.hidden or key==self.restKey then return pose end
+  local renderer=self.renderer
+  local ok=renderer and renderer.setContext
+    and renderer:setContext(pose.context,pose.loop==true) or false
+  if ok and pose.hold and renderer.seekFrame then ok=renderer:seekFrame(pose.hold) end
+  if not ok then
+    -- A species without this clip keeps its idle loop; report it once.
+    if pose.context~="idle" and self.warn and self.restWarned~=key then
+      self.restWarned=key
+      pcall(self.warn,("species %s has no %s clip for its resting pose")
+        :format(tostring(self.dex),tostring(pose.context)))
+    end
+    if renderer and renderer.setContext then renderer:setContext("idle",true) end
+    self.restKey,self.restHold=key,nil
+    return pose
+  end
+  renderer.finished=false
+  self.restKey,self.restHold=key,pose.hold
+  return pose
 end
 
 function Actor:load(data, mon, forcedDex)
@@ -142,13 +233,102 @@ function Actor:load(data, mon, forcedDex)
   return true
 end
 
-function Actor:attack(moveIndex)
-  if not self.renderer or self.pendingFaint or self.context=="faint" then return false end
-  if (STATE_RANK[self.context] or 0)>STATE_RANK.attack then return false end
+-- `strict` (viewer testing) plays only the species' own clip for this move:
+-- no generic attack fallback, and the reason is returned on failure.
+function Actor:attack(moveIndex, strict)
+  if not self.renderer then return false,"actor has no model" end
+  if self.pendingFaint or self.context=="faint" then return false,"actor is fainting" end
+  if (STATE_RANK[self.context] or 0)>STATE_RANK.attack then
+    return false,("actor is busy (%s)"):format(tostring(self.context))
+  end
   local ok=moveIndex and self.renderer:setMove(moveIndex,false) or false
+  local moveClip=ok
+  if not ok and strict then
+    return false,("species %s has no animation for move %s")
+      :format(tostring(self.dex),tostring(moveIndex))
+  end
   if not ok then ok=self:play("attack",false) end
-  if ok then self.context="attack" end
+  if ok then
+    self.context="attack"
+    -- 84114804 -> 841146D4 loads the move's row (+61C/+61D markers).
+    self.nativeMarkerRow=tonumber(moveIndex) and tonumber(moveIndex)-1 or nil
+    self.nativeScaleSource=self.nativeMarkerRow and {row=self.nativeMarkerRow,byte=0xF} or nil
+    self:clearNative()
+    self.pendingClip=nil
+    local model=self.renderer.model
+    local timing=Sequence.attackTiming(model and model.fxDispatch,moveIndex,{species=self.dex})
+    if moveClip and timing then
+      if timing.preRoll>0 then
+        -- 84114A04/841120AC: a negative hit frame holds the idle pose until
+        -- the counter reaches 0, then 84114BF4 starts the clip.
+        self.pendingClip={move=moveIndex,start=timing.clipStart,ticks=timing.preRoll,clock=0}
+        if self.renderer.setContext then self.renderer:setContext("idle",true) end
+      elseif timing.clipStart>0 and self.renderer.seekFrame then
+        -- 84114BF4: the clip starts at the row's byte 6 (+0x61B).
+        self.renderer:seekFrame(timing.clipStart)
+      end
+    end
+    -- Stadium's per-move routines belong to the battle FX option; with it
+    -- off the host keeps its own presentation (e.g. Gold's Minimize).
+    local kind=Actor.fxEnabled() and Actor.SPECIAL_KINDS[tonumber(moveIndex)]
+    local at=kind and timing and timing.special
+    self.special=at and {kind=kind,at=at,clock=0,ticks=0} or nil
+  end
   return ok
+end
+
+-- Idle pre-roll of a negative hit frame (see Actor:attack).
+function Actor:stepPendingClip(dt)
+  local pending=self.pendingClip
+  if not pending then return end
+  if self.context~="attack" then self.pendingClip=nil;return end
+  pending.clock=pending.clock+(tonumber(dt) or 0)*30
+  if pending.clock<pending.ticks then return end
+  self.pendingClip=nil
+  if self.renderer:setMove(pending.move,false) and pending.start>0 and self.renderer.seekFrame then
+    self.renderer:seekFrame(pending.start)
+  end
+  self.renderer.finished=false
+end
+
+-- Context 254: the species' own hit clip, played once with no generic
+-- fallback. Returns false and a reason when the clip is unavailable.
+function Actor:hit(moveId)
+  if not self.renderer then return false,"actor has no model" end
+  if self.pendingFaint or self.context=="faint" then return false,"actor is fainting" end
+  self.flash=.12
+  if (STATE_RANK[self.context] or 0)>STATE_RANK.hit then
+    return false,("actor is busy (%s)"):format(tostring(self.context))
+  end
+  local ok=self.renderer.setContext and self.renderer:setContext("hit",false) or false
+  if not ok then
+    return false,("species %s has no hit clip"):format(tostring(self.dex))
+  end
+  self.context="hit"
+  -- 84116BC0: markers from row 254, +661 from the received move's byte 0x13.
+  self.nativeMarkerRow=254
+  self.nativeScaleSource=tonumber(moveId) and {row=tonumber(moveId)-1,byte=0x13} or nil
+  self.renderer.finished=false
+  return true
+end
+
+-- Charge turn of a two-turn move: the species' charge row (context
+-- entry 255-260), started at the row's byte 6 like 84111DB4(+0x61B).
+function Actor:charge(entry, startFrame)
+  if not self.renderer then return false,"actor has no model" end
+  if self.pendingFaint or self.context=="faint" then return false,"actor is fainting" end
+  local name=("rom_context_%d"):format(tonumber(entry) or 0)
+  local ok=self.renderer.setContext and self.renderer:setContext(name,false) or false
+  if not ok then return false,("species %s has no %s clip"):format(tostring(self.dex),name) end
+  if (tonumber(startFrame) or 0)>0 and self.renderer.seekFrame then
+    self.renderer:seekFrame(startFrame)
+  end
+  self.context="attack"
+  self.nativeMarkerRow=tonumber(entry) -- 841146D4 with the charge row
+  self.nativeScaleSource=self.nativeMarkerRow and {row=self.nativeMarkerRow,byte=0xF} or nil
+  self.renderer.finished=false
+  self.restKey,self.restHold=nil,nil
+  return true
 end
 
 function Actor:entrance()
@@ -157,12 +337,6 @@ function Actor:entrance()
   self.faintFinished=false
   self.pendingFaint=false
   return self:play("entrance",false)
-end
-
-function Actor:hit()
-  if not self.renderer or self.pendingFaint or self.context=="faint" then return false end
-  self.flash=.12
-  return self:play("hit",false)
 end
 
 function Actor:faint()
@@ -174,10 +348,38 @@ function Actor:faint()
 end
 
 function Actor:scale()
-  if not self.grow then return 1 end
+  local size=self.sizeScale or 1
+  if not self.grow then return size end
   local t=clamp(self.grow.time/self.grow.duration,0,1)
   t=t*t*(3-2*t)
-  return t
+  return t*size
+end
+
+-- Special routine ticks at 30 Hz while the attack state (clip) runs.
+function Actor:stepSpecial(dt)
+  local special=self.special
+  if not special then return end
+  if self.context~="attack" then self.special=nil;self:clearNative();return end
+  special.clock=special.clock+(tonumber(dt) or 0)*30
+  while special.clock>=1 do
+    special.clock=special.clock-1
+    special.ticks=special.ticks+1
+    if special.ticks>=special.at and (special.kind==Special.AGILITY
+        or special.kind==Special.DOUBLE_TEAM) then
+      if special.native==nil then special.native=self:startNative(special.kind) or false end
+      if special.native then
+        Special.step(special.native)
+        self.nativeOffset=special.native.offset
+        self.afterimages=special.native.afterimages
+        self.modelAlphaByte=special.native.alpha or 255
+      end
+    elseif special.ticks>=special.at and special.kind==9 then
+      local s=self.sizeScale or 1
+      local target,step=Actor.MINIMIZE_TARGET,Actor.MINIMIZE_STEP
+      if s<target then s=math.min(target,s+step) else s=math.max(target,s-step) end
+      self.sizeScale=s
+    end
+  end
 end
 
 function Actor:update(dt)
@@ -202,13 +404,20 @@ function Actor:update(dt)
     modelAlphaByte=self.modelAlphaByte,
     dynamicObjectGastlyAlternate=self.variant=="shiny",
   },true)
-  self.renderer:step(dt)
+  self:stepPendingClip(dt)
+  self:stepSpecial(dt)
+  if self.context=="idle" then self:applyRest() end
+  -- A held resting pose (frozen, Diglett underground) does not advance.
+  self.renderer:step(self.context=="idle" and self.restHold and 0 or dt)
   if self.renderer.finished then
     if self.context=="faint" then
       self.faintFinished=true
     elseif self.context~="idle" then
       self.context="idle"
-      self:play("idle",true)
+      self.special=nil
+      self:clearNative()
+      self.restKey,self.restHold=nil,nil
+      self:applyRest()
     end
   end
 end

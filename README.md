@@ -73,7 +73,6 @@ derived from the user's ROM and must not be distributed with the mod.
   contextual arenas enabled, it gives Free Battle Park bright daytime,
   presentation-only warm evening lighting, and darker night lighting without
   changing the Gen 2 world clock or encounter tables.
-
 ## Battle camera controls
 
 - Move the mouse to orbit and pitch the camera.
@@ -206,6 +205,13 @@ createSpecialModel(name)
 releaseModel(model)
 newRenderer(species, variant, options)
 newRendererFromModel(model, options)
+battleFxCatalog()
+battleFxResource(resourceId)
+battleFxResources(moveId)
+battleFxShape(moveId, shapeId)
+battleFxShapeModel(moveId, shapeId)
+battleFxProgram(moveId, alternate, context)
+newBattleFxPlayer(options)
 releaseModels()
 readHandlers(species, variant)
 handlerInfo(address)
@@ -221,6 +227,12 @@ registerBattleSceneExtension(mod, phase, callback, priority)
 ```
 
 `presentation` is a generation-neutral rendering layer with `newActor`, `newScene`, `setBattler`, `removeBattler`, `sendOut`, `useMove`, `hit`, `faint`, and `update`, plus the `Actor`, `Scene`, and `Camera` types. Callers remain responsible for battle logic.
+
+The battle-FX APIs decode resources from the user's private Stadium 2 cache.
+`newBattleFxPlayer` owns a persistent 30 Hz presentation runtime and accepts
+injected placement/native/lifecycle resolvers; call `release()` when its scene
+ends. The built-in Gen 1 and Gen 2 battle adapters use this API only when the
+default-off **BETA STADIUM 2 MOVE FX** option is enabled.
 
 ### Choosing an integration
 
