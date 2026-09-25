@@ -104,6 +104,12 @@ rows[106 * 20 + 0x0B + 1] = string.char(5)
 renderer.model = {fxDispatch = table.concat(rows)}
 renderer.setMove = function(self) self.finished = false return true end
 actor:play("idle", true)
+Actor.forceFx = false
+ok(actor:attack(107) and actor.special == nil,
+  "with the battle FX option off, Stadium's Minimize routine does not run")
+actor.context = "idle"
+actor:play("idle", true)
+Actor.forceFx = true
 ok(actor:attack(107) and actor.special and actor.special.at == 5, "Minimize arms kind 9 at its hit frame")
 for _ = 1, 4 do actor:update(1 / 30) end
 ok(actor:scale() == 1, "no shrink before the hit frame")
@@ -118,4 +124,5 @@ ok(actor.context == "idle" and math.abs(actor:scale() - 0.8) < 1e-9 and actor.sp
 actor:release()
 ok(actor.sizeScale == 1, "a new Pokemon starts at full size")
 
+Actor.forceFx = nil
 print(("%d checks passed (battle rest pose)"):format(checks))

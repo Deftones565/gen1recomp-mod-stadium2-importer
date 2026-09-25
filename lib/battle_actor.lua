@@ -86,6 +86,14 @@ end
 
 -- Presentation left behind by kinds 6/7: the sway offset (Stadium units,
 -- relative to the home slot), the afterimage copies and the model alpha.
+-- The "BETA STADIUM 2 BATTLE FX" option (Importer.betaBattleFxEnabled);
+-- tests may set Actor.forceFx.
+function Actor.fxEnabled()
+  if Actor.forceFx ~= nil then return Actor.forceFx end
+  local ok, enabled = pcall(Importer.betaBattleFxEnabled)
+  return ok and enabled == true
+end
+
 function Actor:clearNative()
   self.nativeOffset,self.afterimages=nil,nil
   self.modelAlphaByte=255
@@ -260,7 +268,9 @@ function Actor:attack(moveIndex, strict)
         self.renderer:seekFrame(timing.clipStart)
       end
     end
-    local kind=Actor.SPECIAL_KINDS[tonumber(moveIndex)]
+    -- Stadium's per-move routines belong to the battle FX option; with it
+    -- off the host keeps its own presentation (e.g. Gold's Minimize).
+    local kind=Actor.fxEnabled() and Actor.SPECIAL_KINDS[tonumber(moveIndex)]
     local at=kind and timing and timing.special
     self.special=at and {kind=kind,at=at,clock=0,ticks=0} or nil
   end

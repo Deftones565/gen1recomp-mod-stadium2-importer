@@ -137,8 +137,8 @@ return function(mod)
       help="Select contextual Stadium fields for Gen 2 trainers. With Kenney environments enabled, also provides arena fallback for unbuilt environments in either game." },
     { key="stadium2_beta_arena_tod", label="BETA PARK TIME OF DAY", type="toggle", default=false,
       help="Experimental: when context arenas are enabled, tint Free Battle Park for Gen 2 morning, day, or night. Turn OFF for the arena's normal lighting." },
-    { key="stadium2_beta_battle_fx", label="BETA STADIUM 2 MOVE FX", type="toggle", default=false,
-      help="Experimental: use move effects decoded from your imported Stadium 2 ROM. OFF keeps the game's normal battle effects." },
+    { key="stadium2_beta_battle_fx", label="BETA STADIUM 2 BATTLE FX", type="toggle", default=false,
+      help="Experimental: Stadium 2 move and battle effects decoded from your imported ROM, with Stadium's own per-move Pokemon routines (Agility, Double Team, Minimize). OFF keeps the game's normal battle effects. Takes effect from the next battle." },
   })
 
   -- DSM animations are authored at 30 Hz, but advance from presented-frame

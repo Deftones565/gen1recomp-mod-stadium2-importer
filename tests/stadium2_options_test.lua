@@ -79,7 +79,7 @@ ok(main:find('key="stadium2_beta_arena_tod"',1,true)~=nil
     and main:find('label="BETA PARK TIME OF DAY"',1,true)~=nil,
   "importer exposes Park time-of-day lighting as a separate beta option")
 ok(main:find('key="stadium2_beta_battle_fx"',1,true)~=nil
-    and main:find('label="BETA STADIUM 2 MOVE FX"',1,true)~=nil,
+    and main:find('label="BETA STADIUM 2 BATTLE FX"',1,true)~=nil,
   "importer exposes Stadium 2 ROM move FX as a default-OFF beta option")
 ok(main:find('label="STADIUM 2 BATTLE"', 1, true) ~= nil, "battle option uses the requested Stadium label")
 ok(not main:find("lib.battle_stage", 1, true), "stage wiring stays outside the bootstrap")
