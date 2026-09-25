@@ -1,5 +1,16 @@
 Move bug list
 
+Implementation follow-up (2026-09-25, particle pool):
+- The 300-particle pool is now modelled. Once 300 particles are alive, the
+  rest of an emission is not created, as in the ROM, and the log reports
+  it. This caps runaway particle counts.
+- Water Gun (55), Barrage (140), Sludge Bomb (188) and Octazooka (190) now
+  spawn their follow-up particles at the earlier particle's position
+  (8410668C) instead of reporting "not implemented". Needs your retest.
+- Battle result byte: decoded from the Gen 2 battle engine inside the ROM
+  and fed from the battle's hit results (crit/effectiveness). No visible
+  change yet; it is groundwork for result-dependent effects.
+
 Battle follow-up (2026-09-25, defender hit reaction):
 - In Gen 1 and Gen 2 battles the defender now plays its own hit clip
   (context 254) when the impact bank starts, as the viewer's SEQ mode

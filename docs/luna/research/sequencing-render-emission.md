@@ -95,13 +95,8 @@ species table at actor+67C (the 8411E358 table) or dispatch rows 253/254.
 
 ## Still open
 
-- 8410668C particle-pool origin (moves 55, 140, 188, 190): scans the 300-slot
-  pool in slot order for a live particle whose descriptor has 0x400000 and
-  whose flag 0x2 matches, then adds its +0x20..+0x28 position to the new
-  particle's +0x2C offset. Slots come from the round-robin allocator
-  84100260 (cursor D_8418C954, NULL when all 300 are live); the runtime does
-  not model slots or the 300-particle cap yet.
-- 84103394 second draw pass (object flag 0x1000, gated by D_80094910+0x18).
+- Particle pool: implemented 2026-09-25, see below.
+- 84103394 draw pass: see "Particle pool and draw passes" below.
 - Meaning of each non-move entry 252..301 and the host events that trigger
   them.
 
@@ -167,3 +162,43 @@ Gen 1/Gen 2 hosts play the defender's own hit clip (Actor:hit, no fallback).
 Timing is approximate (the ROM starts the clip when the defender state
 begins) and the 84117948 result gating is not applied because the move to
 hit-state mapping is not decoded.
+
+## Particle pool and draw passes (2026-09-25)
+
+Source: US assembly for fragment79_36F8B0/375530 (uploaded from the user's
+pret split) and fork C `7fc529e5` for 84103394/84103478. Matches ROM
+assembly; not checked against ROM execution or visually.
+
+- 84100260 (via 84100328): from cursor D_8418C954, take the first of the 300
+  0x9C-byte slots at D_8418C950 whose +0x98 is clear, wrapping at 300; mark
+  it live, clear it with 84100174 (zeroes +0x20..+0x34 among others) and
+  move the cursor to the next slot. When all 300 are live it returns NULL
+  and leaves the cursor unchanged.
+- 841072BC loops over the emission's particle count and stops the whole
+  loop when 84100328 returns NULL, so the rest of that emission (for that
+  marker) is not created.
+- In 841072BC, emitter +9 (scheduler mode) 0 anchors through 84104D28.
+  Mode 1 first sets runtime flag 0x1000 (84100020), then descriptor flag
+  0x800000 selects 8410668C, otherwise 84104A00.
+- 8410668C scans slots 0..299 in order for the first live slot whose
+  descriptor (+0x10, flags at +4) has 0x400000 and whose runtime flag 0x2
+  equals the new particle's, and adds that slot's +0x20..+0x28 to the new
+  particle's +0x2C..+0x34. No match adds nothing. The new particle already
+  occupies its slot; a slot not yet updated still holds zero at +0x20.
+- 84101D54 (update) calls 84104A00 again only for descriptor flag 0x20000,
+  so the pool origin is a construction-time anchor.
+- Draw passes: 84103478 draws live slots with 0x1000 and 0x2000 set and
+  0x100800 clear (0x4000 selects the 841032F0 screen path). 84103394 draws
+  slots with 0x1000 set and 0x102800 clear when D_80094910+0x18 equals 3
+  for shapes whose +8 has bit 2, else 0. So every mode-1 particle carries
+  0x1000; which render layer each pass runs in is not traced yet, and the
+  mod does not model these layers.
+
+Runtime implementation: `Runtime:_allocateNativeSlot` (84100260),
+`Runtime:nativePoolOrigin` (8410668C), and the Player anchor resolver uses
+the pool origin at construction for mode-1 descriptors with 0x800000.
+Slots free when a particle is inactive or dropped by abortAll/releaseHeld.
+A particle counts as updated after its first runtime step. Affected moves:
+55, 140, 188, 190 (origin) and every move for the cap. Cost: allocation is
+one slot probe per particle unless the pool is nearly full; the origin scan
+is at most 300 slots and runs only for those descriptors.

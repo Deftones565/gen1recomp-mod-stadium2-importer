@@ -235,6 +235,9 @@ function Runtime.new(options)
     accumulator = 0,
     nextEffectId = 1,
     nextParticleId = 1,
+    -- D_8418C950: 300 particle slots shared by every effect; D_8418C954 is
+    -- the round-robin allocation cursor (84100260).
+    nativePool = {cursor = 0, slots = {}},
     effects = {},
     effectOrder = {},
     diagnostics = {},
@@ -514,6 +517,53 @@ function Runtime:_stepManagers()
   self:_mergeManagerDiagnostics(self.lifecycle)
 end
 
+Runtime.NATIVE_POOL_SIZE = 0x12C
+
+local function hasBit(value, mask)
+  return math.floor((tonumber(value) or 0) / mask) % 2 == 1
+end
+
+local function slotLive(particle)
+  return particle ~= nil and particle.active == true and not particle.nativeDropped
+end
+
+-- 84100260: from the cursor, take the first slot whose +0x98 is clear,
+-- wrapping at 300. NULL (nil) when all 300 are live; the cursor then stays.
+-- Otherwise the cursor moves to the slot after the one taken.
+function Runtime:_allocateNativeSlot()
+  local pool, size = self.nativePool, Runtime.NATIVE_POOL_SIZE
+  local index = pool.cursor
+  for _ = 1, size do
+    if not slotLive(pool.slots[index]) then
+      pool.cursor = (index + 1) % size
+      return index
+    end
+    index = (index + 1) % size
+  end
+  return nil
+end
+
+-- 8410668C: scan slots 0..299 for the first live particle whose descriptor
+-- has 0x400000 and whose secondary flag (0x2) equals the new particle's, and
+-- return its +0x20 position. 84100174 zeroes +0x20 at allocation and the
+-- update writes it, so a particle not yet updated contributes (0,0,0). The
+-- new particle occupies its slot during the scan. Returns (0,0,0) when no
+-- slot matches: the constructor then adds nothing and skips 84104A00.
+function Runtime:nativePoolOrigin(particle)
+  local secondary = particle and particle.nativeSecondaryEmission == true
+  local slots = self.nativePool.slots
+  for index = 0, Runtime.NATIVE_POOL_SIZE - 1 do
+    local other = slots[index]
+    if slotLive(other) and hasBit(other.event and other.event.flags, 0x400000)
+        and (other.nativeSecondaryEmission == true) == secondary then
+      if not other.nativeStepped then return {0, 0, 0}, other end
+      local anchor, position = other.nativeAnchor or {0, 0, 0}, other.position or {0, 0, 0}
+      return {anchor[1] + position[1], anchor[2] + position[2], anchor[3] + position[3]}, other
+    end
+  end
+  return {0, 0, 0}, nil
+end
+
 function Runtime:_spawn(effect, previousFrame, frame)
   if effect.emissionCancelled then return end
   -- Program schedulers are authored relative to the move's start, whereas
@@ -523,9 +573,28 @@ function Runtime:_spawn(effect, previousFrame, frame)
   local previousLocal = previousFrame - effect.originFrame
   local localFrame = frame - effect.originFrame
   local function spawn(source)
+    -- 841072BC stops creating the rest of this emission when 84100328
+    -- (84100260) returns NULL.
+    local slot = self:_allocateNativeSlot()
+    if slot == nil then
+      self:_emitUnsupported(effect, "native-particle-pool-full", {
+        programId = source.event and source.event.programId,
+        address = source.event and source.event.address, kind = "particle",
+        message = "all 300 native particle slots are live; the rest of this emission is dropped",
+      })
+      return false
+    end
     source.born = source.born + effect.originFrame
+    source.nativeSlot = slot
+    -- Reserve the slot while the constructor (and 8410668C) runs.
+    local reserve = {active = true, event = source.event, nativeSlot = slot,
+      nativeSecondaryEmission = source.nativeSecondaryEmission}
+    self.nativePool.slots[slot] = reserve
     local state = self:_particle(effect, source)
+    state.nativeSlot = slot
+    self.nativePool.slots[slot] = state
     effect.particles[#effect.particles + 1] = state
+    return true
   end
   for _, execution in ipairs(effect.executions) do
     local particles = self.native.particles(execution, previousLocal, localFrame) or {}
@@ -559,11 +628,13 @@ function Runtime:_spawn(effect, previousFrame, frame)
             for key, value in pairs(particles[i]) do source[key] = value end
             source.nativeMarkerLabel = marker.label
             source.nativeSecondaryEmission = marker.secondary == true or nil
-            spawn(source)
+            if not spawn(source) then break end
           end
         end
       else
-        for i = index, last do spawn(particles[i]) end
+        for i = index, last do
+          if not spawn(particles[i]) then break end
+        end
       end
       index = last + 1
     end
@@ -597,6 +668,8 @@ function Runtime:_stepEffect(effect, previousFrame, frame)
           message = "particle has no persistent motion state",
         })
       end
+      -- +0x20 now holds an updated position (read by 8410668C).
+      particle.nativeStepped = true
       self:_stepMaterial(effect, particle)
       if particle.active and self.modelAnimationFinished then
         local ok,finished,err=pcall(self.modelAnimationFinished,particle,frame)
@@ -788,6 +861,8 @@ function Runtime:abortAll()
         local flags = tonumber(particle.event and particle.event.flags) or 0
         if math.floor(flags / 0x20000000) % 2 == 1 and not particle.nativeReleased then
           kept[#kept + 1] = particle
+        else
+          particle.nativeDropped = true
         end
       end
       effect.particles = kept
@@ -821,7 +896,8 @@ function Runtime:releaseHeld(ownerSide)
         if held then
           particle.nativeReleased = true
           count = count + 1
-          if math.floor(flags / 0x08000000) % 2 == 0 then kept[#kept + 1] = particle end
+          if math.floor(flags / 0x08000000) % 2 == 0 then kept[#kept + 1] = particle
+          else particle.nativeDropped = true end
         else
           kept[#kept + 1] = particle
         end
@@ -935,6 +1011,7 @@ function Runtime:release()
   end
   self.effects = {}
   self.effectOrder = {}
+  self.nativePool = {cursor = 0, slots = {}}
   self.released = true
   return true
 end

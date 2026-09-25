@@ -135,6 +135,12 @@ function Player.new(options)
       local savedOrigin
       ro.motionOptions.resolveNativeAnchor=ro.motionOptions.resolveNativeAnchor or function(state,initial)
         local event=state.particle.event or {}
+        -- 841072BC: a mode-1 emission whose descriptor has 0x800000 takes
+        -- 8410668C's particle-pool origin at construction instead of 84104A00.
+        if initial and event.mode==1 and math.floor((tonumber(event.flags) or 0)/0x800000)%2==1
+            and runtime and runtime.nativePoolOrigin then
+          return {anchor=runtime:nativePoolOrigin(state.particle),diagnostics={}}
+        end
         local input=options.commonAnchorInputs(state.particle,beamScene.value)
         local rule=event.transform and event.transform.nativeAnchorTable
         if rule and rule.mode==1 then

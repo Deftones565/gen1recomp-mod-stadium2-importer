@@ -25,9 +25,6 @@ function Anchor.resolve(event,input,saved)
   elseif input.secondaryMarker and input.secondaryMarker~=255 then
     missing('unsupported-common-secondary-marker','84107998 secondary-marker particle emission is not implemented')
   end
-  if event.mode==1 and has(flags,0x800000) then
-    missing('unsupported-common-pool-origin','8410668C requires a prior particle-pool origin')
-  end
   local anchor
   if input.dynamicAnchorMissing then
     missing('unresolved-dynamic-anchor-read','native anchor table slot has not been written')
