@@ -64,6 +64,30 @@ function RenderMode.decode(renderState)
   }
 end
 
+-- Compiled-layout (model) visuals: 8003D888 selects the render mode from
+-- the node's submission layer through the 8003CC14 table (Materials). The
+-- blender and depth-update bits agree across all six root profiles; depth
+-- compare is set only in the odd (Z-buffered) profiles, which the battle
+-- scene uses since its Pokemon models are depth tested.
+function RenderMode.fromNodeLayer(layer)
+  layer = tonumber(layer)
+  if not layer then return nil end
+  local Materials = require("mods.STADIUM2_IMPORTER.lib.materials")
+  local word = Materials.layerRenderMode(1, layer)
+  if not word then return nil end
+  local function field(shift) return math.floor(word / 2 ^ shift) % 4 end
+  local p2, a2, m2, b2 = field(28), field(24), field(20), field(16)
+  local blend = (p2 == 0 and a2 == 0 and m2 == 1 and b2 == 0) and "blend" or "opaque"
+  if has(word, ALPHA_CVG_SEL) and has(word, CVG_X_ALPHA) then blend = "cutout" end
+  return {
+    nodeLayer = layer,
+    word = word,
+    blend = blend,
+    depthCompare = has(word, Z_CMP),
+    depthWrite = has(word, Z_UPD),
+  }
+end
+
 -- Lowest alpha that produces non-zero coverage for cutout entries.
 RenderMode.CUTOUT_ALPHA = 32 / 255
 

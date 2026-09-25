@@ -243,7 +243,7 @@ function Resources.modelFromShape(shape,name)
       Fragment.setBase(Resources.VRAM_BASE)
       return Fragment.extract(module,name or "battle-fx-layout",{
         directLayoutOffset=shape.layoutOffset,bakePhase5Geometry=true,
-        intensityAlpha=true})
+        intensityAlpha=true,trackRdpState=true})
     end
     local draws={}
     for _,entry in ipairs(shape.entries) do
@@ -301,6 +301,9 @@ function Resources.modelFromShape(shape,name)
     model.battleFxAnimationId=shape.animationId
   end
   model.staticPose=not shape.animation
+  -- A static FX shape shares species 0 and staticPose with arena layouts;
+  -- this flag keeps the renderer's arena-only render modes off it.
+  model.battleFx=true
   model.battleFxGeometryMode=shape.geometryMode
   -- Kind-3 exports are drawn through the model system, not 84102B3C.
   model.battleFxCompiledLayout=shape.compiledLayout==true

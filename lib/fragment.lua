@@ -414,6 +414,14 @@ function Model:walk(o, depth, stageRenderProfile)
       self.curNodeColor = {
         f:u8(o + 0xC), f:u8(o + 0xD), f:u8(o + 0xE), f:u8(o + 0xF),
       }
+      if self.options.trackRdpState then
+        -- 8003C10C: byte 1 is the combiner selector; selector 1 uses white
+        -- instead of the authored colour.
+        local selector = f:u8(o + 1)
+        self.nodeMaterial = { selector = selector,
+          primitive = selector == 1 and 0xFFFFFFFF or f:u32(o + 0xC) }
+        self.nodeMaterialCache = self.nodeMaterialCache or {}
+      end
       -- A local texture/material command supersedes callback RDP state for
       -- this node and its descendants. The slime models' uniform 4x4 input is
       -- the exception: it is a body placeholder consumed by the inherited
@@ -432,7 +440,15 @@ function Model:walk(o, depth, stageRenderProfile)
       end
     elseif cmd == 0x22 then                           
       local layer = self.options.stageLayout and f:u8(o + 1) or nil
+      -- Byte 1 is the node's submission layer (node+3), which 8003D888
+      -- turns into the node's RDP render mode.
+      local oldLayer = self.curNodeLayer
+      if self.options.trackRdpState then
+        self.curNodeLayer = f:u8(o + 1)
+        self:applyNodeMaterial()
+      end
       self:runNodeDL(f:ptr(o + 4), self:curBone(), stageRenderProfile, layer)
+      self.curNodeLayer = oldLayer
     elseif cmd == 0x18 then
       -- 800404AC -> node type 0F -> 8003C390 registers label 100 at
       -- the current matrix before testing whether shadows are enabled.
@@ -452,6 +468,8 @@ function Model:walk(o, depth, stageRenderProfile)
       self:runNodeDL(f:ptr(o + 4), named or self:curBone())
     elseif cmd == 0x20 or cmd == 0x21 then            
       self:runNodeDL(f:ptr(o + (cmd == 0x20 and 0x10 or 0xC)), self:curBone())
+    elseif cmd == 0x25 and self.options.trackRdpState then
+      self:resetNodeMaterial()
     elseif cmd == 0x25 and self.options.stageLayout then
       -- This sets graph-node flag 0x04. Display-list renderers pass it to
       -- func_8003DA20, which calls func_8003CD84 after the list and resets
@@ -477,6 +495,82 @@ end
 function Model:nodeCallback(bone)
   local callback = self:nodeCallbackState(bone)
   return callback and not callback.blocked and callback or nil
+end
+
+-- D_80094AAC: the model combiners 8003CB3C selects by material selector
+-- (layout 0x23 byte 1), sixteen gDPSetCombineLERP selectors each.
+local MODEL_COMBINERS = {
+  { 0x1F1F1F03, 0x07070703, 0x001F041F, 0x00070607 },
+  { 0x011F031F, 0x07070701, 0x001F041F, 0x00070607 },
+  { 0x01030803, 0x07070307, 0x001F041F, 0x00070607 },
+  { 0x011F031F, 0x07070703, 0x001F041F, 0x00070607 },
+  { 0x011F031F, 0x01070307, 0x001F041F, 0x00070607 },
+  { 0x1F1F1F03, 0x07070703, 0x1F1F1F00, 0x00070607 },
+  { 0x011F031F, 0x07070701, 0x1F1F1F00, 0x00070607 },
+  { 0x01030803, 0x07070307, 0x1F1F1F00, 0x00070607 },
+  { 0x011F031F, 0x07070703, 0x1F1F1F00, 0x00070607 },
+  { 0x011F031F, 0x01070307, 0x1F1F1F00, 0x00070607 },
+  { 0x1F1F1F04, 0x07070704, 0x1F1F1F00, 0x00070607 },
+  { 0x011F041F, 0x07070701, 0x1F1F1F00, 0x00070607 },
+  { 0x01040804, 0x07070307, 0x1F1F1F00, 0x00070607 },
+  { 0x011F041F, 0x07070704, 0x1F1F1F00, 0x00070607 },
+  { 0x011F041F, 0x01070407, 0x1F1F1F00, 0x00070607 },
+}
+StadiumFragment.MODEL_COMBINERS = MODEL_COMBINERS
+
+local function modelCombiner(selector, alpha)
+  local row = MODEL_COMBINERS[(tonumber(selector) or -1) + 1]
+  if not row then return nil end
+  local mux = {}
+  for _, word in ipairs(row) do
+    for shift = 24, 0, -8 do mux[#mux + 1] = floor(word / 2 ^ shift) % 256 end
+  end
+  -- 8003CB3C: a fully opaque object passes cycle-1 alpha through unchanged.
+  if alpha == 0xFF then mux[13], mux[14], mux[15], mux[16] = 7, 7, 7, 0 end
+  return Phase5Geometry.combinerFromSelectors(mux)
+end
+
+-- RDP state is copied on write so primitives can key on its identity.
+function Model:setRdpState(changes)
+  local rdp = {}
+  for key, value in pairs(self.rdpState or {}) do rdp[key] = value end
+  for key, value in pairs(changes) do rdp[key] = value end
+  rdp.key = table.concat({
+    rdp.combiner and table.concat(rdp.combiner.selectors, ".") or "-",
+    tostring(rdp.primitive), tostring(rdp.lodFraction), tostring(rdp.environment),
+  }, "/")
+  self.rdpState = rdp
+end
+
+-- 8003D888, before a node's list: D0C8 submits the material colour (the
+-- object alpha as LOD fraction) and D188 the selector's table combiner, each
+-- only when it differs from the model context's cached value. Display-list
+-- commands do not update those caches. Visual objects are drawn fully
+-- opaque here (alpha 0xFF); the object colour that C10C multiplies in is
+-- not modelled and is treated as white.
+function Model:applyNodeMaterial()
+  local material = self.nodeMaterial
+  if not material then return end
+  local cache = self.nodeMaterialCache
+  local changes = {}
+  if cache.primitive ~= material.primitive then
+    changes.primitive, changes.lodFraction = material.primitive, 0xFF
+    cache.primitive = material.primitive
+  end
+  if cache.selector ~= material.selector then
+    changes.combiner = modelCombiner(material.selector, 0xFF)
+    cache.selector = material.selector
+  end
+  if next(changes) then self:setRdpState(changes) end
+end
+
+-- 8003CD84, after a flag-4 node's list (8003DA20): resubmits the cached
+-- colour and the cached selector's combiner.
+function Model:resetNodeMaterial()
+  local cache = self.nodeMaterialCache
+  if not (cache and cache.selector ~= nil) then return end
+  self:setRdpState({ primitive = cache.primitive, lodFraction = 0xFF,
+    combiner = modelCombiner(cache.selector, 0xFF) })
 end
 
 function Model:runNodeDL(offset, bone, stageRenderProfile, stageSubmissionClass)
@@ -529,6 +623,8 @@ function Model:primFor(tex, tlut, mat, texAnim, cull)
               .. table.concat(self.curNodeColor or {}, ":") .. ","
               .. tostring(self.curStageRenderProfile) .. ","
               .. tostring(self.curStageSubmissionClass)
+              .. "," .. (self.rdpState and self.rdpState.key or "-")
+              .. "," .. tostring(self.curNodeLayer)
   local p = self.primsByKey[key]
   if p == nil then
     p = { tex = tex, tlut = tlut, mat = mat, texAnim = texAnim, cull = cull,
@@ -539,6 +635,8 @@ function Model:primFor(tex, tlut, mat, texAnim, cull)
           nodeColor = self.curNodeColor,
           arenaRenderProfile = self.curStageRenderProfile,
           arenaSubmissionClass = self.curStageSubmissionClass,
+          rdpState = self.rdpState,
+          nodeLayer = self.curNodeLayer,
           verts = {}, nverts = 0, tris = {}, ntris = 0, remap = {} }
     -- A 0x23 texture applies to its node and descendants; record draws that
     -- only inherited it from an unrelated node through the global state.
@@ -660,6 +758,19 @@ function Model:runDL(o, bone, depth)
       -- geometry state, and separate graph-node submissions do not clear it.
       self.geometryMode = bor(band(self.geometryMode, w0 % 0x1000000, 24),
         w1 % 0x1000000, 24)
+    elseif self.options.trackRdpState
+        and (op == 0xFC or op == 0xFA or op == 0xFB) then
+      -- Battle-FX node lists set their own combiner, primitive and
+      -- environment colours (often in a list that draws nothing). RDP state
+      -- persists into later node lists: 8003D888 re-submits a combiner only
+      -- when the node's selector differs from the cached one.
+      if op == 0xFC then
+        self:setRdpState({ combiner = Phase5Geometry.combinerFromWords(w0 % 0x1000000, w1) })
+      elseif op == 0xFA then
+        self:setRdpState({ primitive = w1, lodFraction = w0 % 0x100 })
+      else
+        self:setRdpState({ environment = w1 })
+      end
     elseif op == 0xD7 then
       -- gSPTexture is persistent RSP state, just like G_GEOMETRYMODE. Stadium
       -- field callbacks consume the scale left by an earlier display list;
@@ -807,7 +918,9 @@ function Model:mergePrimitivesByCallback()
       source.texAnim, source.cull, tostring(source.callbackOffset),
       tostring(source.callbackDescriptor), nodeColor,
       tostring(source.arenaRenderProfile), tostring(source.arenaSubmissionClass),
-      tostring(source.arenaResetAfterDraw) }, ",")
+      tostring(source.arenaResetAfterDraw),
+      source.rdpState and source.rdpState.key or "-",
+      tostring(source.nodeLayer) }, ",")
     local target = byKey[key]
     if not target then
       target = source
@@ -1401,6 +1514,35 @@ function StadiumFragment.inspectFx(data, name, sourceBase)
   }
 end
 
+-- Material for a primitive drawn under display-list RDP state (see
+-- trackRdpState). A colour the model never sets is inherited from earlier
+-- draws in the frame; it stays nil so the renderer keeps its default.
+local function rdpColor(word)
+  if word == nil then return nil end
+  return { floor(word / 0x1000000) / 255, floor(word / 0x10000) % 256 / 255,
+    floor(word / 0x100) % 256 / 255, word % 256 / 255 }
+end
+
+-- Without a list-authored SETPRIMCOLOR, 8003D0C8 submits the node colour
+-- (layout 0x23 RGBA) with the object alpha as the LOD fraction; a fully
+-- visible object has alpha 0xFF.
+local function rdpMaterial(state, nodeColor)
+  if not (state and state.combiner) then return nil end
+  local primitive = rdpColor(state.primitive)
+  if primitive == nil and nodeColor then
+    primitive = { nodeColor[1] / 255, nodeColor[2] / 255, nodeColor[3] / 255,
+      nodeColor[4] / 255 }
+  end
+  return {
+    phase5 = true,
+    displayListState = true,
+    combiner = state.combiner,
+    primitiveColor = primitive,
+    environmentColor = rdpColor(state.environment),
+    primitiveLodFraction = (state.lodFraction or 0xFF) / 255,
+  }
+end
+
 function StadiumFragment.extract(data, name, options)
   local frag, err = StadiumFragment.open(data, name)
   if not frag then return nil, err end
@@ -1657,8 +1799,10 @@ function StadiumFragment.extract(data, name, options)
         blend = (p.callbackDescriptor == 0x81000038 or p.callbackDescriptor == 0x81000068)
           and "add" or "alpha",
         materialOffset = p.mat, callbackOffset = callbackOffset,
-        material = callbackMaterialBySite[callbackOffset],
+        material = callbackMaterialBySite[callbackOffset]
+          or rdpMaterial(p.rdpState, p.nodeColor),
         nodeColor = p.nodeColor,
+        battleFxNodeLayer = p.nodeLayer,
         arenaRenderProfile = p.arenaRenderProfile,
         arenaSubmissionClass = p.arenaSubmissionClass,
         arenaResetAfterDraw = p.arenaResetAfterDraw == true,
