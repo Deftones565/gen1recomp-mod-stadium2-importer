@@ -107,6 +107,10 @@ uniform float n64CoveragePassthrough;
 uniform float primaryIntensityAlpha;
 uniform float secondaryIntensityAlpha;
 uniform float primitiveLodFraction;
+uniform float n64NoiseSeed;
+// RDP combiner NOISE (colour input A, selector 7): one grey value per pixel,
+// new every frame. Filled in effect() before the combiner runs.
+vec3 n64Noise = vec3(0.0);
 uniform vec4 n64ColorCycle0;
 uniform vec4 n64AlphaCycle0;
 uniform vec4 n64ColorCycle1;
@@ -189,6 +193,11 @@ vec3 n64ColorAB(float source, vec4 combined, vec4 texel0, vec4 texel1,
   if (source < 6.5) return vec3(1.0);
   return vec3(0.0);
 }
+vec3 n64ColorA(float source, vec4 combined, vec4 texel0, vec4 texel1,
+    vec4 primitive, vec4 shade, vec4 environment) {
+  if (source > 6.5 && source < 7.5) return n64Noise;
+  return n64ColorAB(source,combined,texel0,texel1,primitive,shade,environment);
+}
 vec3 n64ColorC(float source, vec4 combined, vec4 texel0, vec4 texel1,
     vec4 primitive, vec4 shade, vec4 environment) {
   if (source < 0.5) return combined.rgb;
@@ -241,7 +250,7 @@ float n64AlphaC(float source, vec4 combined, vec4 texel0, vec4 texel1,
 }
 vec4 n64Cycle(vec4 selectors, vec4 alphaSelectors, vec4 combined,
     vec4 texel0, vec4 texel1, vec4 primitive, vec4 shade, vec4 environment) {
-  vec3 rgb=(n64ColorAB(selectors.x,combined,texel0,texel1,primitive,shade,environment)
+  vec3 rgb=(n64ColorA(selectors.x,combined,texel0,texel1,primitive,shade,environment)
       -n64ColorAB(selectors.y,combined,texel0,texel1,primitive,shade,environment))
     *n64ColorC(selectors.z,combined,texel0,texel1,primitive,shade,environment)
     +n64ColorD(selectors.w,combined,texel0,texel1,primitive,shade,environment);
@@ -290,6 +299,8 @@ void effect() {
     return;
   }
   if (n64CombinerEnabled > 0.5) {
+    n64Noise=vec3(fract(sin(dot(floor(love_PixelCoord)
+      +vec2(n64NoiseSeed*7.13,n64NoiseSeed*3.71),vec2(12.9898,78.233)))*43758.5453));
     vec4 combined=n64Cycle(n64ColorCycle0,n64AlphaCycle0,vec4(0.0),
       texel0,texel1,primitiveColor,color,environmentColor);
     if (n64CombinerCycles > 1.5)
@@ -420,6 +431,10 @@ uniform float n64CombinerEnabled;
 uniform float n64CombinerCycles;
 uniform float n64CombinerCoverage;
 uniform float primitiveLodFraction;
+uniform float n64NoiseSeed;
+// RDP combiner NOISE (colour input A, selector 7): one grey value per pixel,
+// new every frame. Filled in effect() before the combiner runs.
+vec3 n64Noise = vec3(0.0);
 uniform vec4 n64ColorCycle0;
 uniform vec4 n64AlphaCycle0;
 uniform vec4 n64ColorCycle1;
@@ -430,6 +445,11 @@ vec3 mobileColorAB(float source,vec4 combined,vec4 texel0,vec4 texel1,
   if(source<2.5)return texel1.rgb;if(source<3.5)return primitive.rgb;
   if(source<4.5)return shade.rgb;if(source<5.5)return environment.rgb;
   if(source<6.5)return vec3(1.0);return vec3(0.0);
+}
+vec3 mobileColorA(float source,vec4 combined,vec4 texel0,vec4 texel1,
+    vec4 primitive,vec4 shade,vec4 environment) {
+  if(source>6.5&&source<7.5)return n64Noise;
+  return mobileColorAB(source,combined,texel0,texel1,primitive,shade,environment);
 }
 vec3 mobileColorC(float source,vec4 combined,vec4 texel0,vec4 texel1,
     vec4 primitive,vec4 shade,vec4 environment) {
@@ -457,7 +477,7 @@ float mobileAlphaC(float source,vec4 combined,vec4 texel0,vec4 texel1,
 }
 vec4 mobileN64Cycle(vec4 selectors,vec4 alphaSelectors,vec4 combined,
     vec4 texel0,vec4 texel1,vec4 primitive,vec4 shade,vec4 environment) {
-  vec3 rgb=(mobileColorAB(selectors.x,combined,texel0,texel1,primitive,shade,environment)
+  vec3 rgb=(mobileColorA(selectors.x,combined,texel0,texel1,primitive,shade,environment)
     -mobileColorAB(selectors.y,combined,texel0,texel1,primitive,shade,environment))
     *mobileColorC(selectors.z,combined,texel0,texel1,primitive,shade,environment)
     +mobileColorAB(selectors.w,combined,texel0,texel1,primitive,shade,environment);
@@ -491,6 +511,8 @@ void effect() {
     return;
   }
   if(n64CombinerEnabled>0.5) {
+    n64Noise=vec3(fract(sin(dot(floor(love_PixelCoord)
+      +vec2(n64NoiseSeed*7.13,n64NoiseSeed*3.71),vec2(12.9898,78.233)))*43758.5453));
     vec4 combined=mobileN64Cycle(n64ColorCycle0,n64AlphaCycle0,vec4(0.0),
       texel0,texel1,primitiveColor,color,environmentColor);
     if(n64CombinerCycles>1.5)
@@ -1077,6 +1099,10 @@ local function sendN64Combiner(shader, material)
   pcall(shader.send, shader, "n64CombinerCoverage", combiner.coverage and 1 or 0)
   pcall(shader.send, shader, "primitiveLodFraction",
     tonumber(material.primitiveLodFraction) or 0)
+  -- NOISE changes every frame; 30 steps a second matches the battle tick.
+  local timer = love and love.timer and love.timer.getTime
+  pcall(shader.send, shader, "n64NoiseSeed",
+    timer and math.floor(timer() * 30) % 997 or 0)
   pcall(shader.send, shader, "n64CombinerEnabled", 1)
   return true
 end

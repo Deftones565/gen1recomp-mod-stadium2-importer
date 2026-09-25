@@ -24,6 +24,18 @@ Battle follow-up (2026-09-25, moves with no effect data, web session):
   blur / clones); decoded where they live, not implemented yet.
 - Needs your retest.
 
+Battle follow-up (2026-09-25, Sandstorm near-black, web session):
+- Move 201 is one full-screen particle (program 11, mode 7, shape 147;
+  decoded from fragment 79's data, no colour layer). Shape 147 has two
+  layers. The second is a grain layer whose colour combiner starts from the
+  N64's NOISE input (random grey per pixel): (NOISE*LOD) then
+  (PRIM - that) * that. The mod had no NOISE input, so that layer drew as
+  solid black wherever its textures were bright. NOISE is now implemented
+  in both shaders. Also applies to any other effect using NOISE.
+- Needs your retest. If 201 is still too dark, run
+  `luajit mods/STADIUM2_IMPORTER/tools/dump_fx_colors.lua 201 > dump.txt`
+  from the Gen1Recomp folder and send me dump.txt.
+
 Battle follow-up (2026-09-25, lines through screen effects, second fix):
 - The lines were a regression from 3429234: taking effect shapes off the
   arena path also switched their texture filtering from smooth sampling

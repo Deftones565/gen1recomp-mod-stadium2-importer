@@ -240,6 +240,16 @@ Local session: move them to "Verified" with the result.
   fraction, combiner, lightingEnabled and tint alpha actually sent, and
   check the viewer was restarted on 8f05e6e before the screenshot.
 
+- web -> local (2026-09-25, while you were away, at the user's request):
+  in renderer.lua (yours) I (1) restored smooth sampling for static FX
+  shapes (`Renderer.smoothSampled`; 3429234 had switched them to the 3-point
+  filter along with the blend change, which put lines through screen FX;
+  user confirmed fixed), and (2) added the RDP NOISE input (colour A
+  selector 7) to both shaders: Sandstorm's shape 147 entry 2 uses it and
+  drew black. Shaders compile under glslangValidator. New tool:
+  `tools/dump_fx_colors.lua <move>` prints emitter materials and shape
+  combiners/tracks/texture stats from the ROM.
+
 ## Verified
 
 - 2026-09-25 `7dddebb` (ROM part): full ROM worker suite passes at

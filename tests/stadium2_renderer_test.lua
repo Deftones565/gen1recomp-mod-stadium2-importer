@@ -149,6 +149,13 @@ ok(not carrierState.castsShadow,
 local colorState = Renderer.primitiveRenderState({}, { lighting = false, cull = true })
 ok(not colorState.lightingEnabled and colorState.cullEnabled,
   "source vertex-colour geometry disables lighting without disabling culling")
+-- Combiner colour input A selector 7 is the RDP's NOISE (Sandstorm's
+-- grain layer, shape 147 prim 2); it must not read as zero.
+local rendererSource = io.open("mods/STADIUM2_IMPORTER/lib/renderer.lua"):read("*a")
+ok(rendererSource:find("vec3 rgb=(n64ColorA(selectors.x", 1, true)
+    and rendererSource:find("vec3 rgb=(mobileColorA(selectors.x", 1, true)
+    and select(2, rendererSource:gsub("return n64Noise;", "")) == 2,
+  "both shaders feed NOISE to colour input A")
 -- Battle-FX shapes keep the smooth sampling they had as arena models.
 ok(Renderer.smoothSampled({ staticPose = true, species = 0, battleFx = true }),
   "static battle-FX shapes are smooth-sampled")

@@ -246,3 +246,20 @@ ABIs are linked, emit a native-object packet carrying the raw command,
 resolved-pointer evidence, mode, slot timing, visual callback state, and an
 explicit unresolved-placement/geometry diagnostic; do not synthesize a
 particle, matrix, shape, or move-type visual.
+
+## Sandstorm (move 201) and the combiner NOISE input (2026-09-25)
+
+Web session. Decoded with `FxRom.catalog` from fragment 79's data section
+rebuilt from the US assembly (no ROM): move 201's primary route is program
+11 with one opcode-14 mode-7 particle, shape 147, alpha ramp 0 -> 255 by 16
+(alternate route program 350: the same shape with step 32, plus a mode-1
+particle on shape 104). No mode-8 screen colour layer.
+
+Shape 147 (from the local session's ROM dump) has two entries, render state
+0x46 (blend). Entry 2's combiner is colour0 = (NOISE - 0) * PRIM_LOD_FRAC + 0,
+colour1 = (PRIM - COMBINED) * COMBINED + 0, alpha0 = TEXEL1 * PRIM_LOD_FRAC +
+TEXEL0, alpha1 = COMBINED * PRIM. Colour input A selector 7 is the RDP's
+NOISE; the shaders had no such input and returned 0, so the layer drew
+black. Both shaders now supply a per-pixel grey value that changes every
+frame. Open: the RDP's exact noise distribution is not modelled (uniform
+0..1 here). Colour input B selectors 6/7 (CENTER, K4) still read as ONE / 0.
