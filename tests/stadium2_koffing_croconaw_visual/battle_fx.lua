@@ -152,7 +152,7 @@ function Preview:update(dt)
   if self.active then
     self.player:update(dt)
     self:_checkImpact()
-    self.frame=self.player:snapshot().frame
+    self.frame=self.player.runtime.frame
   end
 end
 
@@ -160,7 +160,7 @@ function Preview:step()
   if self.active then
     self.player.runtime:step(1)
     self:_checkImpact()
-    self.frame=self.player:snapshot().frame
+    self.frame=self.player.runtime.frame
   end
 end
 

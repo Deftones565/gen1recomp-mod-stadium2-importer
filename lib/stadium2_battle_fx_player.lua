@@ -283,8 +283,10 @@ function Player:_recordDiagnostics(items)
     end
   end
 end
-function Player:packets(sceneContext)
-  local snapshot=self.runtime:snapshot()
+-- `snapshot` lets one draw reuse a single runtime snapshot; each snapshot
+-- deep-copies lifecycle geometry, so taking several per frame was costly.
+function Player:packets(sceneContext,snapshot)
+  snapshot=snapshot or self.runtime:snapshot()
   local built=Packets.build(snapshot,{context=sceneContext,
     contextNeedsSnapshot=self.contextNeedsSnapshot,
     trigTables=self.runtime.catalog and self.runtime.catalog.trigTables,
@@ -548,13 +550,14 @@ function Player:_renderer(moveId,shapeId,animationId)
 end
 function Player:draw(sceneContext)
   self.beamScene.value=sceneContext
+  if self.released then return nil,"battle FX player released"end
+  local snapshot=self.runtime:snapshot()
   if sceneContext then
-    local native=self.runtime:snapshot().nativeObjects
+    local native=snapshot.nativeObjects
     sceneContext.nativeModelColors=native and native.modelColors
     sceneContext.nativeOverlayDraw=function()return self:drawOverlay(sceneContext)end
   end
-  if self.released then return nil,"battle FX player released"end
-  local built=self:packets(sceneContext);local moveByEffect={};for _,e in ipairs((self.runtime:snapshot().effects or{}))do moveByEffect[e.id]=e.moveId end
+  local built=self:packets(sceneContext,snapshot);local moveByEffect={};for _,e in ipairs((snapshot.effects or{}))do moveByEffect[e.id]=e.moveId end
   local liveLifecycle = {}
   for _,packet in ipairs(built.lifecyclePackets or {}) do
     liveLifecycle["lifecycle:"..tostring(packet.instanceId)] = true

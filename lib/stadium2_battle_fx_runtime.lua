@@ -971,7 +971,8 @@ function Runtime:snapshot()
   end
   if self.lifecycle and type(self.lifecycle.snapshot) == "function" then
     local ok, value = pcall(self.lifecycle.snapshot, self.lifecycle)
-    if ok then result.lifecycles = copy(value) end
+    -- Manager:snapshot already returns freshly copied tables.
+    if ok then result.lifecycles = value end
   end
   for _, id in ipairs(self.effectOrder) do
     local effect = self.effects[id]
