@@ -222,7 +222,8 @@ function Resources.modelFromShape(shape,name)
     if shape.compiledLayout then
       Fragment.setBase(Resources.VRAM_BASE)
       return Fragment.extract(module,name or "battle-fx-layout",{
-        directLayoutOffset=shape.layoutOffset,bakePhase5Geometry=true})
+        directLayoutOffset=shape.layoutOffset,bakePhase5Geometry=true,
+        intensityAlpha=true})
     end
     local draws={}
     for _,entry in ipairs(shape.entries) do
@@ -232,7 +233,7 @@ function Resources.modelFromShape(shape,name)
       draws[#draws+1]=draw
     end
     return Fragment.extractDisplayLists(module,draws,name,
-      Resources.VRAM_BASE)
+      Resources.VRAM_BASE,{intensityAlpha=true})
   end
   -- Resource modules are ROM input. One unsupported graph command should be
   -- reported as a missing drawable rather than terminate a battle or viewer.

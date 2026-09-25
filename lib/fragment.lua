@@ -1108,9 +1108,13 @@ local function decodeTexture(f, tex, tlut, palette)
       out[i + 1] = char(l, l, l, a)
     end
   elseif fmt == 4 then                                
+    -- The RDP's I formats replicate the intensity into all four channels,
+    -- so TEXEL0 alpha equals the intensity. Model imports keep the opaque
+    -- decode their caches were built with; battle FX opt in.
+    local intensityAlpha = f.intensityAlpha == true
     for i = 0, n - 1 do
       local l = (siz == 1) and sample(addr + i) or nibble(i) * 17
-      out[i + 1] = char(l, l, l, 255)
+      out[i + 1] = char(l, l, l, intensityAlpha and l or 255)
     end
   else
     for i = 0, n - 1 do out[i + 1] = "\255\0\255\255" end
@@ -1124,11 +1128,12 @@ StadiumFragment.decodeTexture = decodeTexture
 -- Battle FX resource modules do not contain Pokemon model roots, but their
 -- kind-2 shape exports use the same vertex/display-list format. Keeping this
 -- path on Model:runDL also preserves the persistent 64-entry N64 vertex cache.
-function StadiumFragment.extractDisplayLists(data,draws,name,sourceBase)
+function StadiumFragment.extractDisplayLists(data,draws,name,sourceBase,options)
   local previousBase=BASE
   BASE=tonumber(sourceBase) or 0x8FF00000
   local frag,err=StadiumFragment.open(data,name or "<battle-fx-resource>")
   if not frag then BASE=previousBase; return nil,err end
+  frag.intensityAlpha=type(options)=="table" and options.intensityAlpha==true
   local m=setmetatable({
     f=frag,species=0,textures={},tluts={},bones={{parent=-1,boneId=0,chan=-1,
       t={0,0,0},r={0,0,0},s={1,1,1}}},
@@ -1399,6 +1404,7 @@ end
 function StadiumFragment.extract(data, name, options)
   local frag, err = StadiumFragment.open(data, name)
   if not frag then return nil, err end
+  frag.intensityAlpha = type(options) == "table" and options.intensityAlpha == true
   local m, mErr = newModel(frag, options)
   if not m then return nil, mErr end
   m:build()

@@ -95,18 +95,12 @@ Local session: move them to "Verified" with the result.
 
 - 2026-09-25 `d6c138f` defender hit clip at the impact (Gen 1/Gen 2
   battles): check in battle that the defender plays its hit clip.
-- 2026-09-25 `7dddebb` 300-slot particle pool and 8410668C pool origin:
-  run the ROM suite (the old `unsupported-common-pool-origin` diagnostic is
-  gone); viewer-check 55 Water Gun, 140 Barrage, 188 Sludge Bomb,
-  190 Octazooka, and one particle-heavy move for the cap. Note: this commit
-  edited `lib/stadium2_battle_fx_runtime.lua` (now local-owned) before the
-  split; the pool code is `Runtime:_allocateNativeSlot` /
-  `Runtime:nativePoolOrigin`.
+- 2026-09-25 `7dddebb` pool origin, remaining part: user viewer check of
+  55 Water Gun, 140 Barrage, 188 Sludge Bomb, 190 Octazooka, and one
+  particle-heavy move for the cap (ROM part verified below).
 - 2026-09-25 `43d5eca` Gen 2 weather entries (0x107/0x106/0x113 ongoing,
   0x11F/0x121/0x120 ended, 0x125 sandstorm hit): battle retest with Rain
   Dance, Sunny Day, Sandstorm.
-- 2026-09-25 `ae4b0dd`/`ad71572` result byte from `battle.damage_dealt`:
-  no visible change expected; run the ROM suite.
 
 - 2026-09-25 (this commit) resting poses: viewer or battle check of
   context 261 (sleep), 262 (Fly) and 258 (Diglett/Dugtrio Dig) clips for a
@@ -126,7 +120,20 @@ Local session: move them to "Verified" with the result.
   renaming; I play them by their `rom_context_NNN` names. Request: with the
   ROM, check whether rows 261 and 268 point at the same body clip for most
   species (that would explain the viewer's "sleep" observation).
+- local -> web (2026-09-25): rows 261 and 268 share the same body clip
+  (dispatch byte 0) for 216 of 251 species; 35 differ (for example species
+  9, 16-19, 21 use clip 0 for 261 and 1 for 268; 40 and 42 the reverse).
+  So the viewer's "sleep" on 268 usually showed the 261 clip by
+  coincidence. I agree with playing contexts by `rom_context_NNN` for now;
+  I'll rename 261 (and fix the 268 label) in `pack.lua` when I next touch
+  the cache format.
 
 ## Verified
 
-(none yet)
+- 2026-09-25 `7dddebb` (ROM part): full ROM worker suite passes at
+  `8a1e8eb`. CPU audit of moves 55, 140, 188 and 190 (both banks, 360
+  ticks): all draw, no `unsupported-common-pool-origin` diagnostic. Barrage's
+  `dynamic-anchor-write` comes from the audit's stub renderer, not the game
+  path.
+- 2026-09-25 `ae4b0dd`/`ad71572` result byte: full ROM worker suite passes
+  at `8a1e8eb`.
