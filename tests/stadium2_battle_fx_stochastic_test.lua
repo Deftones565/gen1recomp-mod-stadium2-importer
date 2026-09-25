@@ -115,7 +115,9 @@ for _,move in ipairs({75,80})do for _,side in ipairs({'player','enemy'})do
     if m.file=='stadium2-lifecycle-beam' then
       allocations=allocations+1
       assert(#m.prims==52 and #m.textures==26,'native sprites and ribbons')
-      for _,texture in ipairs(m.textures)do assert(texture.w==32 and texture.h==32 and texture.format==4 and texture.size==0)end
+      -- 84166A64 loads the sprite export with G_SETTIMG FD100000 (RGBA16)
+      -- and a 1024-texel LOADBLOCK: 32x32 RGBA16, not I4.
+      for _,texture in ipairs(m.textures)do assert(texture.w==32 and texture.h==32 and texture.format==0 and texture.size==2)end
       local update=renderer.updatePose
       renderer.updatePose=function(self,force)updates=updates+1;return update(self,force)end
       local release=renderer.release

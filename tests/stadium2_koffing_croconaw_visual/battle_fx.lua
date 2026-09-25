@@ -43,8 +43,8 @@ function Preview:start(moveId, side, alternate, sceneContext)
   self.player=Player.new({catalog=catalog, runtimeOptions=options.runtimeOptions,
     sceneContext=sceneContext or self.sceneContext,
     resolveBeam=Adapter.beamInputs,
-    loadBeamTexture=function(id,symbol)
-      return Resources.beamTexture(resources or options.importer.battleFxResources(id),symbol)
+    loadBeamTexture=function(id,symbol,format,size)
+      return Resources.beamTexture(resources or options.importer.battleFxResources(id),symbol,format,size)
     end,
     loadWaveGridTexture=function(id,family)
       local resolved=resources or options.importer.battleFxResources(id)
