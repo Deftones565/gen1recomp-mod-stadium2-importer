@@ -700,6 +700,7 @@ local function program(catalog, id)
 end
 
 function Runtime:trigger(context)
+  self:touch()
   if self.released then return nil, "battle FX runtime has been released" end
   if type(context) ~= "table" then return nil, "battle FX trigger context is required" end
   local moveId = integer(context.moveId)
@@ -851,6 +852,7 @@ end
 -- except those holding object flag 0x10000 (descriptor bit 0x20000000,
 -- 84107170); 84109460(1) -> 841093E8 clears every lifecycle slot.
 function Runtime:abortAll()
+  self:touch()
   if self.released then return false end
   for _, id in ipairs(self.effectOrder) do
     local effect = self.effects[id]
@@ -883,6 +885,7 @@ end
 -- flag 0x8000 (descriptor bit 0x08000000) end it (+0x92 = 0) and hide its
 -- visual. Released particles are no longer exempt from abortAll.
 function Runtime:releaseHeld(ownerSide)
+  self:touch()
   if self.released then return 0 end
   local count = 0
   for _, id in ipairs(self.effectOrder) do
@@ -909,6 +912,7 @@ function Runtime:releaseHeld(ownerSide)
 end
 
 function Runtime:step(count)
+  self:touch()
   if self.released then return self.frame end
   count = validateTicks(count)
   for _ = 1, count do
@@ -926,6 +930,7 @@ function Runtime:step(count)
 end
 
 function Runtime:update(dt)
+  self:touch()
   if self.released then return self.frame end
   dt = tonumber(dt)
   if dt == nil or dt < 0 then error("battle FX update dt must be non-negative", 2) end
@@ -940,6 +945,13 @@ function Runtime:update(dt)
     self:step(advance)
   end
   return self.frame
+end
+
+-- Every state change bumps the revision, so read-only consumers can reuse
+-- one snapshot until the runtime changes. snapshot() itself always returns
+-- a fresh caller-owned copy.
+function Runtime:touch()
+  self.revision = (self.revision or 0) + 1
 end
 
 function Runtime:snapshot()
@@ -1003,6 +1015,7 @@ function Runtime:snapshot()
 end
 
 function Runtime:release()
+  self:touch()
   if self.released then return false end
   if self.nativeObjects and type(self.nativeObjects.release) == "function" then
     pcall(self.nativeObjects.release, self.nativeObjects)

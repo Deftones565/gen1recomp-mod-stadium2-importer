@@ -62,7 +62,7 @@ local main = assert(io.open("mods/STADIUM2_IMPORTER/main.lua", "rb")):read("*a")
 ok(main:find('key="stadium2_models"', 1, true) ~= nil, "importer exposes the Stadium 2 models option")
 ok(main:find('key="stadium2_battle"', 1, true) ~= nil, "importer exposes the Stadium 2 battle option")
 ok(main:find('key="stadium2_battle_hud"', 1, true) ~= nil
-    and main:find('label="STADIUM 2 BATTLE HUD"', 1, true) ~= nil,
+    and main:find('label="BATTLE HUD"', 1, true) ~= nil,
   "importer exposes an independent Stadium battle HUD option")
 ok(main:find('key="stadium2_shader"', 1, true) ~= nil
     and main:find('{"WATERCOLOR MANGA","cel"}', 1, true) ~= nil,
@@ -72,16 +72,16 @@ ok(main:find('key="stadium2_rapidash_cut_fx"',1,true)~=nil
     and main:find('type="toggle", default=true',1,true)~=nil,
   "importer exposes the opt-in Rapidash cut-particle option")
 ok(main:find('key="stadium2_beta_arena_test"',1,true)~=nil
-    and main:find('label="BETA CONTEXT ARENAS"',1,true)~=nil
+    and main:find('label="CONTEXT ARENAS (BETA)"',1,true)~=nil
     and main:find('type="toggle", default=false',1,true)~=nil,
   "importer exposes contextual Gen 2 arenas as a default-OFF beta option")
 ok(main:find('key="stadium2_beta_arena_tod"',1,true)~=nil
-    and main:find('label="BETA PARK TIME OF DAY"',1,true)~=nil,
+    and main:find('label="PARK TIME OF DAY (BETA)"',1,true)~=nil,
   "importer exposes Park time-of-day lighting as a separate beta option")
 ok(main:find('key="stadium2_beta_battle_fx"',1,true)~=nil
-    and main:find('label="BETA STADIUM 2 BATTLE FX"',1,true)~=nil,
+    and main:find('label="MOVE EFFECTS (BETA)"',1,true)~=nil,
   "importer exposes Stadium 2 ROM move FX as a default-OFF beta option")
-ok(main:find('label="STADIUM 2 BATTLE"', 1, true) ~= nil, "battle option uses the requested Stadium label")
+ok(main:find('label="3D BATTLE SCENE"', 1, true) ~= nil, "battle option uses the requested Stadium label")
 ok(not main:find("lib.battle_stage", 1, true), "stage wiring stays outside the bootstrap")
 ok(not main:find("RENDER QUALITY", 1, true) and not main:find("TEXTURE FILTERING", 1, true), "no unrelated Stadium renderer options are exposed")
 ok(main:find('render_pipelines:register("stadium2_battle_clock"', 1, true) ~= nil,

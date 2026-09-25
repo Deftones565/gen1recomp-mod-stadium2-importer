@@ -110,7 +110,9 @@ for _,id in ipairs({95,45,47,195}) do
     releaseRenderer=function(renderer)releases=releases+1;renderer:release()end})
   player:trigger({moveId=id});player.runtime:step(1)
   local result=player:draw(scene)
-  assert(result.drawn>=1 and draws==2 and allocations==1)
+  -- One drawScene call: all parts share a blend class, and the player skips
+  -- the pass with no parts.
+  assert(result.drawn>=1 and draws==1 and allocations==1)
   local before=uploads;player:draw(scene)
   assert(uploads==before and allocations==1,"same frame reuses mesh")
   player.runtime:step(1);player:draw(scene)

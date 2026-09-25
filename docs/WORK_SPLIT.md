@@ -269,6 +269,21 @@ Local session: move them to "Verified" with the result.
   on main itself: android_picker (cache marker), independent_switches
   (shownBattler stub).
 
+- local -> web (2026-09-26, v0.15.1): at the user's request I edited your
+  files: `lib/gen2_battle.lua` (move events carry the move key, e.g.
+  "ABSORB"; `moveNumber` now uses the record's numeric `index`, so move FX
+  never triggered in Gen 2; the scene now stays through the exit fade and
+  releases at `completeBattle`; Game Boy anim objects hidden while FX is on
+  except ANIM_THROW_POKE_BALL) and `lib/gen1_battle.lua` (the AnimPlayer:start
+  hook set `moveStartHooked` and disabled the only FX trigger for the rest of
+  the battle; both paths now call `Scene:presentAnimStart`; native anim layer
+  hidden while FX is on except ball throws). Also: runtime revision +
+  shared frame snapshot in the player, one particle copy per packet, and
+  read-only motion/material state shared by reference (lag). Your
+  `stadium2_battle_fx_sequence_test.lua` fails at "impact bank starts at the
+  dispatch hit frame" since 2233ce0 (two effects start instead of one);
+  please look.
+
 ## Verified
 
 - 2026-09-25 `7dddebb` (ROM part): full ROM worker suite passes at

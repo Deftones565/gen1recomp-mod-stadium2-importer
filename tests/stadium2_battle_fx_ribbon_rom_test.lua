@@ -40,7 +40,9 @@ local player=Player.new({catalog=catalog,
 assert(player:trigger({moveId=20,alternate=true,sourceSide="player",targetSide="enemy"}))
 player.runtime:step(1)
 local built=player:draw(scene)
-assert(#built.lifecyclePackets==1 and allocations==1 and draws==2)
+-- One drawScene call: all parts share a blend class, and the player skips
+-- the pass with no parts.
+assert(#built.lifecyclePackets==1 and allocations==1 and draws==1)
 local before=updates
 player:draw(scene)
 assert(allocations==1 and updates==before,"repeated draw must reuse the mesh")

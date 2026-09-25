@@ -248,6 +248,7 @@ function Player:setRouteSignal(value)
   local manager=self.runtime.lifecycle
   if not (manager and manager.setNativeSignal) then return false end
   manager:setNativeSignal(value)
+  self.runtime:touch()
   return true
 end
 -- 84108A10(owner) held-particle release; see Runtime:releaseHeld.
@@ -265,12 +266,24 @@ function Player:update(dt)if self.released then return nil end;return self.runti
 function Player:finish(effectId)
   if self.released then return false end
   local manager=self.runtime.lifecycle
-  if manager and manager.finishEffect then return manager:finishEffect(effectId) end
+  if manager and manager.finishEffect then
+    self.runtime:touch()
+    return manager:finishEffect(effectId)
+  end
   return false
 end
 function Player:snapshot()return self.runtime:snapshot()end
+-- Draw, overlay and background colour read the same state each frame; they
+-- share one snapshot until the runtime's revision changes (read-only use).
+function Player:_frameSnapshot()
+  local revision=self.runtime.revision
+  if not (self.frameSnapshot and self.frameSnapshotRevision==revision) then
+    self.frameSnapshot,self.frameSnapshotRevision=self.runtime:snapshot(),revision
+  end
+  return self.frameSnapshot
+end
 function Player:backgroundColor(base)
-  local native=self.runtime:snapshot().nativeObjects
+  local native=self:_frameSnapshot().nativeObjects
   return NativeObjects.backgroundColor(base,native and native.nativeColor)
 end
 function Player:_recordDiagnostics(items)
@@ -314,6 +327,25 @@ function Player:packets(sceneContext,snapshot)
     mergeDiagnostics(built.diagnostics,set.diagnostics,diagnosticSeen)
   end
   return built
+end
+-- drawScene sets up the whole shader for each pass, so a pass that has no
+-- matching parts (additive vs. not) is skipped. Cached per parts table.
+local BOTH_PASSES,OPAQUE_PASS,ADDITIVE_PASS={"opaque","additive"},{"opaque"},{"additive"}
+local function drawPasses(renderer)
+  local parts=renderer and renderer.parts
+  if type(parts)~="table" or #parts==0 then return BOTH_PASSES end
+  -- The additive pass also draws handler dynamic objects.
+  local dynamic=renderer.handlerState and renderer.handlerState.dynamicObjectsBySite
+  if type(dynamic)=="table" and next(dynamic)~=nil then return BOTH_PASSES end
+  local cache=renderer.battleFxPasses
+  if cache and cache.parts==parts and cache.count==#parts then return cache.passes end
+  local opaque,additive=false,false
+  for _,part in ipairs(parts) do
+    if part.prim and part.prim.additive==true then additive=true else opaque=true end
+  end
+  local passes=opaque and additive and BOTH_PASSES or additive and ADDITIVE_PASS or OPAQUE_PASS
+  renderer.battleFxPasses={parts=parts,count=#parts,passes=passes}
+  return passes
 end
 local function renderOptions(scene,packet,pass)
   local camera=scene and scene.camera or{};local environment=scene and scene.environment or{};local shadow=scene and scene.shadow or{}
@@ -523,7 +555,7 @@ local function drawProvenPacket(self, sceneContext, packet, moveId, resolver,
   end
   local success = true
   if not configureRenderer(renderer,packet,built) then return false end
-  for _, pass in ipairs({"opaque", "additive"}) do
+  for _, pass in ipairs(drawPasses(renderer)) do
     local options=renderOptions(sceneContext, packet, pass)
     if packet.waveGrid then
       -- All three grid materials use 0x0C184240: neither Z_CMP nor Z_UPD.
@@ -551,7 +583,7 @@ end
 function Player:draw(sceneContext)
   self.beamScene.value=sceneContext
   if self.released then return nil,"battle FX player released"end
-  local snapshot=self.runtime:snapshot()
+  local snapshot=self:_frameSnapshot()
   if sceneContext then
     local native=snapshot.nativeObjects
     sceneContext.nativeModelColors=native and native.modelColors
@@ -589,7 +621,7 @@ function Player:draw(sceneContext)
         else success=false;drawDiagnostic(built,packet,code,message) end
       end
       if success then
-        for _,pass in ipairs({"opaque","additive"})do if type(renderer.drawScene)=="function"then local ok,result=pcall(renderer.drawScene,renderer,pass,drawMatrix,renderOptions(sceneContext,packet,pass));if not ok or result==false then success=false;built.diagnostics[#built.diagnostics+1]={code="draw-renderer",severity="warning",effectId=packet.effectId,programId=packet.programId,address=nil,kind="draw",message=ok and"renderer rejected packet"or tostring(result)};break end end end
+        for _,pass in ipairs(drawPasses(renderer))do if type(renderer.drawScene)=="function"then local ok,result=pcall(renderer.drawScene,renderer,pass,drawMatrix,renderOptions(sceneContext,packet,pass));if not ok or result==false then success=false;built.diagnostics[#built.diagnostics+1]={code="draw-renderer",severity="warning",effectId=packet.effectId,programId=packet.programId,address=nil,kind="draw",message=ok and"renderer rejected packet"or tostring(result)};break end end end
       end
       if success then drawn=drawn+1 end
     end
@@ -619,7 +651,7 @@ end
 -- 841032F0 selects export 90 through 8418CB88; it is the ROM's screen quad.
 function Player:drawOverlay(sceneContext)
   if self.released then return 0 end
-  local snapshot=self.runtime:snapshot()
+  local snapshot=self:_frameSnapshot()
   local moves={}
   for _,effect in ipairs(snapshot.effects or {}) do moves[effect.id]=effect.moveId end
   local count=0
@@ -648,7 +680,7 @@ function Player:drawOverlay(sceneContext)
     local renderer,err=self:_renderer(moves[packet.effectId],packet.shapeId)
     if renderer and type(renderer.drawScene)=='function' then
       local success=configureRenderer(renderer,packet,built)
-      for _,pass in ipairs(success and {'opaque','additive'} or {}) do
+      for _,pass in ipairs(success and drawPasses(renderer) or {}) do
         local options=renderOptions(sceneContext,packet,pass)
         options.screenSpace=true
         options.viewProjection={1/160,0,0,-1,0,-1/120,0,1,0,0,-.5,0,0,0,0,1}

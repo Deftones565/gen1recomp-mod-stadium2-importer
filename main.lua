@@ -99,12 +99,12 @@ return function(mod)
   end
 
   mod.options:define({
-    { key="stadium2_models", label="STADIUM 2 MODELS", type="toggle", default=true },
-    { key="stadium2_battle", label="STADIUM 2 BATTLE", type="toggle", default=true },
-    { key="stadium2_battle_hud", label="STADIUM 2 BATTLE HUD", type="toggle",
+    { key="stadium2_models", label="3D POKEMON MODELS", type="toggle", default=true },
+    { key="stadium2_battle", label="3D BATTLE SCENE", type="toggle", default=true },
+    { key="stadium2_battle_hud", label="BATTLE HUD", type="toggle",
       default=true,
       help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
-    { key="stadium2_shader", label="MODEL / SCENE SHADER", type="choice", default="stadium",
+    { key="stadium2_shader", label="SHADER STYLE", type="choice", default="stadium",
       choices={{"STADIUM","stadium"},{"WATERCOLOR MANGA","cel"}},
       help="Choose Stadium shading or watercolor manga on desktop and Android. Applies to imported Pokemon and the whole custom battle scene; battle UI stays unchanged." },
     { key="stadium2_weather", label="SCENE WEATHER", type="choice", default="off",
@@ -133,18 +133,18 @@ return function(mod)
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
-    { key="stadium2_beta_arena_test", label="BETA CONTEXT ARENAS", type="toggle", default=false,
+    { key="stadium2_beta_arena_test", label="CONTEXT ARENAS (BETA)", type="toggle", default=false,
       help="Select contextual Stadium fields for Gen 2 trainers. With Kenney environments enabled, also provides arena fallback for unbuilt environments in either game." },
-    { key="stadium2_beta_arena_tod", label="BETA PARK TIME OF DAY", type="toggle", default=false,
+    { key="stadium2_beta_arena_tod", label="PARK TIME OF DAY (BETA)", type="toggle", default=false,
       help="Experimental: when context arenas are enabled, tint Free Battle Park for Gen 2 morning, day, or night. Turn OFF for the arena's normal lighting." },
-    { key="stadium2_beta_battle_fx", label="BETA STADIUM 2 BATTLE FX", type="toggle", default=false,
+    { key="stadium2_beta_battle_fx", label="MOVE EFFECTS (BETA)", type="toggle", default=false,
       help="Experimental: Stadium 2 move and battle effects decoded from your imported ROM, with Stadium's own per-move Pokemon routines (Agility, Double Team, Minimize). OFF keeps the game's normal battle effects. Takes effect from the next battle." },
   })
 
   -- DSM animations are authored at 30 Hz, but advance from presented-frame
   -- real time. The speed-scaled logic clock can run many times per frame.
   mod.content.render_pipelines:register("stadium2_battle_clock", {
-    label = "STADIUM 2 BATTLE CLOCK",
+    label = "BATTLE CLOCK",
     levels = { "OFF" },
     update = function(dt)
       Battle.update(dt)
@@ -157,7 +157,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.15.0"
+  mod.exports.version = "0.15.1"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus

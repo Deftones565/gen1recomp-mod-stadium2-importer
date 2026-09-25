@@ -52,6 +52,16 @@ local function warn(message)
   diagnostic("warning: "..tostring(message))
 end
 
+-- Gen 2 move events carry the move key (e.g. "ABSORB"); its record's
+-- numeric `index` is the move number Stadium's tables use. `id` is the key
+-- again, so it is only a fallback for hosts that emit numeric IDs.
+local function moveNumber(data, move)
+  local number = tonumber(move)
+  if number then return number end
+  local def = data and data.moves and data.moves[move]
+  return def and (tonumber(def.index) or tonumber(def.number) or tonumber(def.id)) or nil
+end
+
 local function dexOf(data, mon)
   if not mon then return nil end
   if type(mon.species) == "number" then return math.floor(mon.species) end
@@ -427,8 +437,7 @@ function Scene:handleEvent(event)
     -- `event.move` is the BattleState move ID.  Keep it authoritative; the
     -- data record's index/number is only a fallback for legacy presenters
     -- that supplied a symbolic move key.
-    local moveId=tonumber(event.move)
-      or (def and tonumber(def.id or def.index or def.number))
+    local moveId=moveNumber(data,event.move)
     if self.battleFx and event.missed~=true and moveId then
       -- Presented (non-missed) moves play the move bank now and the impact
       -- bank at the attacker's dispatch hit frame (84108728/841087B8).
@@ -578,7 +587,8 @@ function Scene:signalEventFx(event)
   local fx = self.battleFx
   if not fx or not fx.signalEffect then return end
   if event.kind == "move" and sideOk(event.side) then
-    self.presentedMove = {side = event.side, move = tonumber(event.move)}
+    local data = self.screen and self.screen.game and self.screen.game.data
+    self.presentedMove = {side = event.side, move = moveNumber(data, event.move)}
   end
   local entry, owner
   if event.kind == "damage" and sideOk(event.side) then
@@ -861,6 +871,18 @@ local function installScreenHooks()
       g.setColor(1,1,1,1)
       g.draw(picture, 0, 0, 0,
         width / picture:getWidth(), height / picture:getHeight())
+      -- Exit fade (finishBattle -> completeBattle): Gold lightens BGP to
+      -- white in steps; the native UI layers follow BGP, the Stadium picture
+      -- follows the same steps through a white overlay.
+      local bgp=type(self.exitFadeBgp)=="function" and self:exitFadeBgp() or nil
+      if bgp then
+        local lighten=(3-math.floor(bgp/64)%4)/3
+        if lighten>0 then
+          g.setColor(1,1,1,lighten)
+          g.rectangle("fill",0,0,width,height)
+          g.setColor(1,1,1,1)
+        end
+      end
     else
       if not scene.diagnosticDrawFallback then
         scene.diagnosticDrawFallback=true
@@ -885,6 +907,11 @@ local function installScreenHooks()
     -- final OAM here; it is never stepped again.
     local objectRunner=self.anim or self.stadium2ImporterRetainedAnim
     local deferObjects=objectRunner and self.animView and true or nil
+    -- With Stadium battle FX on, Stadium's effects replace the Game Boy
+    -- animation objects (the host animation still runs for timing). The ball
+    -- throw has no Stadium effect and stays native.
+    local hideObjects=scene.battleFx~=nil and objectRunner~=nil
+      and objectRunner.animId~="ANIM_THROW_POKE_BALL"
     scene.deferAnimationObjects=deferObjects
     -- Keep battle ownership in the Stadium scene during the caught-mon
     -- nickname prompt. Its Yes/No window is composited separately from the
@@ -947,7 +974,7 @@ local function installScreenHooks()
     if not modalLayerOk then error(modalLayer,0) end
     local composed=Hud.composite(scene,self,layer,hudLayer,modalLayer,
       {decorate=UIOwnership.hudEnabled()})
-    if deferObjects and objectRunner and self.animView then
+    if deferObjects and objectRunner and self.animView and not hideObjects then
       local box=scene.hudBox
       g.push()
       g.translate(box.lx,box.ly)
@@ -999,13 +1026,32 @@ local function installScreenHooks()
   -- while this screen still owns the faint, victory, experience and result
   -- messages.  The session must live until the screen actually returns to
   -- the world, or the remainder is redrawn by Gold's ordinary 2D path.
+  -- finishBattle only starts the exit fade; the scene stays until
+  -- completeBattle, which ends the fade and hands the screen back.
   local originalFinishBattle=BattleState.finishBattle
   function BattleState:finishBattle(...)
-    local scene=active(self)
     self.stadium2ImporterRetainedAnim=nil
-    local result=originalFinishBattle(self,...)
-    if scene then Gen2.finish(nil,true) end
-    return result
+    return originalFinishBattle(self,...)
+  end
+  local originalCompleteBattle=BattleState.completeBattle
+  if originalCompleteBattle then
+    function BattleState:completeBattle(...)
+      local scene=active(self)
+      local function finish(...)
+        if scene and session==scene then Gen2.finish(nil,true) end
+        return ...
+      end
+      return finish(originalCompleteBattle(self,...))
+    end
+  else
+    -- Hosts without completeBattle: release where the fade starts.
+    function BattleState:finishBattle(...)
+      local scene=active(self)
+      self.stadium2ImporterRetainedAnim=nil
+      local result=originalFinishBattle(self,...)
+      if scene then Gen2.finish(nil,true) end
+      return result
+    end
   end
 end
 

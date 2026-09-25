@@ -100,7 +100,9 @@ for move,family in pairs(moves) do for _,side in ipairs({'player','enemy'}) do
   for _=1,25 do preview:step() end
   local state=preview.player:snapshot().lifecycles.instances[1]
   assert(state.familyId==family and state.nativeState.kind=='rom-radial-state')
-  assert(preview:draw(scene).drawn==1 and allocations==1 and draws==2)
+  -- One drawScene call: all parts share a blend class, and the player skips
+  -- the pass with no parts.
+  assert(preview:draw(scene).drawn==1 and allocations==1 and draws==1)
   for _,d in ipairs(preview.diagnostics) do
     assert(d.code~='unsupported-lifecycle-callback' and d.code~='unresolved-radial-endpoints',d.message)
   end

@@ -16,6 +16,17 @@ local function copy(value, seen)
   return out
 end
 
+-- _context and _material are set once by Material.init and only read
+-- afterwards, so per-tick state copies share them instead of re-copying.
+local SHARED_STATE = { _context = true, _material = true }
+local function copyState(state)
+  local out = {}
+  for key, value in pairs(state) do
+    out[key] = SHARED_STATE[key] and value or copy(value)
+  end
+  return out
+end
+
 local function number(value)
   value = tonumber(value)
   if value == nil or value ~= math.floor(value) then return nil end
@@ -179,7 +190,7 @@ end
 function Material.step(state, options)
   if type(state) ~= "table" then return nil, "material state is required" end
   options = type(options) == "table" and options or {}
-  local out = copy(state)
+  local out = copyState(state)
   out._diagnosticKeys = copy(state._diagnosticKeys or {})
   out.diagnostics = copy(state.diagnostics or {})
   local delta = tonumber(options.delta or options.dt or 1) or 0
@@ -190,13 +201,15 @@ function Material.step(state, options)
     delta = 0
   end
 
-  local merged = copy(state._context or {})
+  -- Only top-level keys are replaced here; resolvers receive their own copy.
+  local merged = {}
+  for key, value in pairs(state._context or {}) do merged[key] = value end
   for key, value in pairs(options) do merged[key] = value end
   local colorResolver = resolver(merged,
     {"colorController", "resolveColorController", "colorResolver"})
   if present(out.colorController) and colorResolver then
-    local ok, value = pcall(colorResolver, copy(out), copy(merged))
-    local candidate = copy(out)
+    local ok, value = pcall(colorResolver, copyState(out), copy(merged))
+    local candidate = copyState(out)
     if ok and type(value) == "table" and applyColors(candidate, value) then
       out.primaryColor = candidate.primaryColor
       out.secondaryColor = candidate.secondaryColor
@@ -212,7 +225,7 @@ function Material.step(state, options)
   local shapeResolver = resolver(merged,
     {"selectShape", "shapeSelection", "resolveShape"})
   if present(out.secondaryShapeId) and shapeResolver then
-    local ok, value = pcall(shapeResolver, copy(out), copy(merged))
+    local ok, value = pcall(shapeResolver, copyState(out), copy(merged))
     local selected = type(value) == "table" and (value.shapeId or value.selectedShapeId)
       or value
     selected = number(selected)

@@ -140,13 +140,16 @@ function Packets.build(snapshot,options)
         end
       else out.diagnostics[#out.diagnostics+1]=diagnostic(particle,'draw-shape','screen particle has no resolved shape') end
     elseif not options.screenOnly then
-    local context={effectId=particle.effectId,programId=particle.event and particle.event.programId,address=particle.event and particle.event.address,particle=copy(particle)}
+    -- One private copy per particle serves the context, both callbacks and
+    -- the packet (callbacks read it; the snapshot itself stays untouched).
+    local own=copy(particle)
+    local context={effectId=particle.effectId,programId=particle.event and particle.event.programId,address=particle.event and particle.event.address,particle=own}
     if type(options.contextForParticle)=="function"then
       local callbackSnapshot,callbackContext
       if options.contextNeedsSnapshot~=false then
         callbackSnapshot,callbackContext=copy(snapshot),copy(options.context)
       end
-      local ok,value=pcall(options.contextForParticle,copy(particle),
+      local ok,value=pcall(options.contextForParticle,own,
         callbackSnapshot,callbackContext)
       if ok and type(value)=="table"then for k,v in pairs(value)do context[k]=v end
       else out.diagnostics[#out.diagnostics+1]=diagnostic(particle,"draw-context",ok and"particle context unavailable"or tostring(value))end
@@ -156,17 +159,17 @@ function Packets.build(snapshot,options)
       row.address=item.address or row.address
       out.diagnostics[#out.diagnostics+1]=row
     end
-    local contract=particle.attachment or(particle.event and particle.event.attachment)
+    local contract=own.attachment or(own.event and own.event.attachment)
     local resolved
     if type(options.resolvePlacement)=="function"then
-      local ok,value=pcall(options.resolvePlacement,copy(contract),copy(context),copy(particle))
+      local ok,value=pcall(options.resolvePlacement,contract,context,own)
       if ok then resolved=value else out.diagnostics[#out.diagnostics+1]=diagnostic(particle,"draw-placement",tostring(value))end
     elseif contract then resolved=Attachment.resolve(contract,context)end
     if type(resolved)=="table"and resolved.resolved then
-      local material=particle.material or{};local shape=material.selectedShapeId or material.primaryShapeId or material.shapeId or particle.shapeId
+      local material=own.material or{};local shape=material.selectedShapeId or material.primaryShapeId or material.shapeId or particle.shapeId
       if tonumber(shape)and tonumber(shape)>0 then
         local ps=vec(particle.scale,1);local as=tonumber(resolved.scale)and{resolved.scale,resolved.scale,resolved.scale}or vec(resolved.scale,1);local scale=mul(ps,as);local position=vec(resolved.position,0)
-        out.packets[#out.packets+1]={kind="common-particle",particleId=particle.id,effectId=particle.effectId,programId=particle.event and particle.event.programId,shapeId=shape,age=particle.age,frame=particle.frame,materialFrame=particle.age,position=position,scale=scale,rotation=copy(particle.rotation),matrix=matrix(position,scale,particle.rotation),material=copy(material),attachment=copy(resolved),
+        out.packets[#out.packets+1]={kind="common-particle",particleId=particle.id,effectId=particle.effectId,programId=particle.event and particle.event.programId,shapeId=shape,age=particle.age,frame=particle.frame,materialFrame=particle.age,position=position,scale=scale,rotation=own.rotation,matrix=matrix(position,scale,particle.rotation),material=material,attachment=copy(resolved),
           -- Direct shapes are transformed by 84102B3C at draw time, once the
           -- loaded shape's geometry mode is known (Packets.shapeMatrix).
           nativeTransform={position=copy(position),nativeScale=ps[1],worldScale=copy(as),rotation=vec(particle.rotation,0)}}

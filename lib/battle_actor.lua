@@ -86,7 +86,7 @@ end
 
 -- Presentation left behind by kinds 6/7: the sway offset (Stadium units,
 -- relative to the home slot), the afterimage copies and the model alpha.
--- The "BETA STADIUM 2 BATTLE FX" option (Importer.betaBattleFxEnabled);
+-- The "MOVE EFFECTS (BETA)" option (Importer.betaBattleFxEnabled);
 -- tests may set Actor.forceFx.
 function Actor.fxEnabled()
   if Actor.forceFx ~= nil then return Actor.forceFx end

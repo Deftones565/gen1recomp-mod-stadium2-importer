@@ -52,6 +52,12 @@ local function diagnostic(message)
   end
 end
 
+-- Gen 1 animation rows that stay visible with Stadium battle FX on: ball
+-- throws and catch shakes (engine BALL_ANIMS minus the send-out puff and pic
+-- toggles, which Stadium's send-out and recall effects replace).
+local NATIVE_ANIMS_WITH_FX={TOSS_ANIM=true,GREATTOSS_ANIM=true,
+  ULTRATOSS_ANIM=true,BLOCKBALL_ANIM=true,SHAKE_ANIM=true}
+
 local function warn(message)
   diagnostic("render error: "..tostring(message))
   local log=modRef and modRef.log
@@ -149,6 +155,80 @@ end
 function Scene:shownMon(side)
   local b=self:shownBattler(side)
   return b and b.mon or nil
+end
+
+-- One native animation row starting: the attacker's Stadium clip, battle FX
+-- (move and impact banks, charge turns) and residual effects. `name` is the
+-- host animation key; `attackerIsPlayer` its attacker flag.
+function Scene:presentAnimStart(name,attackerIsPlayer)
+  local battle=self.battle
+  if not battle then return end
+  local def=battle.data and battle.data.moves and battle.data.moves[name]
+  local rowSide=attackerIsPlayer and "player" or "enemy"
+  -- Red's residual rows (core.asm:490-517): BURN_PSN_ANIM on the suffering
+  -- side, and Leech Seed's drain as an ABSORB row from the healing side
+  -- with no hit data (a real Absorb carries its hit row). Stadium signals
+  -- 0x101/0x102 and 0x103 on the suffering (seeded) side instead.
+  local residual
+  if name=="BURN_PSN_ANIM" then
+    local b=self:shownBattler(rowSide)
+    local status=b and b.mon and b.mon.status
+    residual=status=="BRN" and FxSequence.RESIDUAL_ENTRIES.burn
+      or status=="PSN" and FxSequence.RESIDUAL_ENTRIES.poison or nil
+    if residual then residual={entry=residual,side=rowSide} end
+  elseif name=="ABSORB" and battle.pendingHit==nil then
+    residual={entry=FxSequence.RESIDUAL_ENTRIES.leechSeed,
+      side=rowSide=="player" and "enemy" or "player"}
+    def=nil
+  end
+  if residual and self.battleFx and self.battleFx.signalEffect then
+    pcall(self.battleFx.signalEffect,self.battleFx,residual.entry,residual.side)
+  end
+  -- Red's charge turn cancels the move row and queues a charge row
+  -- (XSTATITEM_ANIM / XSTATITEM_DUPLICATE_ANIM, TELEPORT for Fly,
+  -- SLIDE_DOWN_ANIM for Dig) while the battler holds `charging`. Stadium's
+  -- charge state plays the charge clip and the variant route instead.
+  local chargeRow={XSTATITEM_ANIM=true,XSTATITEM_DUPLICATE_ANIM=true,
+    TELEPORT=true,SLIDE_DOWN_ANIM=true}
+  local charger=self:shownBattler(rowSide)
+  local charging=charger and charger.charging
+  if chargeRow[name] and charging then
+    local cdef=battle.data and battle.data.moves and battle.data.moves[charging.id]
+    local chargeId=cdef and tonumber(cdef.index or cdef.number)
+    if chargeId and FxSequence.CHARGE_ENTRIES[chargeId] then
+      def=nil
+      local actor=self.actors[rowSide]
+      local model=actor and actor.renderer and actor.renderer.model
+      local entry,start=FxSequence.chargeFrames(model and model.fxDispatch,chargeId)
+      -- The species' charge row, or its own move clip when that is missing.
+      local charged=actor and actor.charge and actor:charge(entry,start)
+      if actor and not charged and actor.attack then actor:attack(chargeId) end
+      if self.battleFx and self.battleFx.playCharge then
+        pcall(self.battleFx.playCharge,self.battleFx,chargeId,rowSide,actor)
+      end
+    end
+  end
+  if def then
+    local side=rowSide
+    local moveId=tonumber(def.index or def.number)
+    if moveId then
+      self.actors[side]:attack(moveId)
+      if self.battleFx then
+        -- Gen 1 skips the move animation when a move misses, so a started
+        -- animation is presented as an ordinary result: move bank now and
+        -- impact bank at the dispatch hit frame. A host-supplied alternate
+        -- selector still plays that single bank.
+        if battle.animAlternate==true then
+          self.battleFx:trigger(moveId,side,true)
+        elseif self.battleFx.playMoveAndImpact then
+          self.battleFx:playMoveAndImpact(moveId,side,self.actors[side],nil,
+            self.actors[side=="player" and "enemy" or "player"])
+        else
+          self.battleFx:trigger(moveId,side,false)
+        end
+      end
+    end
+  end
 end
 
 function Scene:sync()
@@ -362,76 +442,12 @@ function Scene:syncPresentationState()
   -- Stadium move clip. Special host animations (ball toss, faint, send-out)
   -- have no move definition and therefore do not trigger an attack clip.
   local playing=battle.animPlaying and true or false
+  -- AnimPlayer:start (installHooks) presents each start as it happens; this
+  -- edge detector covers hosts without that hook.
   if playing and not self.moveStartHooked and (not self.animWasPlaying
       or battle.animName~=self.lastAnimName
       or battle.animAttackerIsPlayer~=self.lastAnimAttacker) then
-    local name=battle.animName
-    local def=battle.data and battle.data.moves and battle.data.moves[name]
-    local rowSide=battle.animAttackerIsPlayer and "player" or "enemy"
-    -- Red's residual rows (core.asm:490-517): BURN_PSN_ANIM on the suffering
-    -- side, and Leech Seed's drain as an ABSORB row from the healing side
-    -- with no hit data (a real Absorb carries its hit row). Stadium signals
-    -- 0x101/0x102 and 0x103 on the suffering (seeded) side instead.
-    local residual
-    if name=="BURN_PSN_ANIM" then
-      local b=self:shownBattler(rowSide)
-      local status=b and b.mon and b.mon.status
-      residual=status=="BRN" and FxSequence.RESIDUAL_ENTRIES.burn
-        or status=="PSN" and FxSequence.RESIDUAL_ENTRIES.poison or nil
-      if residual then residual={entry=residual,side=rowSide} end
-    elseif name=="ABSORB" and battle.pendingHit==nil then
-      residual={entry=FxSequence.RESIDUAL_ENTRIES.leechSeed,
-        side=rowSide=="player" and "enemy" or "player"}
-      def=nil
-    end
-    if residual and self.battleFx and self.battleFx.signalEffect then
-      pcall(self.battleFx.signalEffect,self.battleFx,residual.entry,residual.side)
-    end
-    -- Red's charge turn cancels the move row and queues a charge row
-    -- (XSTATITEM_ANIM / XSTATITEM_DUPLICATE_ANIM, TELEPORT for Fly,
-    -- SLIDE_DOWN_ANIM for Dig) while the battler holds `charging`. Stadium's
-    -- charge state plays the charge clip and the variant route instead.
-    local chargeRow={XSTATITEM_ANIM=true,XSTATITEM_DUPLICATE_ANIM=true,
-      TELEPORT=true,SLIDE_DOWN_ANIM=true}
-    local charger=self:shownBattler(rowSide)
-    local charging=charger and charger.charging
-    if chargeRow[name] and charging then
-      local cdef=battle.data and battle.data.moves and battle.data.moves[charging.id]
-      local chargeId=cdef and tonumber(cdef.index or cdef.number)
-      if chargeId and FxSequence.CHARGE_ENTRIES[chargeId] then
-        def=nil
-        local actor=self.actors[rowSide]
-        local model=actor and actor.renderer and actor.renderer.model
-        local entry,start=FxSequence.chargeFrames(model and model.fxDispatch,chargeId)
-        if actor and actor.charge and not actor:charge(entry,start) and actor.attack then
-          actor:attack(chargeId)
-        end
-        if self.battleFx and self.battleFx.playCharge then
-          pcall(self.battleFx.playCharge,self.battleFx,chargeId,rowSide,actor)
-        end
-      end
-    end
-    if def then
-      local side=battle.animAttackerIsPlayer and "player" or "enemy"
-      local moveId=tonumber(def.index or def.number)
-      if moveId then
-        self.actors[side]:attack(moveId)
-        if self.battleFx then
-          -- Gen 1 skips the move animation when a move misses, so a started
-          -- animation is presented as an ordinary result: move bank now and
-          -- impact bank at the dispatch hit frame. A host-supplied alternate
-          -- selector still plays that single bank.
-          if battle.animAlternate==true then
-            self.battleFx:trigger(moveId,side,true)
-          elseif self.battleFx.playMoveAndImpact then
-            self.battleFx:playMoveAndImpact(moveId,side,self.actors[side],nil,
-              self.actors[side=="player" and "enemy" or "player"])
-          else
-            self.battleFx:trigger(moveId,side,false)
-          end
-        end
-      end
-    end
+    self:presentAnimStart(battle.animName,battle.animAttackerIsPlayer)
   end
   if self.animWasPlaying and not playing and self.battleFx and self.battleFx.finish then
     self.battleFx:finish()
@@ -703,14 +719,7 @@ local function installHooks()
     if scene and scene.battle.animPlayer==self then
       scene.moveStartHooked=true
       scene:sync()
-      local battler=scene.battle[player and "player" or "enemy"]
-      local charge=battler and battler.charging
-      local chargeId=type(charge)=="table" and charge.id or charge
-      local shownMove=move
-      if (chargeId=="FLY" and move=="TELEPORT")
-          or (chargeId=="DIG" and move=="SLIDE_DOWN_ANIM") then shownMove=chargeId end
-      local def=scene.battle.data and scene.battle.data.moves[shownMove]
-      if def then scene.actors[player and "player" or "enemy"]:attack(tonumber(def.index or def.number)) end
+      scene:presentAnimStart(move,player and true or false)
     end
     return unpack(result,1,result.n)
   end
@@ -884,6 +893,13 @@ local function installHooks()
   originals.drawAnimLayer=BattleState.drawAnimLayer
   function BattleState:drawAnimLayer(colorized)
     local scene=active(self)
+    -- With Stadium battle FX on, Stadium's effects replace the Game Boy
+    -- animation graphics; the host animation still runs for timing. Ball
+    -- throws and catch shakes have no Stadium effect and stay native.
+    if scene and scene.battleFx and self.animPlaying
+        and not NATIVE_ANIMS_WITH_FX[self.animName] then
+      return
+    end
     local projection=animationProjection(scene and scene.uiAnchors)
     if not projection then return originals.drawAnimLayer(self,colorized) end
     local g=love.graphics

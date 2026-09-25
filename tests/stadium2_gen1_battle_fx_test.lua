@@ -142,4 +142,17 @@ battle.shrinkOut.frame=3;scene:syncPresentationState()
 ok(#signals==count+1,"a running retreat does not signal again")
 battle.shrinkOut=nil;scene:syncPresentationState()
 
+-- Hosts with the AnimPlayer:start hook present each start through it and
+-- the edge detector stands down; the hooked start must still play FX.
+local before=#adapterTrigger
+scene.moveStartHooked=true
+battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="TACKLE",false,true
+scene:syncPresentationState()
+ok(#adapterTrigger==before,"the edge detector stands down once the start hook is active")
+scene:presentAnimStart("TACKLE",false)
+ok(#adapterTrigger==before+1 and adapterTrigger[#adapterTrigger][1]==33
+    and adapterTrigger[#adapterTrigger][2]=="enemy",
+  "a hooked move start triggers battle FX for the attacking side")
+battle.animPlaying=false;scene:syncPresentationState()
+
 print(("%d checks passed (Stadium 2 Gen 1 battle FX integration)"):format(checks))

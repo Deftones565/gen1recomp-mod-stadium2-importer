@@ -81,6 +81,22 @@ local function copy(value, seen)
   return out
 end
 
+-- Set once by Motion.init and only read by ticks: the source particle
+-- record and the ROM-decoded controllers, tracks and scale curve. Per-tick
+-- state copies share them instead of re-copying.
+local SHARED_STATE = {
+  particle = true, _scaleController = true, _motionController = true,
+  _motionAxes = true, _rotationTracks = true, _positionTracks = true,
+  _nativeScaleCurve = true,
+}
+local function copyState(state)
+  local out = {}
+  for key, value in pairs(state) do
+    out[key] = SHARED_STATE[key] and value or copy(value)
+  end
+  return out
+end
+
 local function addDiagnostic(state, code, detail, fields)
   state.diagnostics = state.diagnostics or {}
   local key = tostring(code) .. ":" .. tostring(detail or "")
@@ -621,7 +637,7 @@ Motion.initialize = Motion.init
 local function tick(state, delta, options)
   delta = number(delta, 1)
   options = type(options) == "table" and options or state._options or {}
-  local out = copy(state)
+  local out = copyState(state)
   out._options = copy(options)
   out.diagnostics = copy(state.diagnostics or {})
   out._diagnosticKeys = copy(state._diagnosticKeys or {})

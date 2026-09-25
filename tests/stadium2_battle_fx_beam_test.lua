@@ -190,7 +190,9 @@ for _,move in ipairs({60,62,76}) do
   assert(player:trigger({moveId=move,sourceSide="player",targetSide="enemy"}))
   player.runtime:step(20)
   local built=player:draw(scene)
-  assert(built.drawn>=1 and draws==2 and allocations==1)
+  -- One drawScene call: all parts share a blend class, and the player skips
+  -- the pass with no parts.
+  assert(built.drawn>=1 and draws==1 and allocations==1)
   local before=uploads;player:draw(scene)
   assert(uploads==before and allocations==1,"same frame reuses all beam meshes")
   player.runtime:step(1);player:draw(scene)

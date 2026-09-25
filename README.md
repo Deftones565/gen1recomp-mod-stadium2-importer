@@ -54,22 +54,22 @@ derived from the user's ROM and must not be distributed with the mod.
 
 ## Options
 
-- `STADIUM 2 MODELS` enables imported Stadium models. Disabling it preserves the generated model cache.
-- `STADIUM 2 BATTLE` enables the complete Stadium battle presentation. The underlying game still controls battle rules, damage, turn order, switching, capture results, menus, and RNG.
+- `3D POKEMON MODELS` enables imported Stadium models. Disabling it preserves the generated model cache.
+- `3D BATTLE SCENE` enables the complete Stadium battle presentation. The underlying game still controls battle rules, damage, turn order, switching, capture results, menus, and RNG.
 - `RAPIDASH CUT PARTICLES` optionally restores the complete but disconnected
   Rapidash particle callback left in the retail ROM. It is enabled by default and
   affects Stadium model renderers and battles; the model viewer also provides
   a `CUT PARTICLES: ON/OFF` button on Rapidash (`F` is the keyboard shortcut).
 - `MODEL SHADER` selects the original `STADIUM` lighting or the `WATERCOLOR MANGA` style. Changes apply to existing battle models immediately.
 - `BATTLE AA` selects `OFF`, `2X`, or `4X` supersampling for the 3D arena while keeping the native interface crisp. The selected level is limited automatically by the device's texture support.
-- `BETA CONTEXT ARENAS` is disabled by default and applies only to Gen 2.
+- `CONTEXT ARENAS (BETA)` is disabled by default and applies only to Gen 2.
   Gyms, the Elite Four, Team Rocket, Rival battles, and other trainer encounters
   select their matching Stadium 2 field. Outdoor trainer battles use Free
   Battle Park and indoor trainer battles use Classroom. Every wild battle,
   including fishing, surfing, roaming, and scripted wild Pokémon, deliberately
   retains the established classic scene. Unknown or unavailable fields also
   fall back safely to the classic scene.
-- `BETA PARK TIME OF DAY` is a separate disabled-by-default experiment. With
+- `PARK TIME OF DAY (BETA)` is a separate disabled-by-default experiment. With
   contextual arenas enabled, it gives Free Battle Park bright daytime,
   presentation-only warm evening lighting, and darker night lighting without
   changing the Gen 2 world clock or encounter tables.
@@ -132,7 +132,7 @@ scene, models, camera, effects, and battle logic untouched. Pixels contributed
 through `battle.overlay` remain in the engine-authored centred layer when a
 foreign UI owns those regions.
 
-`STADIUM 2 BATTLE HUD` can also disable Stadium's glass status cards and lower
+`BATTLE HUD` can also disable Stadium's glass status cards and lower
 panel chrome without disabling the 3D arena, models, camera, or effects. The
 native game UI (or another provider) remains available underneath.
 
@@ -232,7 +232,7 @@ The battle-FX APIs decode resources from the user's private Stadium 2 cache.
 `newBattleFxPlayer` owns a persistent 30 Hz presentation runtime and accepts
 injected placement/native/lifecycle resolvers; call `release()` when its scene
 ends. The built-in Gen 1 and Gen 2 battle adapters use this API only when the
-default-off **BETA STADIUM 2 MOVE FX** option is enabled.
+default-off **MOVE EFFECTS (BETA)** option is enabled.
 
 ### Choosing an integration
 
@@ -272,8 +272,8 @@ if models and models.apiVersion >= 2 then
 end
 ```
 
-The model API does not require `STADIUM 2 BATTLE` to be enabled. A custom scene
-normally leaves `STADIUM 2 MODELS` on and `STADIUM 2 BATTLE` off so only one mod
+The model API does not require `3D BATTLE SCENE` to be enabled. A custom scene
+normally leaves `3D POKEMON MODELS` on and `3D BATTLE SCENE` off so only one mod
 owns the complete battle presentation. The live `exports.scene` extension API,
 on the other hand, applies while Stadium owns and draws its battle scene.
 
@@ -707,7 +707,7 @@ visibility function, not whole-game allocation or Android frame times.
 
 ### Android Stadium / watercolor manga choice
 
-**MODEL / SCENE SHADER** offers **STADIUM** and **WATERCOLOR MANGA** on Android
+**SHADER STYLE** offers **STADIUM** and **WATERCOLOR MANGA** on Android
 and desktop, using the existing saved `stadium2_shader` choice. Android's model
 shader now implements the manga choice with bounded pigment variation and
 silhouette ink in the same material pass. Warm local lights and dark shading

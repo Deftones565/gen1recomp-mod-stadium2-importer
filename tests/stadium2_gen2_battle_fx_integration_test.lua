@@ -57,6 +57,13 @@ ok(calls.trigger[1].moveId==42 and calls.trigger[1].side=="enemy",
 scene:handleEvent({kind="move",side="player",move=43,missed=true})
 ok(#calls.trigger==1,"a presented missed move does not trigger battle FX")
 
+-- Gen 2 hosts emit the move key; its record's `id` is that key and `index`
+-- is the move number.
+battle.data.moves.ABSORB={id="ABSORB",index=71,name="ABSORB"}
+scene:handleEvent({kind="move",side="player",move="ABSORB"})
+ok(#calls.trigger==2 and calls.trigger[2].moveId==71,
+  "a move key resolves to its record's numeric index")
+
 scene:update(1/30)
 ok(#calls.updates==1 and math.abs(calls.updates[1]-1/30)<1e-9,
   "battle FX advances with the presentation delta")
