@@ -232,6 +232,14 @@ function Importer.battleFxParticlesEnabled()
   return true
 end
 
+function Importer.battleFxSendOutEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_fx_pokeball")
+    if ok and value~=nil then return value==true end
+  end
+  return true
+end
+
 function Importer.betaBattleFxEnabled()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,

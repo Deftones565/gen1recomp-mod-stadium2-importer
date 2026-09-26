@@ -539,7 +539,8 @@ function Adapter.new(importer, options)
     return nil, "battle FX player factory is unavailable"
   end
 
-  local self = setmetatable({warn = options.warn, warningKeys = {}}, Adapter)
+  local self = setmetatable({warn = options.warn, warningKeys = {},
+    sendOutEnabled = importer.battleFxSendOutEnabled}, Adapter)
   local player, err = importer.newBattleFxPlayer({
     resolveBeam = Adapter.beamInputs,
     contextForParticle = Adapter.placementContext,
@@ -648,6 +649,11 @@ function Adapter:signalEffect(id, owner)
   end
   local source, target = sides(owner)
   if type(self.player.signalContext) == "function" then self.player:signalContext(tonumber(id)) end
+  -- User option (POKE BALL, non-native): OFF skips the send-out effect.
+  if tonumber(id) == Sequence.SEND_OUT_ENTRY and type(self.sendOutEnabled) == "function" then
+    local ok, enabled = pcall(self.sendOutEnabled)
+    if ok and enabled == false then return nil end
+  end
   local effect, err = self.player:playEntry(id, {sourceSide = source,
     targetSide = target, condition = 0})
   if not effect and err then self:_warn(err) end
