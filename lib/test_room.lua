@@ -13,13 +13,26 @@ local Adapter=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adap
 local Sequence=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
 local Environment=require("mods.STADIUM2_IMPORTER.lib.battle_environment")
 local Importer=require("mods.STADIUM2_IMPORTER.lib.importer")
+local ArenaRuntime=require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 
 local Room={}
 Room.__index=Room
 
 local FX_COUNT=301 -- 1..251 moves, 252..301 non-move battle effects
+-- Classic, the Kenney scenes, then every Stadium arena (needs the Stadium 2
+-- ROM the game imported from; a failure is shown and Classic is used).
 local SCENES={{"CLASSIC",nil},{"WOODLAND","grass"},{"CAVE","cave"},
   {"FRESHWATER","freshwater"},{"TOWN","town"}}
+do
+  local names={'FALKNER','BUGSY','WHITNEY','MORTY','JASMINE','CHUCK','PRYCE','CLAIR',
+    'TEAM ROCKET','WILL','KOGA','BRUNO','KAREN','CHAMPION','BROCK','MISTY','LT. SURGE',
+    'ERIKA','JANINE','SABRINA','BLAINE','BLUE','RED'}
+  names[27]='BATTLE TOWER';names[28]='INDOOR';names[29]='FREE BATTLE PARK';names[30]='RIVAL'
+  for index=0,(tonumber(ArenaRuntime.COUNT) or 0)-1 do
+    SCENES[#SCENES+1]={("ARENA %02d%s"):format(index,names[index+1] and (" "..names[index+1]) or ""),
+      nil,index}
+  end
+end
 local TIMES={"DAY","EVE","NITE"}
 local CALLBACKS={"draw","update","keypressed","keyreleased","textinput",
   "mousepressed","mousereleased","mousemoved","wheelmoved","touchpressed",
@@ -96,8 +109,16 @@ function Room:buildScene()
     self:note(type(d)=="table" and (d.message or d.code) or d)
   end})
   if not adapter and err then self:note("move effects unavailable: "..tostring(err)) end
+  local arena
+  local arenaIndex=SCENES[self.sceneIndex][3]
+  if arenaIndex then
+    local err
+    arena,err=ArenaRuntime.load(arenaIndex,Importer)
+    if not arena then self:note("arena unavailable, showing Classic: "..tostring(err)) end
+  end
+  self.arenaIndex=arena and arenaIndex or nil
   local scene=Presentation.newScene({label="Stadium 2 test room",battleFx=adapter,
-    warn=function(message) self:note(message) end})
+    arena=arena,arenaMode=arena~=nil,warn=function(message) self:note(message) end})
   scene.game={world={map={def={environment="TOWN"}},clockHour=12,daytime=TIMES[self.timeIndex]}}
   scene.environmentSelection=self:environmentSelection()
   for _,side in ipairs({"enemy","player"}) do
@@ -158,7 +179,12 @@ end
 function Room:swapSide() self.side=self.side=="player" and "enemy" or "player" end
 function Room:stepScene(delta)
   self.sceneIndex=wrap(self.sceneIndex+delta,#SCENES)
-  if self.scene then self.scene.environmentSelection=self:environmentSelection() end
+  -- Arenas are loaded with the scene; Classic and Kenney scenes switch live.
+  if SCENES[self.sceneIndex][3] or self.arenaIndex then
+    self:buildScene()
+  elseif self.scene then
+    self.scene.environmentSelection=self:environmentSelection()
+  end
 end
 function Room:stepTime()
   self.timeIndex=wrap(self.timeIndex+1,#TIMES)
@@ -262,6 +288,7 @@ function Room:update(dt)
   if not self.paused then
     Camera.update(dt)
     for _,actor in pairs(scene.actors or {}) do actor:update(dt) end
+    scene:stepArena(dt)
     scene:updateBattleFx(dt)
   end
   local ok=scene:render()
@@ -491,6 +518,7 @@ function Room:close()
 end
 
 function Room.isOpen() return current~=nil end
+function Room.currentRoom() return current end
 function Room.closeCurrent() if current then current:close() end end
 
 function Room.open(game)

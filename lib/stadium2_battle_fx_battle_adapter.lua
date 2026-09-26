@@ -956,9 +956,96 @@ function Adapter:update(dt)
   end
 end
 
+-- Stadium's battle overlay places the battlers on the X axis (X = -/+150,
+-- yaw +/-0x4000; stadium_battle_layout), and ROM effect code relies on it:
+-- the textured-stream routine, for one, aims with only the X/Y part of its
+-- direction. Classic and Kenney scenes place them on Z (player +Z, facing
+-- -Z). Effects there are simulated in a Stadium-aligned frame (the scene
+-- turned -90 degrees about Y, so the player sits on -X facing +X) and drawn
+-- through a camera turned back by the same angle. Arena scenes already use
+-- Stadium's layout and are passed through unchanged.
+local TO_STADIUM = {0,0,-1,0, 0,1,0,0, 1,0,0,0, 0,0,0,1}
+local FROM_STADIUM = {0,0,1,0, 0,1,0,0, -1,0,0,0, 0,0,0,1}
+local function mul4(a, b)
+  local out = {}
+  for r = 0, 3 do for c = 1, 4 do
+    local sum = 0
+    for k = 1, 4 do sum = sum + a[r * 4 + k] * b[(k - 1) * 4 + c] end
+    out[r * 4 + c] = sum
+  end end
+  return out
+end
+local function turn(v)
+  if type(v) ~= "table" then return v end
+  local x, y, z = tonumber(v[1] or v.x) or 0, tonumber(v[2] or v.y) or 0, tonumber(v[3] or v.z) or 0
+  return {-z, y, x}
+end
+Adapter.TO_STADIUM, Adapter.FROM_STADIUM = TO_STADIUM, FROM_STADIUM
+
+function Adapter.stadiumFrame(ext)
+  local scene = type(ext) == "table" and ext.scene
+  local host = type(scene) == "table" and scene.host
+  if not host or scene.arena or type(host.modelMatrix) ~= "function" then return ext end
+  local out = {}
+  for key, value in pairs(ext) do out[key] = value end
+  local camera = ext.camera
+  if type(camera) == "table" then
+    local c = {}
+    for key, value in pairs(camera) do c[key] = value end
+    if camera.view then c.view = mul4(camera.view, FROM_STADIUM) end
+    local vp = camera.viewProjection or camera.vp
+    if vp then c.viewProjection = mul4(vp, FROM_STADIUM); c.vp = c.viewProjection end
+    c.eye, c.focus = turn(camera.eye), turn(camera.focus)
+    out.camera = c
+  end
+  local world = ext.world
+  if type(world) == "table" then
+    local w = {}
+    for key, value in pairs(world) do w[key] = value end
+    w.origin = world.origin and turn(world.origin)
+    if type(world.actorSlots) == "table" then
+      w.actorSlots = {}
+      for side, slot in pairs(world.actorSlots) do
+        local p = turn(slot.position or slot)
+        w.actorSlots[side] = {position = p, x = p[1], y = p[2], z = p[3]}
+      end
+    end
+    out.world = w
+  end
+  if type(ext.environment) == "table" and ext.environment.light then
+    local e = {}
+    for key, value in pairs(ext.environment) do e[key] = value end
+    e.light = turn(ext.environment.light)
+    out.environment = e
+  end
+  if type(ext.shadow) == "table" and ext.shadow.sunVP then
+    local sh = {}
+    for key, value in pairs(ext.shadow) do sh[key] = value end
+    sh.sunVP = mul4(ext.shadow.sunVP, FROM_STADIUM)
+    out.shadow = sh
+  end
+  local proxy = setmetatable({modelMatrix = function(_, side, actor, image)
+    local matrix, yaw = host:modelMatrix(side, actor, image)
+    if type(matrix) ~= "table" then return matrix, yaw end
+    return mul4(TO_STADIUM, matrix), yaw and yaw - math.pi * .5
+  end}, {__index = host})
+  local s = {}
+  for key, value in pairs(scene) do s[key] = value end
+  s.host = proxy
+  out.scene = s
+  out.stadiumFrame = true
+  return out
+end
+
 function Adapter:draw(sceneContext)
   if not self.player then return nil end
-  local ok, result = pcall(self.player.draw, self.player, sceneContext)
+  local context = Adapter.stadiumFrame(sceneContext)
+  local ok, result = pcall(self.player.draw, self.player, context)
+  if context ~= sceneContext and type(sceneContext) == "table" then
+    -- The scene reads these back from its own context after the FX draw.
+    sceneContext.nativeModelColors = context.nativeModelColors
+    sceneContext.nativeOverlayDraw = context.nativeOverlayDraw
+  end
   if not ok then self:_warn(result); return nil end
   return result
 end
