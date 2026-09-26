@@ -178,7 +178,19 @@ local function identity4()
   return {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}
 end
 
-local candidate = Discovery.find()
+-- Discovery only sees ROMs packaged inside a bound mod, so standalone runs
+-- name the ROM explicitly, like the other ROM-backed tests.
+local romPath = os.getenv("STADIUM2_ROM") or arg[1]
+local candidate
+if romPath then
+  local f = io.open(romPath, "rb")
+  if f then
+    candidate = { kind = "path", path = romPath, bytes = f:read("*a") }
+    f:close()
+  end
+else
+  candidate = Discovery.find()
+end
 if not candidate then
   emit("FAIL could not locate Stadium 2 ROM")
   report:close()
@@ -648,7 +660,7 @@ check(cacheRoot ~= nil, "Koffing cache root found=%s", tostring(cacheRoot))
 local model
 if cacheRoot then
   local marker = readFile(cacheRoot .. "/pack.info") or ""
-  check(marker:find("format=S2IMP38", 1, true) ~= nil, "Koffing cache format is S2IMP38; stale caches must be re-imported")
+  check(marker:find("format=" .. require("mods.STADIUM2_IMPORTER.lib.cache").FORMAT, 1, true) ~= nil, "Koffing cache format is current; stale caches must be re-imported")
   local packBytes = readFile(cacheRoot .. "/normal/109.dsm")
   check(type(packBytes) == "string", "Koffing DSM pack readable")
   if packBytes then

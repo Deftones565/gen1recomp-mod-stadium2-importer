@@ -24,6 +24,34 @@ function Semantics.selectorBase(animations, dispatchRows)
   return maximum < count and 0 or 1
 end
 
+-- The model fragment's animation descriptor, tagged (species << 16) | 1:
+-- u8 count at +4 and, at +0x0C, a pointer to `count` 4-byte entries whose
+-- u16 at +2 is the pose-bundle file. 8003F2C4 indexes it directly by the
+-- dispatch selector and leaves the animation unchanged when the selector is
+-- not below the count. Returns a 0-based selector -> file table, or nil.
+function Semantics.readSelectorTable(fragment, sourceBase, species)
+  species = tonumber(species)
+  sourceBase = tonumber(sourceBase)
+  if type(fragment) ~= "string" or not species or not sourceBase then return nil end
+  local function u32(o) local a,b,c,d=fragment:byte(o+1,o+4) return ((a*256+b)*256+c)*256+d end
+  local tag = species * 65536 + 1
+  for o = 0, #fragment - 16, 4 do
+    if u32(o) == tag then
+      local count = fragment:byte(o + 5)
+      local at = u32(o + 12) - sourceBase
+      if count > 0 and at >= 0 and at % 2 == 0 and at + count * 4 <= #fragment then
+        local table_ = { n = count }
+        for i = 0, count - 1 do
+          local a, b = fragment:byte(at + i * 4 + 3, at + i * 4 + 4)
+          table_[i] = a * 256 + b
+        end
+        return table_
+      end
+    end
+  end
+  return nil
+end
+
 local function exportedBodySelector(selector, base)
   selector = tonumber(selector)
   if selector == nil or selector < 0 or selector >= 0xFFFF then return 0xFFFF end
@@ -31,11 +59,19 @@ local function exportedBodySelector(selector, base)
   return selector - (base or 0)
 end
 
-function Semantics.apply(animations, auxiliary, Build, AnimationRouting, dispatchRows)
+function Semantics.apply(animations, auxiliary, Build, AnimationRouting, dispatchRows, selectorTable)
   animations = animations or {}
   local count = #animations
   if count == 0 then return nil, nil, "no animations" end
   local selectorBase = Semantics.selectorBase(animations, dispatchRows)
+  local function bodySelector(selector)
+    if not selectorTable then return exportedBodySelector(selector, selectorBase) end
+    selector = tonumber(selector)
+    if selector == nil or selector < 0 or selector >= selectorTable.n then return 0xFFFF end
+    local file = selectorTable[selector]
+    if file == nil or file >= count then return 0xFFFF end
+    return file
+  end
 
   if AnimationRouting and AnimationRouting.apply then
     AnimationRouting.apply(animations, auxiliary or {})
@@ -54,7 +90,7 @@ function Semantics.apply(animations, auxiliary, Build, AnimationRouting, dispatc
   for move = 1, MOVE_COUNT do
     local authored = dispatchRows and dispatchRows[move - 1]
     rows[move] = authored and {
-      exportedBodySelector(authored[1], selectorBase), authored[2],
+      bodySelector(authored[1]), authored[2],
       romSelector = authored[1], selectorBase = selectorBase,
     } or { 0xFFFF, -1 }
     local animation = animations[(rows[move][1] or -1) + 1]
@@ -65,7 +101,7 @@ function Semantics.apply(animations, auxiliary, Build, AnimationRouting, dispatc
   for index = 1, #(Build.CONTEXTS or {}) do
     local authored = dispatchRows and dispatchRows[MOVE_COUNT + index - 1]
     local selector = authored
-      and exportedBodySelector(authored[1], selectorBase) or 0xFFFF
+      and bodySelector(authored[1]) or 0xFFFF
     contexts[index] = selector
     local animation = animations[selector + 1]
     if animation then

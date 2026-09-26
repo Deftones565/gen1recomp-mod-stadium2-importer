@@ -307,8 +307,10 @@ local function genericAnimationTable(data, Build, rom, species)
   data.fxDispatch=table.concat(raw)
   data.fxBattleProfile=AnimationDispatch.battleProfileBytes(rom,species)
   data.fxContextScales=AnimationDispatch.contextScaleBytes(rom,species)
+  local selectorTable = AnimationSemantics.readSelectorTable(data.handlerFragment,
+    data.handlerSourceBase, species)
   return AnimationSemantics.apply(animations, data.auxAnims, Build,
-    AnimationRouting, dispatchRows)
+    AnimationRouting, dispatchRows, selectorTable)
 end
 
 local function decompressedFragment(data, record, StadiumRom)

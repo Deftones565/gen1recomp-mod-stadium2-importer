@@ -22,7 +22,7 @@ local modelLayout = {
   [8] = { bones = 42, prims = 17 },
   [9] = { bones = 35, prims = 23 },
   [88] = { bones = 48, prims = 24 },
-  [89] = { bones = 47, prims = 25 },
+  [89] = { bones = 47, prims = 30 },
   [190] = { bones = 43, prims = 7 },
 }
 
@@ -95,8 +95,9 @@ local function parse(bytes, label)
       label .. " Grimer geometry no longer matches the supplied rip")
     assert(model.prims[1].nidx == 2 * 3 and model.prims[1].decal
         and model.prims[2].nidx + model.prims[3].nidx == 17 * 3
-        and model.prims[2].decal and model.prims[3].decal,
-      label .. " Grimer mouth/detail cutouts were lost")
+        and model.prims[2].decal and not model.prims[3].decal
+        and model.prims[3].callbackTextureRequired,
+      label .. " Grimer mouth cutout or opaque generated base was lost")
     assert(leftEye.nidx + rightEye.nidx == 20 * 3
         and leftEye.tex == 3 and rightEye.tex == 3
         and assertTextureMap(leftEye, 3) and assertTextureMap(rightEye, 3),
@@ -111,12 +112,14 @@ local function parse(bytes, label)
         and render and #(render.handlerTextures or {}) == 40,
       label .. " Grimer dual-texture body payloads were lost")
   elseif model.species == 89 then
-    local eyes = model.prims[16]
+    local eyes = model.prims[17]
     assert(triangleCount(model) == 701,
       label .. " Muk geometry no longer matches the supplied rip")
     assert(model.prims[1].nidx == 2 * 3 and model.prims[1].decal,
       label .. " Muk mouth cutout was lost")
-    assert(eyes.nverts == 53 and eyes.tex == 6 and eyes.texAnim == 0
+    assert(eyes.nverts == 12 and eyes.nidx == 8 * 3
+        and eyes.callbackOffset == nil
+        and eyes.tex == 6 and eyes.texAnim == 0
         and assertTextureMap(eyes, 6),
       label .. " Muk authored eye/pupil atlas route was lost")
     for textureIndex = 6, 9 do

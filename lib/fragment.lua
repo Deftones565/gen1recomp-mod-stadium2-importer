@@ -289,7 +289,38 @@ function Model:build()
     self.warnings[#self.warnings + 1] = "no geo layout"
     return
   end
+  self.futureBoneById = self:prescanBones(self.geoLayouts[1])
   self:walk(self.geoLayouts[1], 0)
+end
+
+-- Joint indices in layout order, following the same control flow as walk()
+-- (0x00/0x03 branch, 0x02 jump, 0x01/0x04 return), without drawing.
+function Model:prescanBones(o)
+  local f = self.f
+  local byId, count = {}, 0
+  local function scan(at, depth)
+    if depth > 32 or at == nil then return end
+    while true do
+      local cmd = f:u8(at)
+      local size = CMD_SIZES[cmd]
+      if size == nil or cmd == 0x01 or cmd == 0x04 then return end
+      if cmd == 0x00 or cmd == 0x03 then
+        scan(f:ptr(at + 4), depth + 1)
+      elseif cmd == 0x02 then
+        at = f:ptr(at + 4)
+        if at == nil then return end
+        cmd = nil
+      elseif cmd == 0x1D then
+        if byId[f:u8(at + 1)] == nil then byId[f:u8(at + 1)] = count end
+        count = count + 1
+      elseif cmd == 0x1F and self.options.stageLayout then
+        count = count + 1
+      end
+      if cmd ~= nil then at = at + size end
+    end
+  end
+  scan(o, 0)
+  return byId
 end
 
 function Model:walk(o, depth, stageRenderProfile)
@@ -464,7 +495,10 @@ function Model:walk(o, depth, stageRenderProfile)
       self.attachments=self.attachments or {}
       self.attachments[#self.attachments+1]={label=f:s16(o+2),bone=self:curBone()}
     elseif cmd == 0x1E then
-      local named = self.boneById[f:s16(o + 2)]
+      -- The game builds the whole graph before drawing, so a named draw may
+      -- refer to a joint defined later in the layout (Politoed, Ursaring).
+      local id = f:s16(o + 2)
+      local named = self.boneById[id] or (self.futureBoneById and self.futureBoneById[id])
       self:runNodeDL(f:ptr(o + 4), named or self:curBone())
     elseif cmd == 0x20 or cmd == 0x21 then            
       self:runNodeDL(f:ptr(o + (cmd == 0x20 and 0x10 or 0xC)), self:curBone())
@@ -607,10 +641,11 @@ function Model:primFor(tex, tlut, mat, texAnim, cull)
   local texture = self.textures and self.textures[tex + 1]
   -- A blocked detail node can switch back to the uniform body placeholder
   -- inside its display list without another geo-layout 0x23 command. Restore
-  -- the saved 0x48 callback for that primitive only; nonuniform tongue/eye
-  -- inputs remain local details.
-  local slimeInput = texture and ((texture.w == 4 and texture.h == 4)
-    or (texture.w == 32 and texture.h == 64))
+  -- the saved 0x48 callback for that primitive only. Nonuniform tongue/eye
+  -- atlases (32x64, 64x32) stay local details: in the running game those
+  -- blocked triangles show their own texture (checked against the Grimer and
+  -- Muk rips, which also show every callback-active triangle as body).
+  local slimeInput = texture and texture.w == 4 and texture.h == 4
   if callbackOffset == nil and blocked and blocked.descriptor == 0x81000048
       and slimeInput then
     callbackOffset, callbackDescriptor = blocked.offset, blocked.descriptor
@@ -701,7 +736,6 @@ local function emit(prim, vbuf, flip, ia, ib, ic)
 end
 
 function Model:runDL(o, bone, depth)
-  if o == nil or depth > 8 or o < 0 or o + 8 > #self.f.d then return end
   if depth == 0 then
     self.drawSerial = (self.drawSerial or 0) + 1
     self.currentDrawPrims = {}
@@ -709,6 +743,10 @@ function Model:runDL(o, bone, depth)
     -- Store the table by reference now; recursive display lists populate it.
     self.lastDrawPrimsByBone[bone] = self.currentDrawPrims
   end
+  -- A null 0x22 is still a graph node: the following 0x08 installs its
+  -- generated display list there. It must not claim an earlier eye/detail
+  -- draw merely because this node has no static display list to decode.
+  if o == nil or depth > 8 or o < 0 or o + 8 > #self.f.d then return end
   local f = self.f
   local vbuf = self.vbuf
   local steps = 0
@@ -1747,7 +1785,11 @@ function StadiumFragment.extract(data, name, options)
       end
       local callbackTexture = callbackTextureBySite[callbackOffset]
       local callbackState = callbackStateBySite[callbackOffset]
-      local callbackTextureRequired = callbackTexture ~= nil and ti < 0
+      -- The slime builder loads both tiles before the following geometry.
+      -- Its source-state texture can still be a transparent mouth atlas;
+      -- neither that atlas nor its alpha survives the generated tile load.
+      local generatedSlime = callbackTexture ~= nil and callbackDescriptor == 0x81000048
+      local callbackTextureRequired = callbackTexture ~= nil and (ti < 0 or generatedSlime)
       local authoredSampler = m:tileSampler(p.mat)
       local function textureAlphaMode(slot)
         local texture = slot and slot >= 0 and texOut[slot + 1] or nil
@@ -1761,8 +1803,9 @@ function StadiumFragment.extract(data, name, options)
         end
         return transparent and "cutout" or "opaque"
       end
-      local alphaMode = textureAlphaMode(ti)
-      if alphaMode ~= "blend" then
+      local alphaMode = textureAlphaMode(generatedSlime
+        and callbackTexture.slot or ti)
+      if not generatedSlime and alphaMode ~= "blend" then
         for _, slot in pairs(texMap or {}) do
           local mode = textureAlphaMode(slot)
           if mode == "blend" then alphaMode = "blend"; break end
@@ -1968,7 +2011,7 @@ local function crystal251Inside(frag, off, size)
     and off + (size or 1) <= #frag.d
 end
 
-local function crystal251LooksLikeAnim(frag, off, bones)
+local function crystal251LooksLikeAnim(frag, off, bones, allowStatic)
   if off % 4 ~= 0 or not crystal251Inside(frag, off, 0x1C) then return false end
   local flags = frag:u8(off)
   local startFrame = frag:u16(off + 4)
@@ -2014,7 +2057,10 @@ local function crystal251LooksLikeAnim(frag, off, bones)
   if needsScale and not crystal251Inside(frag, scaleData, 2) then return false end
   if needsRot and not crystal251Inside(frag, rotData, 2) then return false end
   if needsTrans and not crystal251Inside(frag, transData, 2) then return false end
-  if nFrames > 1 and changing == 0 then return false end
+  -- Heuristic for guessed headers only: a pose whose channels never change
+  -- is still valid ROM data (Articuno's 2-frame clip 11), so the footer's own
+  -- header read with file offsets may be static.
+  if nFrames > 1 and changing == 0 and not allowStatic then return false end
   return true
 end
 
@@ -2323,6 +2369,15 @@ local function crystal251RawCandidates(data, bones)
   local footer = crystal251RawU32(data, 0)
   if footer and footer % 4 == 0 and footer >= 0
       and footer + 0x1C <= #data then
+    -- The footer names the header and its pointers are file offsets; accept
+    -- that reading before guessing other bases.
+    local frag = setmetatable({
+      d=data, name="<raw Stadium 2 pose>", headerOffset=footer,
+      pointerMode="file", pointerBase=0,
+    }, RawFrag)
+    if crystal251LooksLikeAnim(frag, footer, bones, true) then
+      return { { frag=frag, off=footer, mode="file-offset" } }
+    end
     probe(footer)
     if #found > 0 then return found end
   end

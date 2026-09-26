@@ -386,8 +386,8 @@ ok(not decalCullState.cullEnabled,
 local pinecoEyeCullState = Renderer.primitiveRenderState({ species = 204 },
   { decal = true, cull = true, texAnim = 0, nverts = 3, nidx = 3 },
   { disableCulling = true })
-ok(pinecoEyeCullState.cullEnabled,
-  "Pineco's isolated eye cards remain one-sided through the scene override")
+ok(not pinecoEyeCullState.cullEnabled,
+  "Pineco's down-facing eye cards stay visible through the scene override; depth hides rear eyes")
 local pikachuHeadFillState = Renderer.primitiveRenderState({ species = 25 },
   { decal = true, cull = true, texAnim = 4 }, { disableCulling = true })
 ok(not pikachuHeadFillState.cullEnabled,
@@ -486,8 +486,15 @@ ok(rig:currentTexture(model.prims[1]) == 2, "authored texture survives site call
 local savedHandlers = model.handlers
 model.handlers = { records = {{ commandOffset = 0x44, descriptor = 0x81000048 }} }
 model.textures[2].rgba = "\255\0\0\255\0\255\0\255\0\0\255\255\255\255\255\255"
+-- ROM rule: every non-decal triangle drawn while the 0x48 builder is active
+-- shows the generated material; blocked detail atlases get no callback site
+-- in fragment.lua, and decals keep their authored texture.
+ok(rig:currentTexture(model.prims[1]) == 3,
+  "dual-texture material builder owns non-decal surfaces at its site")
+model.prims[1].decal = true
 ok(rig:currentTexture(model.prims[1]) == 2,
-  "dual-texture material builder preserves authored nonuniform detail inputs")
+  "decals keep their authored texture under the dual-texture builder")
+model.prims[1].decal = nil
 ok(rig:callbackUsesMaterialFx(model.prims[1]),
   "authored detail retains the ROM two-texture color combiner")
 model.handlers.records[1].descriptor = 0x81000148
@@ -1012,5 +1019,24 @@ ok(fallbackRig.shaderTier == "camera" and fallbackRig.shaderError:find("lit shad
   "shader failure keeps projected camera rendering instead of raw top-left geometry")
 fallbackRig:release()
 _G.love = nil
+
+-- GLES gives each stage its own default float precision, so a uniform
+-- declared outside the VERTEX/PIXEL blocks fails to link on strict Android
+-- drivers (models then fall back or vanish, leaving only their shadows).
+;(function()
+for label, source in pairs({ lit = Renderer.SHADER_SOURCE,
+    mobile = Renderer.MOBILE_SHADER_SOURCE }) do
+  local depth, shared = 0, {}
+  for line in source:gmatch("[^\n]+") do
+    if line:find("^#ifdef") then depth = depth + 1
+    elseif line:find("^#endif") then depth = depth - 1
+    elseif depth == 0 and line:find("^%s*uniform%s+float") then
+      shared[#shared + 1] = line
+    end
+  end
+  ok(#shared == 0, label .. " shader shares no float uniform between GLES stages: "
+    .. table.concat(shared, "; "))
+end
+end)()
 
 print(("%d checks passed (Stadium 2 standalone renderer GPU path)"):format(checks))

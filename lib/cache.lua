@@ -5,7 +5,13 @@
 local Cache = {}
 
 -- S2IMP58: merge of main (S2IMP54) and codex/battle-fx-parity (S2IMP57).
-Cache.FORMAT = "S2IMP58"
+-- S2IMP59: body clips come from each model's ROM selector table (8003F2C4),
+-- fixing Slowpoke, Slowbro, Electrode, Articuno, Xatu and Murkrow.
+-- S2IMP60: blocked 0x48 slime callbacks re-attach only to the 4x4 carrier.
+-- S2IMP61: named-joint draws resolve joints defined later in the layout.
+-- S2IMP62: null callback nodes preserve local atlases; slime uses generated alpha.
+-- S2IMP63: raw pose headers read with file offsets first (static clips valid).
+Cache.FORMAT = "S2IMP63"
 Cache.ROOT = "stadium2_importer"
 Cache.NORMAL = Cache.ROOT .. "/normal"
 Cache.SHINY = Cache.ROOT .. "/shiny"

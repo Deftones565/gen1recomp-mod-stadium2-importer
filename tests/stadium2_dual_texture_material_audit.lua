@@ -91,7 +91,7 @@ local targets = {
   [88] = { callbacks = 0, consumers = 0, body = 0, decals = 0, carriers = 0,
     details = 0, localEyes = 0, textureKinds = {}, uvConverted = false },
   [89] = { callbacks = 0, consumers = 0, body = 0, decals = 0, carriers = 0,
-    details = 0, eyeAtlas = false, textureKinds = {}, uvConverted = false },
+    details = 0, localEyes = 0, eyeAtlas = false, textureKinds = {}, uvConverted = false },
 }
 
 for dex = 1, 251 do
@@ -103,7 +103,7 @@ for dex = 1, 251 do
         and u32(decoded, 0x1C) == 0x12120,
       "Grimer FRAGMENT relocation/file/runtime boundaries changed")
     check(#runtimeDecoded == 0x12120
-        and runtimeDecoded:sub(0x11120 + 1):find("[^\0]") == nil,
+        and runtimeDecoded:sub(0x11120 + 1):find("[^%z]") == nil,
       "Grimer callback scratch textures are not loader-zeroed runtime storage")
   end
   Fragment.setBase(info.sourceBase)
@@ -121,6 +121,7 @@ for dex = 1, 251 do
     if target and source and source.w == 64 and source.h == 32
         and prim.callbackDescriptor ~= DualTexture.DESCRIPTOR then
       target.localEyes = target.localEyes + 1
+      if dex == 89 then target.eyeAtlas = true end
     end
     if prim.callbackDescriptor == DualTexture.DESCRIPTOR then
       primsBySite[prim.callbackOffset] = true
@@ -197,8 +198,12 @@ for dex = 1, 251 do
             if prim.callbackOffset == record.commandOffset
                 and DualTexture.ownsPrimitive(prim)
                 and source then
-              local owned = DualTexture.ownsAuthoredTexture(prim, source,
-                callbackTexture, record.descriptor)
+              -- Ownership is decoded from the graph, not inferred from the
+              -- inherited atlas dimensions or the merged vertex count.
+              local owned = prim.callbackTextureRequired == true
+              check(owned and prim.alphaMode == "opaque" and not prim.decal,
+                ("dex %03d callback 0x%X lost generated texture/alpha ownership")
+                  :format(dex, record.commandOffset or 0))
               local primaryScroll, secondaryScroll = Renderer.callbackTextureScroll(
                 set, owned)
               check(secondaryScroll == set.scroll[2]
@@ -240,18 +245,18 @@ for dex = 1, 251 do
   end
 end
 
-check(callbacks == 36 and consumers == 35 and routes == 35,
-  ("family coverage callbacks/consumers/routes=%d/%d/%d expected 36/35/35")
+check(callbacks == 36 and consumers == 36 and routes == 36,
+  ("family coverage callbacks/consumers/routes=%d/%d/%d expected 36/36/36")
     :format(callbacks, consumers, routes))
 check(targets[88].callbacks == 16 and targets[88].consumers == 16
-    and targets[88].body == 19 and targets[88].decals == 1
-    and targets[88].carriers == 12 and targets[88].details == 7
+    and targets[88].body == 19 and targets[88].decals == 0
+    and targets[88].carriers == 19 and targets[88].details == 0
     and targets[88].localEyes == 2
     and targets[88].textureKinds[2] and targets[88].uvConverted,
   "Grimer callback topology or distinct-pointer dual-tile contract changed")
-check(targets[89].callbacks == 20 and targets[89].consumers == 19
-    and targets[89].body == 22 and targets[89].decals == 1
-    and targets[89].carriers == 20 and targets[89].details == 2
+check(targets[89].callbacks == 20 and targets[89].consumers == 20
+    and targets[89].body == 26 and targets[89].decals == 0
+    and targets[89].carriers == 26 and targets[89].details == 0
     and targets[89].eyeAtlas
     and targets[89].textureKinds[2] and targets[89].uvConverted,
   "Muk callback topology or distinct-image dual-tile contract changed")

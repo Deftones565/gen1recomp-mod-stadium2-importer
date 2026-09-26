@@ -32,7 +32,6 @@ local SHADER = [[
 #define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
 // Batched battle-FX particles carry these per-particle values as
 // vertex attributes (fxInstanced=1); otherwise the uniforms apply.
-uniform float fxInstanced;
 varying vec4 vFxPrim;
 varying vec4 vFxEnv;
 varying vec4 vFxTint;
@@ -79,6 +78,9 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
 }
 #endif
 #ifdef PIXEL
+// Pixel-stage only: declared in both GLES stages it would take each stage's
+// default precision (highp vs mediump) and strict drivers refuse to link.
+uniform float fxInstanced;
 uniform Image MainTex;
 uniform vec3 lightDir;
 uniform vec3 ambient;
@@ -406,7 +408,6 @@ local MOBILE_SHADER = [[
 #define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
 // Batched battle-FX particles carry these per-particle values as
 // vertex attributes (fxInstanced=1); otherwise the uniforms apply.
-uniform float fxInstanced;
 varying vec4 vFxPrim;
 varying vec4 vFxEnv;
 varying vec4 vFxTint;
@@ -447,6 +448,9 @@ vec4 position(mat4 transform_projection, vec4 vertex_position) {
 }
 #endif
 #ifdef PIXEL
+// Pixel-stage only: declared in both GLES stages it would take each stage's
+// default precision (highp vs mediump) and strict drivers refuse to link.
+uniform float fxInstanced;
 uniform Image MainTex;
 uniform vec4 primitiveColor;
 uniform vec4 environmentColor;
@@ -821,21 +825,17 @@ local function sampleComponent(c, frame, fallback)
   return c[at]
 end
 
--- A malformed/alternate raw pose decoder can expose signed scale sentinels
--- (notably in Dig/Diglett clips). Passing those through skinning inverts or
--- explodes the mesh. Stadium battle poses never need a negative or enormous
--- bone scale; preserve the authored value when it is physically plausible and
--- fall back to the bind scale otherwise.
+-- Pose values reach the skeleton unchanged, as in the game: the ROM sampler
+-- (ModelAnim_EvaluateTranslationChannel and siblings, michiiik 204b7d8)
+-- divides by 1000 with no clamp. Dig clips scale Diglett/Dugtrio heads to
+-- -1 and 0 to hide them underground; a former clamp to the bind scale drew
+-- them at full size. Only a missing value falls back to the bind pose.
 local function safeScale(value, fallback)
-  value=tonumber(value)
-  if not value or value<=0 or value>4 then return fallback end
-  return value
+  return tonumber(value) or fallback
 end
 
 local function safeTranslation(value, fallback)
-  value=tonumber(value)
-  if not value or math.abs(value)>4096 then return fallback end
-  return value
+  return tonumber(value) or fallback
 end
 
 local function samplePose(model, animIndex, frame)
@@ -2118,17 +2118,10 @@ function Renderer:callbackOwnsTexture(prim)
   if record.descriptor == 0x81000038 then return true end
   if record.descriptor == 0x81000050 then return true end
   if record.descriptor == DualTexture.DESCRIPTOR then
-    -- The callback replaces a uniform body carrier (or an authored copy of
-    -- its primary tile). Detailed local atlases at the same site contain
-    -- features such as Muk's eyes and mouth and remain outside both scrollers.
-    local authored = Pack.textureIndex(self.model, prim, self.animIndex,
-      self.frame, self.auxIndex,
-      self.handlerRuntime and self.handlerRuntime.callbackFrame)
-    local dynamic = self.handlerState and self.handlerState.textureBySite
-    local callback = dynamic and dynamic[prim.callbackOffset]
-    return DualTexture.ownsAuthoredTexture(prim,
-      self.model.textures and self.model.textures[authored],
-      self.model.textures and self.model.textures[callback], record.descriptor)
+    -- Every triangle drawn while the 0x48 builder is active shows its
+    -- generated material. Local eye/tongue draws carry no callback offset;
+    -- an inherited texture-animation index does not make a body draw local.
+    return DualTexture.ownsPrimitive(prim, record.descriptor)
   end
   return false
 end
@@ -2369,14 +2362,12 @@ function Renderer.primitiveRenderState(model, prim, options)
   -- Most animated face/detail submissions are small rigid shell sections,
   -- not free-standing cards. Stadium composes them under per-node matrices;
   -- preserving their local G_CULL_BACK bit after our unified scene winding
-  -- removes eyes (and Pikachu's head fill). Pineco is the ROM-backed
-  -- exception: its two eyes are isolated one-triangle cards and must remain
-  -- one-sided so their backs cannot be seen through the shell.
-  local pinecoEye = tonumber(model and model.species) == 204
-    and prim and prim.decal == true and (tonumber(prim.texAnim) or -1) >= 0
-    and prim.nverts == 3 and prim.nidx == 3
+  -- removes eyes (and Pikachu's head fill, and both of Pineco's one-triangle
+  -- eye cards, which face down and forward). Draw them two-sided; ordinary
+  -- depth testing keeps rear eyes behind the shell now that the decal pull
+  -- is only the 4/65535 stabilization.
   local twoSidedDetail = options.disableCulling == true
-    and not carrier and not pinecoEye and prim
+    and not carrier and prim
     and (prim.decal == true or (tonumber(prim.texAnim) or -1) >= 0)
   return {
     dynamicObjectCarrier = carrier,
