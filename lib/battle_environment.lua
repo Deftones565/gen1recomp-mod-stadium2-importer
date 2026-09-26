@@ -4,8 +4,8 @@ local E={}
 E.catalog={
  grass={module='battle_nature'},cave={module='battle_cave'},
  freshwater={module='battle_freshwater'},town={module='battle_town'},
- ocean={},mountain={},ice_cave={},interior={},industrial={},
- ruins={},ship={},gym={},league={},cave_water={},indoor_water={},unknown={},
+ ocean={module='battle_ocean'},mountain={module='battle_mountain'},ice_cave={module='battle_ice_cave'},interior={module='battle_interior'},industrial={module='battle_industrial'},
+ ruins={module='battle_ruins'},ship={module='battle_ship'},gym={module='battle_gym'},league={module='battle_league'},cave_water={module='battle_cave_water'},indoor_water={module='battle_indoor_water'},unknown={},
 }
 local function key(v) return tostring(v or ''):upper():gsub('[^A-Z0-9]','_') end
 local aliases={GRASS='grass',WOODLAND='grass',FOREST='grass',PARK='grass',

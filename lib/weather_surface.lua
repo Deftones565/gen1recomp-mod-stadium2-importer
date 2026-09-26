@@ -27,6 +27,6 @@ function S.height(id,x,z)
  local map=S.maps[id];if not map then return -.12 end
  local ix,iz=math.floor(x/4+.5),math.floor(z/4+.5)
  if math.abs(ix)>44 or math.abs(iz)>44 then return -.12 end
- return map[(ix+44)*89+iz+44] or (id=='freshwater' and -.95 or -.12)
+ return map[(ix+44)*89+iz+44] or ((id=='freshwater' or id=='ocean') and -.95 or -.12)
 end
 return S

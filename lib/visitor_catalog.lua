@@ -13,10 +13,15 @@ local C={
  geodude={74,6,'hover',111},clefairy={35,6,'ground',47},
  misdreavus={200,7,'hover','idle'},gastly={92,8,'hover','idle'},
  yanma={193,6,'fly','idle'},ledyba={165,6,'fly','idle'},
+ spearow={21,5,'fly','idle'},fearow={22,9,'fly','idle'},
  hooh={250,16,'high','idle'},mew={151,5,'hover','entrance'},
 }
 C.pools={grass={'pidgey','butterfree','oddish','paras','pikachu','eevee','jigglypuff','weedle','ledyba'},
  town={'meowth','rattata','growlithe','eevee','snubbull','persian','abra','pidgey'},
  cave={'zubat','geodude','clefairy','golbat','gastly','misdreavus'},
- freshwater={'yanma','butterfree','pidgey','ledyba','pidgeotto'}}
+ freshwater={'yanma','butterfree','pidgey','ledyba','pidgeotto'},
+ ocean={'pidgey','pidgeotto','spearow','fearow'},
+ mountain={'pidgeotto','spearow','fearow','geodude','clefairy'},
+ ruins={'pidgey','butterfree','abra','misdreavus','gastly'},
+ ship={'pidgey','pidgeotto','spearow','fearow'}}
 return C

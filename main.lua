@@ -21,6 +21,8 @@ return function(mod)
   require("mods.STADIUM2_IMPORTER.lib.battle_cave").bind(mod)
   require("mods.STADIUM2_IMPORTER.lib.battle_freshwater").bind(mod)
   require("mods.STADIUM2_IMPORTER.lib.battle_town").bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.battle_ocean").bind(mod)
+  require("mods.STADIUM2_IMPORTER.lib.scene_kit").bind(mod)
   Fx.bind(mod)
   Battle.bind(mod)
   BattleAA.bind(mod)
@@ -141,16 +143,16 @@ return function(mod)
       help="Stylized rain and surface splashes in outdoor custom scenes. Thunderstorm adds occasional lightning and a brief scene illumination. Cosmetic only." },
     { key="stadium2_environment", label="BATTLE ENVIRONMENT", type="choice", default="classic",
       choices={{"CLASSIC","classic"},{"KENNEY NATURE","kenney"}},
-      help="Watercolor woodland, cave, freshwater and town scenes for matching wild and trainer encounters. Unbuilt environments use Classic, or a contextual Stadium arena when arenas are enabled." },
+      help="Painted watercolor scenes for wild and trainer encounters, matched to where you are: woodland, cave, lake, town, ocean, mountain, ice cave, homes, factories, ruins, ships, gyms, the League, underground lakes and indoor pools." },
     { key="stadium2_environment_test", label="TEST ENVIRONMENT", type="choice", default="automatic",
       choices={{"AUTOMATIC","automatic"},{"GRASS / WOODLAND","grass"},{"CAVE","cave"},
-        {"FRESHWATER","freshwater"},{"TOWN","town"},{"OCEAN (FALLBACK)","ocean"},
-        {"MOUNTAIN (FALLBACK)","mountain"},{"ICE CAVE (FALLBACK)","ice_cave"},
-        {"INTERIOR (FALLBACK)","interior"},{"INDUSTRIAL (FALLBACK)","industrial"},
-        {"RUINS / TOWER (FALLBACK)","ruins"},{"SHIP (FALLBACK)","ship"},
-        {"GYM (FALLBACK)","gym"},{"LEAGUE (FALLBACK)","league"},
-        {"CAVE WATER (FALLBACK)","cave_water"},{"INDOOR WATER (FALLBACK)","indoor_water"}},
-      help="Force an environment on your next encounter, regardless of location or the Battle Environment option. Unbuilt scenes test the Classic/arena fallback. Automatic restores normal selection." },
+        {"FRESHWATER","freshwater"},{"TOWN","town"},{"OCEAN","ocean"},
+        {"MOUNTAIN","mountain"},{"ICE CAVE","ice_cave"},
+        {"INTERIOR","interior"},{"INDUSTRIAL","industrial"},
+        {"RUINS / TOWER","ruins"},{"SHIP","ship"},
+        {"GYM","gym"},{"LEAGUE","league"},
+        {"CAVE WATER","cave_water"},{"INDOOR WATER","indoor_water"}},
+      help="Force an environment on your next encounter, regardless of location or the Battle Environment option. Automatic restores normal selection." },
     { key="stadium2_visitors", label="AMBIENT POKEMON", type="choice", default="natural",
       choices={{"OFF","off"},{"NATURAL","natural"},{"PREVIEW CAMEOS","preview"}},
       help="Cosmetic visitors in custom environments. Natural includes rare Mew/Ho-Oh cameos; Preview cycles them regularly. Visitors cannot battle or be caught." },
@@ -186,7 +188,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.15.6"
+  mod.exports.version = "0.16.0"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
@@ -256,6 +258,8 @@ return function(mod)
     require("mods.STADIUM2_IMPORTER.lib.battle_cave").release()
     require("mods.STADIUM2_IMPORTER.lib.battle_freshwater").release()
     require("mods.STADIUM2_IMPORTER.lib.battle_town").release()
+    require("mods.STADIUM2_IMPORTER.lib.battle_ocean").release()
+    require("mods.STADIUM2_IMPORTER.lib.scene_kit").releaseAll()
   end
   lifecycle:add(mod.exports.releaseEnvironment)
   lifecycle:add(Importer.releaseModels)

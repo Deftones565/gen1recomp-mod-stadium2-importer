@@ -40,9 +40,14 @@ for id in pairs(E.catalog) do
  assert(type(E.catalog[id])=='table')
 end
 assert(E.select({kind='link',environment='TOWN',generation=2},'kenney',true).mode=='classic')
-assert(E.select({kind='wild',environment='CAVE',mapId='ICE_PATH_1F',generation=1},'kenney',true).mode=='arena')
+-- Every location category now has a painted scene; it wins over arena fallback.
+local ice=E.select({kind='wild',environment='CAVE',mapId='ICE_PATH_1F',generation=1},'kenney',true)
+assert(ice.mode=='environment' and ice.id=='ice_cave')
 assert(E.select({kind='wild',environment='CAVE',generation=2},'classic',true).mode=='classic')
-assert(E.select({kind='trainer',environment='INDOOR',mapId='VIOLET_GYM',generation=2},'kenney',true).arena==0)
+local gym=E.select({kind='trainer',environment='INDOOR',mapId='VIOLET_GYM',generation=2},'kenney',true)
+assert(gym.mode=='environment' and gym.id=='gym')
+-- With Kenney environments off, context arenas still apply.
+assert(E.select({kind='trainer',environment='INDOOR',mapId='VIOLET_GYM',generation=2},'classic',true).arena==0)
 print('Environment catalog, location precedence, terrain overrides and classic/arena fallback passed')
 
 for id in pairs(E.catalog) do

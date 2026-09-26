@@ -19,6 +19,7 @@ local Watercolor = require("mods.STADIUM2_IMPORTER.lib.battle_watercolor")
 local Nature = require("mods.STADIUM2_IMPORTER.lib.battle_nature")
 local Cave = require("mods.STADIUM2_IMPORTER.lib.battle_cave")
 local Lake = require("mods.STADIUM2_IMPORTER.lib.battle_freshwater")
+local Ocean = require("mods.STADIUM2_IMPORTER.lib.battle_ocean")
 local Town = require("mods.STADIUM2_IMPORTER.lib.battle_town")
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 
@@ -134,7 +135,7 @@ function Scene:release()
   self.providerBattlerModes=nil
   Watercolor.release()
   -- Scenery belongs to the session cache, even across presentation toggles.
-  Nature.endBattle();Cave.endBattle();Lake.endBattle();Town.endBattle()
+  Nature.endBattle();Cave.endBattle();Lake.endBattle();Town.endBattle();Ocean.endBattle()
   Stage.invalidate()
   Shadow.release()
   Hud.invalidate()
@@ -446,7 +447,7 @@ function Scene:render(requestedWidth,requestedHeight)
     require('mods.STADIUM2_IMPORTER.lib.battle_torch_shadows').setEnabled(extras)
     local visitorMode=extras and Importer.visitorMode and Importer.visitorMode() or 'off'
     local now=love.timer and love.timer.getTime and love.timer.getTime() or 0
-    if natureActive and visitorMode~='off' then
+    if natureActive and visitorMode~='off' and environmentScene.visitors~=false then
       if self.visitors and (self.visitors.environment~=selection.id or self.visitors.mode~=visitorMode) then self.visitors:release();self.visitors=nil end
       if not self.visitors then self.visitors=require('mods.STADIUM2_IMPORTER.lib.battle_visitors').new(selection.id,visitorMode) end
       self.pendingVisitorDT=self.visitorTime and now-self.visitorTime or 0
@@ -455,7 +456,7 @@ function Scene:render(requestedWidth,requestedHeight)
     self.natureActive=natureActive
     if natureActive then self.environment=environmentScene.lighting(self.environment) end
     local weatherMode=extras and Importer.weatherStyle() or 'off'
-    local outdoors=natureActive and (selection.id=='grass' or selection.id=='town' or selection.id=='freshwater')
+    local outdoors=natureActive and (selection.id=='grass' or selection.id=='town' or selection.id=='freshwater' or selection.id=='ocean' or environmentScene.outdoor==true)
     if self.weather and (not outdoors or weatherMode=='off' or self.weather.mode~=weatherMode or self.weather.id~=selection.id) then
       self.weather:release();self.weather=nil
     end

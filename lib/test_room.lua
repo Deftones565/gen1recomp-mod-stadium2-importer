@@ -22,7 +22,7 @@ local FX_COUNT=301 -- 1..251 moves, 252..301 non-move battle effects
 -- Classic, the Kenney scenes, then every Stadium arena (needs the Stadium 2
 -- ROM the game imported from; a failure is shown and Classic is used).
 local SCENES={{"CLASSIC",nil},{"WOODLAND","grass"},{"CAVE","cave"},
-  {"FRESHWATER","freshwater"},{"TOWN","town"}}
+  {"FRESHWATER","freshwater"},{"TOWN","town"},{"OCEAN","ocean"},{"MOUNTAIN","mountain"},{"ICE CAVE","ice_cave"},{"CAVE WATER","cave_water"},{"INDOOR WATER","indoor_water"},{"INTERIOR","interior"},{"INDUSTRIAL","industrial"},{"RUINS","ruins"},{"SHIP","ship"},{"GYM","gym"},{"LEAGUE","league"}}
 do
   local names={'FALKNER','BUGSY','WHITNEY','MORTY','JASMINE','CHUCK','PRYCE','CLAIR',
     'TEAM ROCKET','WILL','KOGA','BRUNO','KAREN','CHAMPION','BROCK','MISTY','LT. SURGE',
@@ -517,6 +517,7 @@ function Room:close()
   if stack and stack:top()==self.state then stack:pop() end
 end
 
+Room.SCENES=SCENES
 function Room.isOpen() return current~=nil end
 function Room.currentRoom() return current end
 function Room.closeCurrent() if current then current:close() end end
