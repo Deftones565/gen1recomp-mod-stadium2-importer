@@ -7,12 +7,14 @@ local Fx = require("mods.STADIUM2_IMPORTER.lib.fx")
 local BattleSceneApi = require("mods.STADIUM2_IMPORTER.lib.battle_scene_api")
 local ModelApi = require("mods.STADIUM2_IMPORTER.lib.model_api")
 local BattleUIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
+local TestRoom = require("mods.STADIUM2_IMPORTER.lib.test_room")
 
 return function(mod)
   local lifecycle=require("mods.STADIUM2_IMPORTER.lib.mod_lifecycle").new(mod)
   lifecycle:add(Battle.uninstall)
   lifecycle:add(BattleUIOwnership.resetForTests)
   lifecycle:add(BattleAA.release)
+  lifecycle:add(TestRoom.closeCurrent)
   lifecycle:add(function() require("mods.STADIUM2_IMPORTER.lib.battle_watercolor").release() end)
   Importer.bind(mod)
   require("mods.STADIUM2_IMPORTER.lib.battle_nature").bind(mod)
@@ -66,6 +68,18 @@ return function(mod)
     end
     return false
   end
+
+  local currentGame
+  -- The mod-settings TEST ROOM row: any press opens the room (both of its
+  -- values read OPEN, so the stored value never matters).
+  mod.events:on("mod.options_changed", function(payload)
+    if type(payload) == "table" and payload.mod == "STADIUM2_IMPORTER"
+        and payload.key == "stadium2_test_room" then
+      if not TestRoom.open(currentGame) and mod.log then
+        pcall(mod.log.warn, mod.log, "%s", "test room needs a running game")
+      end
+    end
+  end)
 
   local function showImportScreen(game, force)
     local state = Importer.status().state
@@ -143,6 +157,9 @@ return function(mod)
     { key="stadium2_arena_test", label="TEST ARENA", type="choice", default=-1,
       choices=arenaChoices,
       help="Force any Stadium arena on your next encounter, even with context arenas off. Takes priority over Test Environment. Set both tests to Automatic to restore normal routing." },
+    { key="stadium2_test_room", label="TEST ROOM", type="choice", default=false,
+      choices={{"OPEN",false},{"OPEN",true}},
+      help="Open the test room: pick any move or battle effect and any two Pokemon, play it in the battle scenes, and turn the camera. Works with touch, mouse, keyboard and gamepad. EXIT returns to the game. Your graphics settings apply. A mod tool, not part of Stadium 2." },
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
     { key="stadium2_beta_arena_test", label="CONTEXT ARENAS (BETA)", type="toggle", default=false,
@@ -169,7 +186,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.15.4"
+  mod.exports.version = "0.15.5"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
@@ -260,6 +277,7 @@ return function(mod)
 
   mod.hooks:wrap("input.step", function(next, game, dt)
     local result = next(game, dt)
+    currentGame = game
 
     -- Do not inspect or allocate playthrough-scoped storage at game.ready.
     -- Wait until the actual world owner is running, matching the engine's
@@ -300,6 +318,9 @@ return function(mod)
         end
       end
       Importer.appendRow(out)
+      local hasRoom=false
+      for _,row in ipairs(out) do if type(row)=="table" and row.stadium2TestRoom then hasRoom=true end end
+      if not hasRoom then out[#out+1]=TestRoom.optionsRow(game) end
     end
     return out
   end, 95)

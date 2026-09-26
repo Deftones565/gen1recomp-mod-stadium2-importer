@@ -553,6 +553,7 @@ function Adapter.new(importer, options)
   })
   if not player then return nil, err end
   self.player = player
+  if type(importer.logBattleFxSettings) == "function" then pcall(importer.logBattleFxSettings) end
   return self
 end
 

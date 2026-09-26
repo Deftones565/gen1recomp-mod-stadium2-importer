@@ -244,6 +244,15 @@ end
 -- EXTRA EFFECTS shares the stored PARTICLES key, so saved choices carry over.
 Importer.extraEffectsEnabled=function() return Importer.battleFxParticlesEnabled()==true end
 
+-- One info line per battle, so a player's log shows which settings the FX
+-- player actually reads (and which mod version is running).
+function Importer.logBattleFxSettings()
+  if not (modRef and modRef.log and modRef.log.info) then return end
+  local version=(modRef.manifest and modRef.manifest.version) or (modRef.exports and modRef.exports.version) or "?"
+  pcall(modRef.log.info,modRef.log,"stadium2 importer %s: move effects on; extra effects=%s, poke ball=%s",
+    tostring(version),tostring(Importer.battleFxParticlesEnabled()),tostring(Importer.battleFxSendOutEnabled()))
+end
+
 function Importer.betaBattleFxEnabled()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,
