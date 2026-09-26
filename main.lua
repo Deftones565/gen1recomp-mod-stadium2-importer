@@ -104,10 +104,21 @@ return function(mod)
     { key="stadium2_battle_hud", label="BATTLE HUD", type="toggle",
       default=true,
       help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
-    { key="stadium2_shader", label="SHADER STYLE", type="choice", default="stadium",
+    { key="stadium2_graphics", label="GRAPHICS", type="choice", default=false,
+      choices={{"HIDE",false},{"SHOW",true}},
+      help="Show or hide the graphics settings: shader style, 3D resolution, battle AA, particles and scene weather." },
+    { key="stadium2_shader", label="SHADER STYLE", type="choice", visible_if={key="stadium2_graphics", equals=true}, default="stadium",
       choices={{"STADIUM","stadium"},{"WATERCOLOR MANGA","cel"}},
       help="Choose Stadium shading or watercolor manga on desktop and Android. Applies to imported Pokemon and the whole custom battle scene; battle UI stays unchanged." },
-    { key="stadium2_weather", label="SCENE WEATHER", type="choice", default="off",
+    { key="stadium2_scene_resolution", label="3D RESOLUTION", type="choice", visible_if={key="stadium2_graphics", equals=true}, default="auto",
+      choices={{"AUTO","auto"},{"100%","100"},{"75%","75"},{"50%","50"}},
+      help="Resolution of the 3D battle scene; the game's UI stays sharp. AUTO renders full resolution on PC and caps phones and tablets so heavy scenes (Kenney environments) run smoothly. Lower values are faster." },
+    { key="stadium2_battle_aa", label="BATTLE AA", type="choice", visible_if={key="stadium2_graphics", equals=true}, default=0,
+      choices={{"OFF",0},{"2X",2},{"4X",4}},
+      help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
+    { key="stadium2_fx_particles", label="PARTICLES", type="toggle", default=true,
+      visible_if={key="stadium2_graphics", equals=true}, help="Draw move-effect particles (sparks, bubbles, Poke Ball bursts). OFF skips them for speed on slow phones; effect timing is unchanged. Not in the original game." },
+    { key="stadium2_weather", label="SCENE WEATHER", type="choice", visible_if={key="stadium2_graphics", equals=true}, default="off",
       choices={{"OFF","off"},{"RAIN","rain"},{"THUNDERSTORM","storm"}},
       help="Stylized rain and surface splashes in outdoor custom scenes. Thunderstorm adds occasional lightning and a brief scene illumination. Cosmetic only." },
     { key="stadium2_environment", label="BATTLE ENVIRONMENT", type="choice", default="classic",
@@ -128,9 +139,6 @@ return function(mod)
     { key="stadium2_arena_test", label="TEST ARENA", type="choice", default=-1,
       choices=arenaChoices,
       help="Force any Stadium arena on your next encounter, even with context arenas off. Takes priority over Test Environment. Set both tests to Automatic to restore normal routing." },
-    { key="stadium2_battle_aa", label="BATTLE AA", type="choice", default=0,
-      choices={{"OFF",0},{"2X",2},{"4X",4}},
-      help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
     { key="stadium2_rapidash_cut_fx", label="RAPIDASH CUT PARTICLES", type="toggle", default=true,
       help="Restore Rapidash's disconnected prototype particle callback in battles and model renderers." },
     { key="stadium2_beta_arena_test", label="CONTEXT ARENAS (BETA)", type="toggle", default=false,
@@ -157,7 +165,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.15.2"
+  mod.exports.version = "0.15.3"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus

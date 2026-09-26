@@ -109,7 +109,7 @@ Packets.nativeMatrix=matrix
 function Packets.build(snapshot,options)
   snapshot=type(snapshot)=="table"and snapshot or{};options=type(options)=="table"and options or{}
   local out={frame=snapshot.frame or 0,packets={},screenPackets={},diagnostics={}}
-  for _,particle in ipairs(snapshot.particles or{})do
+  for _,particle in ipairs(not options.skipParticles and snapshot.particles or{})do
     if not particle.nativeHidden then
     if particle.event and particle.event.mode==7 then
       local material=particle.material or {}

@@ -224,6 +224,14 @@ function Importer.betaArenaTimeOfDayEnabled()
   return false
 end
 
+function Importer.battleFxParticlesEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_fx_particles")
+    if ok and value~=nil then return value==true end
+  end
+  return true
+end
+
 function Importer.betaBattleFxEnabled()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,
@@ -458,6 +466,9 @@ function Importer.newBattleFxPlayer(options)
       if renderer and renderer.release then pcall(renderer.release,renderer) end
       if model then Pack.release(model) end
     end
+  end
+  if playerOptions.particlesEnabled==nil then
+    playerOptions.particlesEnabled=Importer.battleFxParticlesEnabled
   end
   return BattleFxPlayer.new(playerOptions)
 end

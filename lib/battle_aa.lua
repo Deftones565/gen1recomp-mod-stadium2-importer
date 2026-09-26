@@ -35,9 +35,34 @@ function AA.samples()
   return value==2 and 2 or value==4 and 4 or 0
 end
 
+-- Phones render the heavy 3D scene at native resolution unless capped. AUTO
+-- keeps desktop at full resolution and caps handheld devices at this pixel
+-- budget (1920x864); the native game UI is composited at full resolution.
+AA.HANDHELD_PIXEL_BUDGET=1920*864
+
+local function handheld()
+  local system=love and love.system
+  local ok,os=pcall(function() return system and system.getOS and system.getOS() end)
+  return ok and (os=="Android" or os=="iOS")
+end
+
+-- Fraction of the output resolution the 3D scene is rendered at.
+function AA.renderScale(width,height)
+  local value="auto"
+  if modRef and modRef.options and modRef.options.get then
+    local ok,result=pcall(modRef.options.get,modRef.options,"stadium2_scene_resolution")
+    if ok and result~=nil then value=result end
+  end
+  local fixed=tonumber(value)
+  if fixed and fixed>0 and fixed<=100 then return fixed/100 end
+  if not handheld() then return 1 end
+  local pixels=math.max(1,width*height)
+  return math.min(1,math.sqrt(AA.HANDHELD_PIXEL_BUDGET/pixels))
+end
+
 function AA.expand(width,height)
   local samples=AA.samples()
-  local factor=samples>1 and math.sqrt(samples) or 1
+  local factor=(samples>1 and math.sqrt(samples) or 1)*AA.renderScale(width,height)
   local g=love and love.graphics
   if g and g.getSystemLimits then
     local ok,limits=pcall(g.getSystemLimits)
@@ -46,7 +71,7 @@ function AA.expand(width,height)
       factor=math.min(factor,limit/math.max(1,width),limit/math.max(1,height))
     end
   end
-  if factor<=1.01 then live=1; return width,height end
+  if factor<=1.01 and factor>=.99 then live=1; return width,height end
   local w,h=math.floor(width*factor+.5),math.floor(height*factor+.5)
   live=w/math.max(1,width)
   return w,h
@@ -83,7 +108,9 @@ function AA.resolve(source,width,height)
   local ok=pcall(function()
     g.setCanvas(output);g.clear(0,0,0,0)
     g.setBlendMode("replace","premultiplied")
-    if shader then g.setShader(shader);shader:send("tap",{.5/sw,.5/sh}) end
+    -- Supersampled scenes fold four taps; a reduced-resolution scene is
+    -- upscaled with plain bilinear filtering.
+    if shader and sw>width then g.setShader(shader);shader:send("tap",{.5/sw,.5/sh}) end
     g.setColor(1,1,1,1);g.draw(source,0,0,0,width/sw,height/sh)
   end)
   if previous and #previous>0 then g.setCanvas(unpack(previous)) else g.setCanvas() end

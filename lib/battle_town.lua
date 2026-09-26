@@ -153,12 +153,12 @@ local function ensure(g)
  if not shader then shader=g.newShader(Instances.shader(LAND)) end
  if not townPaint then
   local path='assets/kenney_town/watercolor-town.png'
-  local data=modRef and love.filesystem.newFileData(assert(modRef:read(path)),'watercolor-town.png') or 'mods.STADIUM2_IMPORTER/'..path
+  local data=modRef and love.filesystem.newFileData(assert(modRef:read(path)),'watercolor-town.png') or 'mods/STADIUM2_IMPORTER/'..path
   townPaint=g.newImage(data,{mipmaps=true});townPaint:setFilter('linear','linear',4);townPaint:setMipmapFilter('linear')
  end
  if not paint then
   local path='assets/kenney_nature/watercolor-materials.png'
-  local data=modRef and love.filesystem.newFileData(assert(modRef:read(path)),'watercolor-materials.png') or 'mods.STADIUM2_IMPORTER/'..path
+  local data=modRef and love.filesystem.newFileData(assert(modRef:read(path)),'watercolor-materials.png') or 'mods/STADIUM2_IMPORTER/'..path
   paint=g.newImage(data,{mipmaps=true});paint:setFilter('linear','linear',4);paint:setMipmapFilter('linear')
  end
 end
