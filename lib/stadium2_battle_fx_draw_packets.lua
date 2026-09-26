@@ -106,11 +106,32 @@ end
 local function diagnostic(p,code,message)return{code=code,severity="warning",effectId=p.effectId,programId=p.event and p.event.programId,address=p.event and p.event.address,kind="draw-packet",message=message}end
 Packets.nativeMatrix=matrix
 
+-- EXTRA EFFECTS = LITE (user option, not native): in each effect's group of
+-- same-shape particles larger than LITE_GROUP, about half are drawn, chosen
+-- by a stable hash of the particle id so a particle never flickers. Smaller
+-- groups (projectiles, the ball itself) are always drawn.
+local LITE_GROUP=3
+local function liteKey(particle)
+  local material=particle.material or {}
+  return tostring(particle.effectId)..":"..tostring(material.selectedShapeId or material.shapeId or particle.shapeId)
+end
+local function liteKeep(particle)
+  local id=tonumber(particle.id) or 0
+  return (id*2654435761)%4294967296<2147483648
+end
 function Packets.build(snapshot,options)
   snapshot=type(snapshot)=="table"and snapshot or{};options=type(options)=="table"and options or{}
   local out={frame=snapshot.frame or 0,packets={},screenPackets={},diagnostics={}}
+  local groups
+  if options.liteParticles and not options.skipParticles then
+    groups={}
+    for _,particle in ipairs(snapshot.particles or {}) do
+      local key=liteKey(particle);groups[key]=(groups[key] or 0)+1
+    end
+  end
   for _,particle in ipairs(not options.skipParticles and snapshot.particles or{})do
-    if not particle.nativeHidden then
+    if not particle.nativeHidden and not (groups and groups[liteKey(particle)]>LITE_GROUP
+        and not liteKeep(particle)) then
     if particle.event and particle.event.mode==7 then
       local material=particle.material or {}
       local shape=material.selectedShapeId or material.primaryShapeId or material.shapeId or particle.shapeId

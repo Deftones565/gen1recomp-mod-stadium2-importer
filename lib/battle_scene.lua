@@ -440,7 +440,11 @@ function Scene:render(requestedWidth,requestedHeight)
     local environmentScene=selection.scene
     local natureActive=self.sceneMode==Scene.MODE_CLASSIC and selection.mode=='environment'
     self.environmentId=selection.id
-    local visitorMode=Importer.visitorMode and Importer.visitorMode() or 'off'
+    -- EXTRA EFFECTS off (user option): no ambient visitors, weather, or
+    -- Kenney-scene sun/torch shadows; Stadium arenas keep their shadows.
+    local extras=not Importer.extraEffectsEnabled or Importer.extraEffectsEnabled()~=false
+    require('mods.STADIUM2_IMPORTER.lib.battle_torch_shadows').setEnabled(extras)
+    local visitorMode=extras and Importer.visitorMode and Importer.visitorMode() or 'off'
     local now=love.timer and love.timer.getTime and love.timer.getTime() or 0
     if natureActive and visitorMode~='off' then
       if self.visitors and (self.visitors.environment~=selection.id or self.visitors.mode~=visitorMode) then self.visitors:release();self.visitors=nil end
@@ -450,7 +454,7 @@ function Scene:render(requestedWidth,requestedHeight)
     self.visitorTime=now
     self.natureActive=natureActive
     if natureActive then self.environment=environmentScene.lighting(self.environment) end
-    local weatherMode=Importer.weatherStyle()
+    local weatherMode=extras and Importer.weatherStyle() or 'off'
     local outdoors=natureActive and (selection.id=='grass' or selection.id=='town' or selection.id=='freshwater')
     if self.weather and (not outdoors or weatherMode=='off' or self.weather.mode~=weatherMode or self.weather.id~=selection.id) then
       self.weather:release();self.weather=nil
@@ -535,7 +539,7 @@ function Scene:render(requestedWidth,requestedHeight)
       end
     end
 
-    local lightVP=Shadow.begin(self.environment.light,self.environment.shadowStrength)
+    local lightVP=(extras or not natureActive) and Shadow.begin(self.environment.light,self.environment.shadowStrength) or nil
     if lightVP then
       if natureActive then environmentScene.castShadow(g,lightVP) end
       if self.visitors then self.visitors:castShadow(lightVP) end

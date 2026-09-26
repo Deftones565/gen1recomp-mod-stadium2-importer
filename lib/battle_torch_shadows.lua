@@ -3,6 +3,8 @@
 local Mat=require('mods.STADIUM2_IMPORTER.lib.renderer')
 local Torches=require('mods.STADIUM2_IMPORTER.lib.battle_torches')
 local P=require('mods.STADIUM2_IMPORTER.lib.torch_projection')
+-- EXTRA EFFECTS (user option): one switch shared by every torch/lamp set.
+local switch={enabled=true}
 local function new(options)
 options=options or {}
 local positions=options.positions or Torches.positions
@@ -87,6 +89,7 @@ function S.update(g,vertices,format,actors,matrices,modes)
  end
  local now=Torches.time()
  S.power=options.power and options.power(S.night,now) or (S.night and 1.8 or .22)*Torches.flicker(now)
+ if not switch.enabled then last=nil;return nil end
  if last and now-last<S.interval then return maps end
  if not pcall(g.push,'all') then return nil end
  local ok,err=pcall(function()
@@ -159,12 +162,12 @@ function S.update(g,vertices,format,actors,matrices,modes)
  last=now;S.error=nil;return maps
 end
 function S.send(shader)
- shader:send('torchShadows',#maps==2 and not S.error and 1 or 0)
+ shader:send('torchShadows',#maps==2 and not S.error and switch.enabled and 1 or 0)
  for i=1,2 do if maps[i] then shader:send('torchMap'..i,maps[i].map) end end
 end
 function S.bindModel(shader)
  if not shader:hasUniform('localTorchEnabled') then return end
- shader:send('localTorchShadows',#maps==2 and not S.error and 1 or 0)
+ shader:send('localTorchShadows',#maps==2 and not S.error and switch.enabled and 1 or 0)
  shader:send('localTorchEnabled',1);shader:send('localTorchPower',S.power or 0)
  for i,p in ipairs(positions) do
   shader:send('localTorch'..i,lightVector(i,p))
@@ -194,4 +197,6 @@ return S
 end
 local default=new()
 default.new=new
+function default.setEnabled(value) switch.enabled=value~=false end
+function default.enabled() return switch.enabled end
 return default

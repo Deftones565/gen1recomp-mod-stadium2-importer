@@ -281,16 +281,20 @@ function Player:_batch()
 end
 -- Draw, overlay and background colour read the same state each frame; they
 -- share one snapshot until the runtime's revision changes (read-only use).
--- User option (PARTICLES, non-native): when off, common particles are
--- simulated as usual but not drawn, so effect timing is unchanged.
-function Player:_particlesShown()
+-- User option (EXTRA EFFECTS, non-native): true draws every particle,
+-- "lite" draws a thinned set (Packets.build), false draws none. Particles
+-- are simulated as usual either way, so effect timing is unchanged.
+function Player:_particleMode()
   local enabled=self.particlesEnabled
   if type(enabled)=="function" then
     local ok,value=pcall(enabled)
-    return not ok or value~=false
+    enabled=not ok or value
   end
-  return enabled~=false
+  if enabled==false then return false end
+  if enabled=="lite" then return "lite" end
+  return true
 end
+function Player:_particlesShown() return self:_particleMode()~=false end
 function Player:_frameSnapshot()
   local revision=self.runtime.revision
   if not (self.frameSnapshot and self.frameSnapshotRevision==revision) then
@@ -317,12 +321,13 @@ end
 -- `shared`: `snapshot` is the player's own read-only frame view (draw).
 function Player:packets(sceneContext,snapshot,shared)
   snapshot=snapshot or self.runtime:snapshot()
-  local skipParticles=not self:_particlesShown()
+  local particleMode=self:_particleMode()
+  local skipParticles=particleMode==false
   -- Per-build cache for Adapter.placementContext (never reused across builds).
   if type(sceneContext)=="table" then sceneContext.fxPlacementCache={} end
   local built=Packets.build(snapshot,{context=sceneContext,
     shareParticles=shared==true and self.contextNeedsSnapshot==false,
-    skipParticles=skipParticles,
+    skipParticles=skipParticles,liteParticles=particleMode=="lite",
     contextNeedsSnapshot=self.contextNeedsSnapshot,
     trigTables=self.runtime.catalog and self.runtime.catalog.trigTables,
     contextForParticle=self.contextForParticle and function(p,s,c)return self.contextForParticle(p,sceneContext,s,c)end or nil,
@@ -705,7 +710,7 @@ function Player:drawOverlay(sceneContext)
   for _,effect in ipairs(snapshot.effects or {}) do moves[effect.id]=effect.moveId end
   local count=0
   local built={diagnostics={}}
-  local screens=Packets.build(snapshot,{screenOnly=true,skipParticles=not self:_particlesShown(),trigTables=self.runtime.catalog and self.runtime.catalog.trigTables})
+  local screens=Packets.build(snapshot,{screenOnly=true,skipParticles=not self:_particlesShown(),liteParticles=self:_particleMode()=="lite",trigTables=self.runtime.catalog and self.runtime.catalog.trigTables})
   for _,d in ipairs(screens.diagnostics) do
     if d.code=='unresolved-screen-trig' then built.diagnostics[#built.diagnostics+1]=d end
   end

@@ -227,6 +227,7 @@ end
 function Importer.battleFxParticlesEnabled()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_fx_particles")
+    if ok and value=="lite" then return "lite" end
     if ok and value~=nil then return value==true end
   end
   return true
@@ -239,6 +240,9 @@ function Importer.battleFxSendOutEnabled()
   end
   return true
 end
+
+-- EXTRA EFFECTS shares the stored PARTICLES key, so saved choices carry over.
+Importer.extraEffectsEnabled=function() return Importer.battleFxParticlesEnabled()==true end
 
 function Importer.betaBattleFxEnabled()
   if modRef and modRef.options and modRef.options.get then

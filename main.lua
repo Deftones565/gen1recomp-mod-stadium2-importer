@@ -106,7 +106,7 @@ return function(mod)
       help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
     { key="stadium2_graphics", label="GRAPHICS", type="choice", default=false,
       choices={{"HIDE",false},{"SHOW",true}},
-      help="Show or hide the graphics settings: shader style, 3D resolution, battle AA, particles, Poke Ball and scene weather." },
+      help="Show or hide the graphics settings: shader style, 3D resolution, battle AA, extra effects, Poke Ball and scene weather." },
     { key="stadium2_shader", label="SHADER STYLE", type="choice", visible_if={key="stadium2_graphics", equals=true}, default="stadium",
       choices={{"STADIUM","stadium"},{"WATERCOLOR MANGA","cel"}},
       help="Choose Stadium shading or watercolor manga on desktop and Android. Applies to imported Pokemon and the whole custom battle scene; battle UI stays unchanged." },
@@ -116,8 +116,10 @@ return function(mod)
     { key="stadium2_battle_aa", label="BATTLE AA", type="choice", visible_if={key="stadium2_graphics", equals=true}, default=0,
       choices={{"OFF",0},{"2X",2},{"4X",4}},
       help="Supersample the owned Stadium battle arena; the native UI stays crisp." },
-    { key="stadium2_fx_particles", label="PARTICLES", type="toggle", default=true,
-      visible_if={key="stadium2_graphics", equals=true}, help="Draw move-effect particles (sparks, bubbles, the Poke Ball send-out). OFF skips them for speed on slow phones; effect timing is unchanged. Not in the original game." },
+    { key="stadium2_fx_particles", label="EXTRA EFFECTS", type="choice", default=true,
+      visible_if={key="stadium2_graphics", equals=true},
+      choices={{"ON",true},{"LITE","lite"},{"OFF",false}},
+      help="Costly extras, for speed on slow phones. LITE keeps move effects but draws about half of each big particle burst (sparkles, trails, bubbles; single objects like the Poke Ball always show) and turns off Kenney-scene shadows, rain/thunderstorms and ambient Pokemon. OFF also hides all move-effect particles. Move timing is unchanged. Not in the original game." },
     { key="stadium2_fx_pokeball", label="POKE BALL", type="toggle", default=true,
       visible_if={key="stadium2_graphics", equals=true}, help="Play Stadium's Poke Ball send-out effect (with Move Effects on). OFF skips it for speed on slow phones; the Pokemon still comes out. Not in the original game." },
     { key="stadium2_weather", label="SCENE WEATHER", type="choice", visible_if={key="stadium2_graphics", equals=true}, default="off",
@@ -167,7 +169,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.15.3"
+  mod.exports.version = "0.15.4"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus
