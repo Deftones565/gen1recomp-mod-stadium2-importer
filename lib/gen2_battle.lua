@@ -132,6 +132,7 @@ function Scene.new(battle,context)
       warn("BETA ARENA TEST could not load a field; using the classic scene: "
         ..tostring(arenaError))
     end
+    if not arena and selection.fallback then selection=selection.fallback end
   end
   Presentation.init(self,{
     actors={player=Actor.new("player",actorOpts),enemy=Actor.new("enemy",actorOpts)},

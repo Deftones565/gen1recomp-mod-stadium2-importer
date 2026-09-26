@@ -27,27 +27,36 @@ for _,case in ipairs(cases) do
  local id,ctx=case[1],case[2];ctx.generation=2;ctx.kind='wild'
  assert(E.classify(ctx)==id,case[1]..' got '..E.classify(ctx))
  local built=E.catalog[id].module~=nil
+ local gym=require('mods.STADIUM2_IMPORTER.lib.arena_selector').gymArena(ctx.mapId)
  for _,kind in ipairs({'wild','trainer'}) do
   ctx.kind=kind
   local selected=E.select(ctx,'kenney',false)
-  assert(selected.mode==(built and 'environment' or 'classic'),id)
+  assert(selected.mode==(gym and 'arena' or built and 'environment' or 'classic'),id)
   selected=E.select(ctx,'kenney',true)
-  assert(selected.mode==(built and 'environment' or 'arena'),id)
-  assert(E.select(ctx,'classic',false).mode=='classic')
+  assert(selected.mode==(gym and 'arena' or built and 'environment' or 'arena'),id)
+  assert(E.select(ctx,'classic',false).mode==(gym and 'arena' or 'classic'))
  end
 end
 for id in pairs(E.catalog) do
  assert(type(E.catalog[id])=='table')
 end
 assert(E.select({kind='link',environment='TOWN',generation=2},'kenney',true).mode=='classic')
+-- Gen 1 rooms have no environment header; they use the interior scene.
+assert(E.classify({mapId='OAKS_LAB',kind='trainer'})=='interior')
+assert(E.classify({mapId='CELADON_MART_ROOF',kind='trainer'})=='unknown')
+assert(E.classify({mapId='SILVER_CAVE_OUTSIDE',environment='TOWN',kind='wild'})=='mountain')
 -- Every location category now has a painted scene; it wins over arena fallback.
 local ice=E.select({kind='wild',environment='CAVE',mapId='ICE_PATH_1F',generation=1},'kenney',true)
 assert(ice.mode=='environment' and ice.id=='ice_cave')
 assert(E.select({kind='wild',environment='CAVE',generation=2},'classic',true).mode=='classic')
-local gym=E.select({kind='trainer',environment='INDOOR',mapId='VIOLET_GYM',generation=2},'kenney',true)
-assert(gym.mode=='environment' and gym.id=='gym')
--- With Kenney environments off, context arenas still apply.
-assert(E.select({kind='trainer',environment='INDOOR',mapId='VIOLET_GYM',generation=2},'classic',true).arena==0)
+-- Gyms always show their leader's Stadium arena, with the painted gym as the
+-- fallback when the arena cannot load; other built scenes are unaffected.
+local gym=E.select({kind='trainer',environment='INDOOR',mapId='VIOLET_GYM',generation=2},'kenney',false)
+assert(gym.mode=='arena' and gym.arena==0 and gym.fallback.mode=='environment' and gym.fallback.id=='gym')
+assert(E.select({kind='trainer',mapId='PEWTER_GYM',generation=1},'classic',false).arena==14)
+assert(E.select({kind='trainer',mapId='CINNABAR_GYM',generation=1},'kenney',false).arena==20)
+assert(E.select({kind='trainer',mapId='FIGHTING_DOJO',generation=1},'kenney',false).id=='gym')
+assert(E.select({kind='trainer',mapId='PEWTER_GYM',generation=1},'kenney',false,nil,'town').id=='town')
 print('Environment catalog, location precedence, terrain overrides and classic/arena fallback passed')
 
 for id in pairs(E.catalog) do

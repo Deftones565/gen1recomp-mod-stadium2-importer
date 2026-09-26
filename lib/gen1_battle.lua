@@ -112,6 +112,7 @@ function Scene.new(battle,context)
   if selection.mode=='arena' then
     arena,err=ArenaRuntime.load(selection.arena,Importer)
     if not arena then warn('Environment arena fallback failed; using classic: '..tostring(err)) end
+    if not arena and selection.fallback then selection=selection.fallback end
   end
   Presentation.init(self,{
     actors={player=Actor.new("player",opts),enemy=Actor.new("enemy",opts)},

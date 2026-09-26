@@ -11,7 +11,7 @@ local MAP_ARENAS = {
   CHAMPIONS_ROOM=13, LANCES_ROOM=13,
   PEWTER_GYM=14, CERULEAN_GYM=15, VERMILION_GYM=16,
   CELADON_GYM=17, FUCHSIA_GYM=18, SAFFRON_GYM=19,
-  SEAFOAM_GYM=20, VIRIDIAN_GYM=21, BATTLE_TOWER_BATTLE_ROOM=26,
+  SEAFOAM_GYM=20, CINNABAR_GYM=20, VIRIDIAN_GYM=21, BATTLE_TOWER_BATTLE_ROOM=26,
 }
 
 local TRAINER_ARENAS = {
@@ -77,6 +77,14 @@ function Selector.resolve(context,options)
   if ctx.outside==false then return 27,"indoor" end
   if fallback then return 27,"unknown:arena-fallback" end
   return nil,"unknown:classic"
+end
+
+-- Gym maps always show their leader's Stadium field (user preference): the
+-- index for a gym map, or nil for any other map.
+function Selector.gymArena(mapId)
+  mapId=key(mapId)
+  if not mapId:find("_GYM",1,true) then return nil end
+  return MAP_ARENAS[mapId]
 end
 
 Selector.MAP_ARENAS=MAP_ARENAS

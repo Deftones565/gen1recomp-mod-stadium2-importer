@@ -39,6 +39,7 @@ function E.classify(ctx,env)
  elseif contains(map,{'FAST_SHIP','SS_ANNE','S_S_ANNE','_PORT','_DOCK'}) then category='ship'
  elseif contains(map,{'ROCKET','SILPH','POWER_PLANT','WAREHOUSE','RADIO_TOWER','POKEMON_MANSION'}) then category='industrial'
  elseif contains(map,{'SPROUT_TOWER','TIN_TOWER','BELL_TOWER','BURNED_TOWER','POKEMON_TOWER','RUINS_OF_ALPH','DRAGONS_DEN'}) then category='ruins'
+ elseif map=='SILVER_CAVE_OUTSIDE' then category='mountain'
  elseif contains(map,{'VIRIDIAN_FOREST','ILEX_FOREST','NATIONAL_PARK','SAFARI_ZONE'}) then category='grass'
  elseif map=='LAKE_OF_RAGE' then category='freshwater'
  elseif contains(map,{'MT_MOON','ROCK_TUNNEL','DIGLETTS_CAVE','UNION_CAVE','DARK_CAVE','SLOWPOKE_WELL','WHIRL_ISLAND','VICTORY_ROAD','CERULEAN_CAVE','SILVER_CAVE_ROOM','MT_MORTAR','TOHJO_FALLS'}) then category='cave'
@@ -65,6 +66,12 @@ function E.classify(ctx,env)
   if contains(map,{'SILVER','MOUNTAIN'}) or route==45 or route==46 then return 'mountain' end
   return 'grass'
  end
+ -- Gen 1 map headers carry no environment. Its remaining named maps are
+ -- rooms (houses, labs, marts, gates, the Underground Path), apart from a
+ -- few rooftops and the plateau outside the League, which host no battles.
+ if broad=='' and map~='' and ctx.environment==nil and not map:find('ROOF',1,true) and map~='INDIGO_PLATEAU' then
+  return 'interior'
+ end
  return 'unknown'
 end
 function E.resolve(ctx,env,test)
@@ -85,6 +92,17 @@ function E.select(ctx,style,arenas,env,test,arenaTest)
  local forced=type(test)=='string' and test~='unknown' and E.catalog[test]~=nil
  if forced then style='kenney' end
  local scene,id=E.resolve(ctx,env,test)
+ -- Gyms always show their leader's Stadium arena, over any custom scene and
+ -- regardless of the arena option; the painted gym is the fallback when the
+ -- arena cannot load. An explicit test override still wins.
+ local kind=tostring(ctx and ctx.kind or ''):upper()
+ if not forced and (kind=='TRAINER' or kind=='WILD') then
+  local gym=require('mods.STADIUM2_IMPORTER.lib.arena_selector').gymArena(ctx.mapId)
+  if gym~=nil then
+   local fallback=style=='kenney' and scene and {mode='environment',scene=scene,id=id} or {mode='classic',id=id}
+   return {mode='arena',arena=gym,reason='gym',id=id,fallback=fallback}
+  end
+ end
  if style=='kenney' and scene then return {mode='environment',scene=scene,id=id} end
  if arenas then
   local arena,reason=require('mods.STADIUM2_IMPORTER.lib.arena_selector').resolve(ctx,
