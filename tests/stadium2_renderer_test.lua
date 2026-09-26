@@ -24,7 +24,10 @@ ok(Renderer.SHADER_SOURCE:find("n64Cycle", 1, true)
   and Renderer.SHADER_SOURCE:find("primaryIntensityAlpha", 1, true)
   and Renderer.SHADER_SOURCE:find("texel0.a = texel0.r", 1, true)
   and Renderer.SHADER_SOURCE:find("other.a = other.r", 1, true)
-  and Renderer.SHADER_SOURCE:find("texel0,texel1,primitiveColor,color,environmentColor", 1, true),
+  -- fxPrim/fxEnv are the primitive/environment colours (uniforms, or the
+  -- batched battle-FX vertex values when fxInstanced is set).
+  and Renderer.SHADER_SOURCE:find("texel0,texel1,fxPrim,color,fxEnv", 1, true)
+  and Renderer.SHADER_SOURCE:find("fxPrim=primitiveColor; fxEnv=environmentColor;", 1, true),
   "arena shader evaluates ROM two-cycle combiners and I4 coverage")
 local opaqueZeroAlpha = { phase5 = true, combiner = { alphaOutputZero = true } }
 ok(Renderer.arenaCombinerCoveragePassthrough(

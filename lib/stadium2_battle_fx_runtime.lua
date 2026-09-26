@@ -95,10 +95,14 @@ local function diagnostic(runtime, code, effect, fields)
   warning(runtime, out)
 end
 
+local MOTION_FIELDS = {"age", "lifetime", "position", "velocity", "rotation", "scale", "nativeAnchor", "nativeHidden"}
+-- The particle shares the motion state's vectors: nothing outside the motion
+-- step writes into them, and the step (in place or not) runs before every
+-- refresh, so the values are the same as a per-tick copy.
 local function copyMotionFields(particle, motionState)
-  for _, field in ipairs({"age", "lifetime", "position", "velocity", "rotation", "scale", "nativeAnchor", "nativeHidden"}) do
+  for _, field in ipairs(MOTION_FIELDS) do
     if motionState[field] ~= nil then
-      particle[field] = copy(motionState[field])
+      particle[field] = motionState[field]
     elseif field == "lifetime" then
       particle[field] = nil
     end
@@ -402,7 +406,10 @@ function Runtime:_materialSnapshot(state)
   local snapshot = self.material and self.material.snapshot
   if type(snapshot) == "function" then
     local ok, value = pcall(snapshot, state)
-    if ok and value ~= nil then return copy(value) end
+    if ok and value ~= nil then
+      if self.material.snapshotIsFresh then return value end
+      return copy(value)
+    end
   end
   return copy(state)
 end
@@ -446,7 +453,8 @@ end
 
 function Runtime:_stepMaterial(effect, particle)
   if not particle._materialState then return end
-  local step = self.material and (self.material.step or self.material.evaluate)
+  local step = self.material and (self.material.advance or self.material.step
+    or self.material.evaluate)
   if type(step) ~= "function" then
     self:_emitUnsupported(effect,"material-evaluation",{
       programId=particle.event and particle.event.programId,
@@ -644,7 +652,8 @@ end
 function Runtime:_stepEffect(effect, previousFrame, frame)
   for _, particle in ipairs(effect.particles) do
     if particle.active then
-      local step = self.motion and self.motion.step
+      -- advance is step without the per-tick state copy (same result).
+      local step = self.motion and (self.motion.advance or self.motion.step)
       if type(step) == "function" and particle._motionState then
         local ok, value = pcall(step, particle._motionState, 1,
           self.motionOptions)
@@ -954,7 +963,11 @@ function Runtime:touch()
   self.revision = (self.revision or 0) + 1
 end
 
-function Runtime:snapshot()
+-- options.shared: read-only view for internal draw consumers. Particles are
+-- shallow tables whose nested values are the live runtime tables; valid
+-- until the next revision (see Runtime:touch). Default: full copies.
+function Runtime:snapshot(options)
+  local shared = type(options) == "table" and options.shared == true
   self:_mergeManagerDiagnostics(self.nativeObjects)
   self:_mergeManagerDiagnostics(self.lifecycle)
   local particles = {}
@@ -975,7 +988,7 @@ function Runtime:snapshot()
     materials = {},
     nativeObjects = {},
     lifecycles = {},
-    diagnostics = copy(self.diagnostics),
+    diagnostics = shared and self.diagnostics or copy(self.diagnostics),
   }
   if self.nativeObjects and type(self.nativeObjects.snapshot) == "function" then
     local ok, value = pcall(self.nativeObjects.snapshot, self.nativeObjects)
@@ -1004,11 +1017,11 @@ function Runtime:snapshot()
         public[key]=value
       end
     end
-    result.particles[index] = copy(public)
+    result.particles[index] = shared and public or copy(public)
     result.materials[index] = {
       particleId = particle.id,
       effectId = particle.effectId,
-      state = copy(result.particles[index].material),
+      state = shared and public.material or copy(result.particles[index].material),
     }
   end
   return result

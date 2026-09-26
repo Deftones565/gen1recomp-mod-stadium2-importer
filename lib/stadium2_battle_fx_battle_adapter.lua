@@ -208,9 +208,7 @@ function Adapter.worldUnits(sceneContext, side)
   return .05
 end
 
-function Adapter.placementContext(particle, sceneContext)
-  sceneContext = type(sceneContext) == "table" and sceneContext or {}
-  local side = sourceSide(particle)
+local function placementContextFor(particle, sceneContext, side)
   local units = Adapter.worldUnits(sceneContext, side)
   local world = sceneContext.world or {}
   local slot = world.actorSlots and world.actorSlots[side] or world.origin
@@ -303,6 +301,42 @@ function Adapter.placementContext(particle, sceneContext)
       laneScalar = function() return side == "player" and 1 or -1 end,
     },
   }
+end
+
+-- Only commonOffset, nativeAnchor and (through nativeAnchor) diagnostics
+-- depend on the particle itself; everything else is the same for every
+-- particle of one event and side. Player:packets supplies a fresh
+-- sceneContext.fxPlacementCache per build, so shared parts never outlive
+-- a frame. Consumers only read the returned tables.
+function Adapter.placementContext(particle, sceneContext)
+  sceneContext = type(sceneContext) == "table" and sceneContext or {}
+  local side = sourceSide(particle)
+  local cache = sceneContext.fxPlacementCache
+  local event = particle and particle.event
+  if not (cache and event) then
+    return placementContextFor(particle, sceneContext, side)
+  end
+  -- The shared part reads the particle only through: its side, the event
+  -- context's move and native context IDs, the contract flags, and whether
+  -- the particle has a native anchor. (Particles carry their own copies of
+  -- the event, so the key is built from those values.)
+  local contract = particle.attachment or event.attachment
+  local context = event.context
+  local key = side .. "|" .. tostring(context and context.moveId) .. "|"
+    .. tostring(context and context.nativeContextId) .. "|"
+    .. tostring(contract and contract.flags)
+    .. (particle.nativeAnchor ~= nil and "|a" or "")
+  local base = cache[key]
+  if not base then
+    base = placementContextFor(particle, sceneContext, side)
+    base.commonOffset, base.nativeAnchor = nil, nil
+    cache[key] = base
+  end
+  local out = {}
+  for k, v in pairs(base) do out[k] = v end
+  out.commonOffset = vector(particle.position)
+  out.nativeAnchor = particle.nativeAnchor
+  return out
 end
 
 function Adapter.resolvePlacement(contract, context)

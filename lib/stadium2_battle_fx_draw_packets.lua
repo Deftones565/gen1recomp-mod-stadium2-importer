@@ -142,7 +142,9 @@ function Packets.build(snapshot,options)
     elseif not options.screenOnly then
     -- One private copy per particle serves the context, both callbacks and
     -- the packet (callbacks read it; the snapshot itself stays untouched).
-    local own=copy(particle)
+    -- shareParticles: the caller's snapshot is its own read-only view and its
+    -- callbacks only read, so the particle is used as is.
+    local own=options.shareParticles and particle or copy(particle)
     local context={effectId=particle.effectId,programId=particle.event and particle.event.programId,address=particle.event and particle.event.address,particle=own}
     if type(options.contextForParticle)=="function"then
       local callbackSnapshot,callbackContext

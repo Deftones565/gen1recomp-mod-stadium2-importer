@@ -187,12 +187,9 @@ end
 
 -- Advance material state.  No color interpolation or shape policy is hidden
 -- here: only explicit resolver return values may alter preloaded state.
-function Material.step(state, options)
-  if type(state) ~= "table" then return nil, "material state is required" end
+-- Advances `out` in place; Material.step and Material.advance share it.
+local function advance(out, options)
   options = type(options) == "table" and options or {}
-  local out = copyState(state)
-  out._diagnosticKeys = copy(state._diagnosticKeys or {})
-  out.diagnostics = copy(state.diagnostics or {})
   local delta = tonumber(options.delta or options.dt or 1) or 0
   if delta < 0 then
     addDiagnostic(out, "invalid-material-delta", "material step delta is negative", {
@@ -203,7 +200,7 @@ function Material.step(state, options)
 
   -- Only top-level keys are replaced here; resolvers receive their own copy.
   local merged = {}
-  for key, value in pairs(state._context or {}) do merged[key] = value end
+  for key, value in pairs(out._context or {}) do merged[key] = value end
   for key, value in pairs(options) do merged[key] = value end
   local colorResolver = resolver(merged,
     {"colorController", "resolveColorController", "colorResolver"})
@@ -310,13 +307,35 @@ function Material.step(state, options)
   return out
 end
 
+function Material.step(state, options)
+  if type(state) ~= "table" then return nil, "material state is required" end
+  local out = copyState(state)
+  out._diagnosticKeys = copy(state._diagnosticKeys or {})
+  out.diagnostics = copy(state.diagnostics or {})
+  return advance(out, options)
+end
+
+-- In-place Material.step for the runtime, which replaces its state with the
+-- result anyway; skips the per-tick state copy. Same result as step.
+function Material.advance(state, options)
+  if type(state) ~= "table" then return nil, "material state is required" end
+  state._diagnosticKeys = state._diagnosticKeys or {}
+  state.diagnostics = state.diagnostics or {}
+  return advance(state, options)
+end
+
 Material.evaluate = Material.step
 
+local SNAPSHOT_SKIP = { _context = true, _material = true, _diagnosticKeys = true }
 function Material.snapshot(state)
   if type(state) ~= "table" then return nil end
-  local out = copy(state)
-  out._context, out._material, out._diagnosticKeys = nil, nil, nil
+  local out = {}
+  for key, value in pairs(state) do
+    if not SNAPSHOT_SKIP[key] then out[key] = copy(value) end
+  end
   return out
 end
+-- Material.snapshot always returns a new, unshared table.
+Material.snapshotIsFresh = true
 
 return Material

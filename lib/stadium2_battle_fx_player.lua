@@ -11,6 +11,7 @@ local Beam=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_beam")
 local CommonAnchor=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_common_anchor")
 local BattleState=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_state")
 local ModelAnimation=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_model_animation")
+local Batch=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_batch")
 local Player={};Player.__index=Player
 local NativeObjects=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native_objects")
 local function copy(v,s)if type(v)~="table"then return v end;s=s or{};if s[v]then return s[v]end;local o={};s[v]=o;for k,x in pairs(v)do o[copy(k,s)]=copy(x,s)end;return o end
@@ -273,12 +274,16 @@ function Player:finish(effectId)
   return false
 end
 function Player:snapshot()return self.runtime:snapshot()end
+function Player:_batch()
+  if not self.batch then self.batch=Batch.new() end
+  return self.batch
+end
 -- Draw, overlay and background colour read the same state each frame; they
 -- share one snapshot until the runtime's revision changes (read-only use).
 function Player:_frameSnapshot()
   local revision=self.runtime.revision
   if not (self.frameSnapshot and self.frameSnapshotRevision==revision) then
-    self.frameSnapshot,self.frameSnapshotRevision=self.runtime:snapshot(),revision
+    self.frameSnapshot,self.frameSnapshotRevision=self.runtime:snapshot({shared=true}),revision
   end
   return self.frameSnapshot
 end
@@ -298,9 +303,13 @@ function Player:_recordDiagnostics(items)
 end
 -- `snapshot` lets one draw reuse a single runtime snapshot; each snapshot
 -- deep-copies lifecycle geometry, so taking several per frame was costly.
-function Player:packets(sceneContext,snapshot)
+-- `shared`: `snapshot` is the player's own read-only frame view (draw).
+function Player:packets(sceneContext,snapshot,shared)
   snapshot=snapshot or self.runtime:snapshot()
+  -- Per-build cache for Adapter.placementContext (never reused across builds).
+  if type(sceneContext)=="table" then sceneContext.fxPlacementCache={} end
   local built=Packets.build(snapshot,{context=sceneContext,
+    shareParticles=shared==true and self.contextNeedsSnapshot==false,
     contextNeedsSnapshot=self.contextNeedsSnapshot,
     trigTables=self.runtime.catalog and self.runtime.catalog.trigTables,
     contextForParticle=self.contextForParticle and function(p,s,c)return self.contextForParticle(p,sceneContext,s,c)end or nil,
@@ -347,6 +356,8 @@ local function drawPasses(renderer)
   renderer.battleFxPasses={parts=parts,count=#parts,passes=passes}
   return passes
 end
+-- Renderers only read the normal matrix; one shared constant.
+local IDENTITY_NORMAL={1,0,0,0,1,0,0,0,1}
 local function renderOptions(scene,packet,pass)
   local camera=scene and scene.camera or{};local environment=scene and scene.environment or{};local shadow=scene and scene.shadow or{}
   local tint=packet.material and packet.material.primaryColor;local rgba=tint and{tint[1]/255,tint[2]/255,tint[3]/255,tint[4]/255}or{1,1,1,1}
@@ -355,7 +366,7 @@ local function renderOptions(scene,packet,pass)
   end
   local nativeColors=packet.material and packet.material.nativeMaterialColors and packet.material or nil
   if nativeColors then rgba[1],rgba[2],rgba[3]=1,1,1 end
-  return{battleFxColors=nativeColors,viewProjection=camera.viewProjection or camera.vp,viewMatrix=camera.view,normalMatrix={1,0,0,0,1,0,0,0,1},lightDir=environment.light,ambient=environment.ambient,diffuse=environment.diffuse,tint=rgba,skipHandlers=pass=="additive",flipWinding=true,disableCulling=not (packet.geometry and packet.geometry.nativeCulling),sunMap=shadow.map,sunVP=shadow.sunVP,sunDark=shadow.sunDark,sunBias=shadow.sunBias,sunTexel=shadow.sunTexel}
+  return{battleFxColors=nativeColors,viewProjection=camera.viewProjection or camera.vp,viewMatrix=camera.view,normalMatrix=IDENTITY_NORMAL,lightDir=environment.light,ambient=environment.ambient,diffuse=environment.diffuse,tint=rgba,skipHandlers=pass=="additive",flipWinding=true,disableCulling=not (packet.geometry and packet.geometry.nativeCulling),sunMap=shadow.map,sunVP=shadow.sunVP,sunDark=shadow.sunDark,sunBias=shadow.sunBias,sunTexel=shadow.sunTexel}
 end
 local function identityMatrix()
   return {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}
@@ -589,7 +600,7 @@ function Player:draw(sceneContext)
     sceneContext.nativeModelColors=native and native.modelColors
     sceneContext.nativeOverlayDraw=function()return self:drawOverlay(sceneContext)end
   end
-  local built=self:packets(sceneContext,snapshot);local moveByEffect={};for _,e in ipairs((snapshot.effects or{}))do moveByEffect[e.id]=e.moveId end
+  local built=self:packets(sceneContext,snapshot,true);local moveByEffect={};for _,e in ipairs((snapshot.effects or{}))do moveByEffect[e.id]=e.moveId end
   local liveLifecycle = {}
   for _,packet in ipairs(built.lifecyclePackets or {}) do
     liveLifecycle["lifecycle:"..tostring(packet.instanceId)] = true
@@ -602,6 +613,7 @@ function Player:draw(sceneContext)
     end
   end
   local drawn=0
+  local batch=self.batchDraws~=false and love and love.graphics and love.graphics.newMesh and self:_batch() or nil
   for _,packet in ipairs(built.packets)do
     local renderer,err=self:_renderer(moveByEffect[packet.effectId],packet.shapeId,
       packet.modelAnimation and packet.modelAnimation.id)
@@ -621,11 +633,35 @@ function Player:draw(sceneContext)
         else success=false;drawDiagnostic(built,packet,code,message) end
       end
       if success then
-        for _,pass in ipairs(drawPasses(renderer))do if type(renderer.drawScene)=="function"then local ok,result=pcall(renderer.drawScene,renderer,pass,drawMatrix,renderOptions(sceneContext,packet,pass));if not ok or result==false then success=false;built.diagnostics[#built.diagnostics+1]={code="draw-renderer",severity="warning",effectId=packet.effectId,programId=packet.programId,address=nil,kind="draw",message=ok and"renderer rejected packet"or tostring(result)};break end end end
+        for _,pass in ipairs(drawPasses(renderer))do if type(renderer.drawScene)=="function"then
+          local options=renderOptions(sceneContext,packet,pass)
+          local ok,result,message
+          -- Identical consecutive shape draws are merged (Batch); anything the
+          -- batcher cannot reproduce exactly draws directly, after it.
+          if batch and Batch.supports(renderer,options) then
+            -- Everything drawScene reads that can differ between packets of
+            -- one renderer in a frame; equal inputs replay one recording.
+            local colors=options.battleFxColors
+            local inputs=self.batchInputs or {}
+            self.batchInputs=inputs
+            inputs.frame=packet.materialFrame or packet.frame or packet.age or 0
+            inputs.pose=renderer._battleFxPoseFrame or false
+            inputs.cull=options.disableCulling==true
+            inputs.tint,inputs.colors=options.tint,colors
+            inputs.primary=colors and colors.primaryColor or nil
+            inputs.secondary=colors and colors.secondaryColor or nil
+            ok,result,message=true,batch:record(renderer,pass,drawMatrix,options,inputs)
+            if result==false then result=nil;ok=false;message=message or "batch record failed" end
+          else
+            if batch then batch:settle() end
+            ok,result=pcall(renderer.drawScene,renderer,pass,drawMatrix,options)
+          end
+          if not ok or result==false then success=false;built.diagnostics[#built.diagnostics+1]={code="draw-renderer",severity="warning",effectId=packet.effectId,programId=packet.programId,address=nil,kind="draw",message=message or (ok and"renderer rejected packet"or tostring(result))};break end end end
       end
       if success then drawn=drawn+1 end
     end
   end
+  if batch then batch:finish() end
   -- Native-object and lifecycle packets are renderer-neutral, but proven
   -- packets must reach the renderer.  Unresolved packets have no geometry and
   -- remain diagnostic-only by construction in their packet builders.
@@ -702,6 +738,7 @@ end
 function Player:release()
   if self.released then return false end
   for _,entry in pairs(self.renderers)do if type(self.releaseRenderer)=="function"then pcall(self.releaseRenderer,entry.renderer,entry.owned)elseif entry.renderer and type(entry.renderer.release)=="function"then pcall(entry.renderer.release,entry.renderer)end end
+  if self.batch then self.batch:release();self.batch=nil end
   self.renderers={};self.diagnosticKeys={};self.runtime:release();self.released=true;return true
 end
 return Player

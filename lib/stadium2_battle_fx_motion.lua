@@ -634,13 +634,30 @@ end
 
 Motion.initialize = Motion.init
 
-local function tick(state, delta, options)
+local function tick(state, delta, options, inPlace)
   delta = number(delta, 1)
   options = type(options) == "table" and options or state._options or {}
-  local out = copyState(state)
-  out._options = copy(options)
-  out.diagnostics = copy(state.diagnostics or {})
-  out._diagnosticKeys = copy(state._diagnosticKeys or {})
+  local out
+  if inPlace then
+    -- Motion.advance: the runtime replaces its state with the result, so
+    -- the per-tick copy is skipped. Everything below only uses `out`.
+    out = state
+    -- step copies the whole state, which gives each particle a private copy
+    -- of the random stream it was initialised with; keep that exactly by
+    -- privatising it once.
+    if not out._rngPrivate then
+      out._rng = copy(out._rng)
+      out._rngPrivate = true
+    end
+    out._options = copy(options)
+    out.diagnostics = state.diagnostics or {}
+    out._diagnosticKeys = state._diagnosticKeys or {}
+  else
+    out = copyState(state)
+    out._options = copy(options)
+    out.diagnostics = copy(state.diagnostics or {})
+    out._diagnosticKeys = copy(state._diagnosticKeys or {})
+  end
   if delta < 0 then
     addDiagnostic(out, "negative-delta", delta)
     delta = 0
@@ -1049,13 +1066,19 @@ function Motion.step(state, delta, options)
   return tick(state, delta, options)
 end
 
+-- In-place Motion.step (same result, no per-tick state copy).
+function Motion.advance(state, delta, options)
+  if type(state) ~= "table" then return nil, "motion state is required" end
+  return tick(state, delta, options, true)
+end
+
 Motion.evaluate = Motion.step
 Motion.tick = Motion.step
 
 function Motion.snapshot(state)
   if type(state) ~= "table" then return nil end
   local out = copy(state)
-  out._rng, out._options, out._diagnosticKeys = nil, nil, nil
+  out._rng, out._options, out._diagnosticKeys, out._rngPrivate = nil, nil, nil, nil
   out._scaleController, out._motionController, out._motionAxes = nil, nil, nil
   out._rotationTracks, out._positionTracks, out._rotationTrackReady = nil, nil, nil
   out.particle = nil

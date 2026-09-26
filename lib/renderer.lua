@@ -30,6 +30,13 @@ Renderer.FORMAT = {
 
 local SHADER = [[
 #define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
+// Batched battle-FX particles carry these per-particle values as
+// vertex attributes (fxInstanced=1); otherwise the uniforms apply.
+uniform float fxInstanced;
+varying vec4 vFxPrim;
+varying vec4 vFxEnv;
+varying vec4 vFxTint;
+varying STADIUM_FLOAT vec4 vFxScroll;
 varying STADIUM_FLOAT vec3 vNormal;
 varying STADIUM_FLOAT vec3 vSun;
 varying STADIUM_FLOAT vec2 vGeneratedUV;
@@ -48,7 +55,12 @@ uniform vec3 billboardUp;
 uniform vec2 billboardSize;
 uniform float decalDepthBias;
 attribute vec3 VertexNormal;
+attribute vec4 FxPrim;
+attribute vec4 FxEnv;
+attribute vec4 FxTint;
+attribute vec4 FxScroll;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  vFxPrim=FxPrim; vFxEnv=FxEnv; vFxTint=FxTint; vFxScroll=FxScroll;
   if (billboardEnabled > 0.5) {
     vertex_position.xyz = billboardCenter
       + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
@@ -116,6 +128,11 @@ uniform vec4 n64ColorCycle0;
 uniform vec4 n64AlphaCycle0;
 uniform vec4 n64ColorCycle1;
 uniform vec4 n64AlphaCycle1;
+// Per-draw values (uniform or batched vertex attribute), set in effect().
+vec4 fxPrim;
+vec4 fxEnv;
+vec4 fxTint;
+STADIUM_FLOAT vec4 fxScroll;
 float shadowDepth(vec2 uv) {
   vec4 c=Texel(sunMap,uv);
   return c.r+c.g*(1.0/255.0);
@@ -262,6 +279,12 @@ vec4 n64Cycle(vec4 selectors, vec4 alphaSelectors, vec4 combined,
   return clamp(vec4(rgb,alpha),0.0,1.0);
 }
 void effect() {
+  if (fxInstanced > 0.5) {
+    fxPrim=vFxPrim; fxEnv=vFxEnv; fxTint=vFxTint; fxScroll=vFxScroll;
+  } else {
+    fxPrim=primitiveColor; fxEnv=environmentColor; fxTint=sceneTint;
+    fxScroll=textureScroll;
+  }
   vec4 color=VaryingColor;
   STADIUM_FLOAT vec2 texture_coords=VaryingTexCoord.st;
   STADIUM_FLOAT vec2 screen_coords=love_PixelCoord;
@@ -269,7 +292,7 @@ void effect() {
     vGeneratedUV,textureGenEnabled);
   STADIUM_FLOAT vec2 secondaryUV=mix(texture_coords*secondaryCoordinateScale,
     vGeneratedUV,textureGenEnabled);
-  vec4 texel0 = sample3(MainTex, uv + textureScroll.xy, primarySize, primaryWrapMode);
+  vec4 texel0 = sample3(MainTex, uv + fxScroll.xy, primarySize, primaryWrapMode);
   // Cached N64 I textures remain opaque RGBA for Pokemon effect shaders.
   // Phase-5 combiners, however, address the source intensity as both RGB and
   // alpha, so restore that channel only when the CPU marks this ROM input.
@@ -277,7 +300,7 @@ void effect() {
   vec4 texel1 = texel0;
   vec4 texel = texel0;
   if (secondaryEnabled > 0.5) {
-    vec4 other = sample3(secondaryTexture, secondaryUV + textureScroll.zw, secondarySize,
+    vec4 other = sample3(secondaryTexture, secondaryUV + fxScroll.zw, secondarySize,
       secondaryWrapMode);
     if (secondaryIntensityAlpha > 0.5) other.a = other.r;
     texel1 = other;
@@ -293,20 +316,20 @@ void effect() {
     // intensity (mode 1). The shared flame's IA8 render tile uses
     // intensity for colour but TEXEL0_ALPHA for coverage (mode 2).
     float coverage = effectIntensityMode > 1.5 ? texel.a : intensity;
-    float gasAlpha = coverage * primitiveColor.a * color.a * sceneTint.a;
+    float gasAlpha = coverage * fxPrim.a * color.a * fxTint.a;
     if (gasAlpha <= alphaCutoff) discard;
-    vec3 gasColor = mix(environmentColor.rgb, primitiveColor.rgb, intensity);
-    love_PixelColor=vec4(gasColor * color.rgb * sceneTint.rgb, gasAlpha);
+    vec3 gasColor = mix(fxEnv.rgb, fxPrim.rgb, intensity);
+    love_PixelColor=vec4(gasColor * color.rgb * fxTint.rgb, gasAlpha);
     return;
   }
   if (n64CombinerEnabled > 0.5) {
     n64Noise=vec3(fract(sin(dot(floor(love_PixelCoord)
       +vec2(n64NoiseSeed*7.13,n64NoiseSeed*3.71),vec2(12.9898,78.233)))*43758.5453));
     vec4 combined=n64Cycle(n64ColorCycle0,n64AlphaCycle0,vec4(0.0),
-      texel0,texel1,primitiveColor,color,environmentColor);
+      texel0,texel1,fxPrim,color,fxEnv);
     if (n64CombinerCycles > 1.5)
       combined=n64Cycle(n64ColorCycle1,n64AlphaCycle1,combined,
-        texel0,texel1,primitiveColor,color,environmentColor);
+        texel0,texel1,fxPrim,color,fxEnv);
     // An opaque RDP render profile writes RGB even when its otherwise-unused
     // combiner alpha is zero. The CPU enables this only for ROM-proven zero
     // alpha equations in opaque/cutout arena queues; translucent cards retain
@@ -315,13 +338,13 @@ void effect() {
       combined.a=texel0.a*color.a;
     texel=combined;
   } else {
-    texel *= color * primitiveColor;
+    texel *= color * fxPrim;
   }
   if (texel.a <= alphaCutoff) discard;
   vec3 n=normalize(vNormal);
   float stadiumShade=clamp(0.7725+n.x*0.06+n.y*0.225+n.z*0.11,0.30,1.0);
   vec3 lit=vec3(stadiumShade);
-  vec3 combined = mix(texel.rgb, texel.rgb * environmentColor.rgb, environmentMix);
+  vec3 combined = mix(texel.rgb, texel.rgb * fxEnv.rgb, environmentMix);
   // Stadium's shade includes an ambient component. Shadow only the direct
   // portion so self-shadowing cannot crush already-dark faces toward black.
   float shadowVisibility=sunlight(vSun);
@@ -341,7 +364,7 @@ void effect() {
   // battlers' cast shadows. Preserve an ambient floor without relighting RGB.
   float prelitShade=mix(1.0,0.30+0.70*shadowVisibility,prelitShadowEnabled);
   vec3 lighting=mix(vec3(prelitShade),authoredLighting,lightingEnabled);
-  vec3 shaded=combined * lighting * sceneTint.rgb;
+  vec3 shaded=combined * lighting * fxTint.rgb;
   if (mangaAmount > 0.001) {
     // Watercolor-manga mode stays in the existing material pass. A warm paper
     // lift, muted pigment and screen-stable irregularity suggest a physical
@@ -370,7 +393,7 @@ void effect() {
   shaded=mix(shaded,vec3(1.0),flashAmount);
   shaded=mix(shaded,nativeModelColor.rgb,nativeModelColor.a);
   love_PixelColor=vec4(shaded,
-    texel.a * mix(1.0, environmentColor.a, environmentMix) * sceneTint.a);
+    texel.a * mix(1.0, fxEnv.a, environmentMix) * fxTint.a);
 }
 #endif
 ]]
@@ -381,6 +404,13 @@ void effect() {
 -- filtering and packed model self-shadow sampling that are fragile on GLES.
 local MOBILE_SHADER = [[
 #define STADIUM_FLOAT LOVE_HIGHP_OR_MEDIUMP
+// Batched battle-FX particles carry these per-particle values as
+// vertex attributes (fxInstanced=1); otherwise the uniforms apply.
+uniform float fxInstanced;
+varying vec4 vFxPrim;
+varying vec4 vFxEnv;
+varying vec4 vFxTint;
+varying STADIUM_FLOAT vec4 vFxScroll;
 varying STADIUM_FLOAT vec3 vNormal;
 varying STADIUM_FLOAT float vMangaEyeZ;
 varying STADIUM_FLOAT vec2 vGeneratedUV;
@@ -396,7 +426,12 @@ uniform vec3 billboardUp;
 uniform vec2 billboardSize;
 uniform float decalDepthBias;
 attribute vec3 VertexNormal;
+attribute vec4 FxPrim;
+attribute vec4 FxEnv;
+attribute vec4 FxTint;
+attribute vec4 FxScroll;
 vec4 position(mat4 transform_projection, vec4 vertex_position) {
+  vFxPrim=FxPrim; vFxEnv=FxEnv; vFxTint=FxTint; vFxScroll=FxScroll;
   if (billboardEnabled > 0.5) {
     vertex_position.xyz = billboardCenter
       + billboardRight * ((VertexTexCoord.x - 0.5) * billboardSize.x)
@@ -446,6 +481,11 @@ uniform vec4 n64ColorCycle0;
 uniform vec4 n64AlphaCycle0;
 uniform vec4 n64ColorCycle1;
 uniform vec4 n64AlphaCycle1;
+// Per-draw values (uniform or batched vertex attribute), set in effect().
+vec4 fxPrim;
+vec4 fxEnv;
+vec4 fxTint;
+STADIUM_FLOAT vec4 fxScroll;
 vec3 mobileColorAB(float source,vec4 combined,vec4 texel0,vec4 texel1,
     vec4 primitive,vec4 shade,vec4 environment) {
   if(source<0.5)return combined.rgb;if(source<1.5)return texel0.rgb;
@@ -495,49 +535,55 @@ vec4 mobileN64Cycle(vec4 selectors,vec4 alphaSelectors,vec4 combined,
   return clamp(vec4(rgb,alpha),0.0,1.0);
 }
 void effect() {
+  if (fxInstanced > 0.5) {
+    fxPrim=vFxPrim; fxEnv=vFxEnv; fxTint=vFxTint; fxScroll=vFxScroll;
+  } else {
+    fxPrim=primitiveColor; fxEnv=environmentColor; fxTint=sceneTint;
+    fxScroll=textureScroll;
+  }
   vec4 color=VaryingColor;
   STADIUM_FLOAT vec2 uv=mix(VaryingTexCoord.st*textureCoordinateScale,
     vGeneratedUV,textureGenEnabled);
   STADIUM_FLOAT vec2 secondaryUV=mix(VaryingTexCoord.st*secondaryCoordinateScale,
     vGeneratedUV,textureGenEnabled);
-  vec4 texel0=Texel(MainTex,uv+textureScroll.xy);
+  vec4 texel0=Texel(MainTex,uv+fxScroll.xy);
   vec4 texel1=texel0;
   vec4 texel=texel0;
   if (secondaryEnabled > 0.5) {
-    vec4 other=Texel(secondaryTexture,secondaryUV+textureScroll.zw);
+    vec4 other=Texel(secondaryTexture,secondaryUV+fxScroll.zw);
     texel1=other;
     texel=vec4(mix(texel.rgb,other.rgb,secondaryMix),texel.a);
   }
   if (effectIntensityMode > 0.5) {
     float intensity=texel.r;
     float coverage=effectIntensityMode > 1.5 ? texel.a : intensity;
-    float gasAlpha=coverage*primitiveColor.a*color.a*sceneTint.a;
+    float gasAlpha=coverage*fxPrim.a*color.a*fxTint.a;
     if (gasAlpha <= alphaCutoff) discard;
-    vec3 gasColor=mix(environmentColor.rgb,primitiveColor.rgb,intensity);
-    love_PixelColor=vec4(gasColor*color.rgb*sceneTint.rgb,gasAlpha);
+    vec3 gasColor=mix(fxEnv.rgb,fxPrim.rgb,intensity);
+    love_PixelColor=vec4(gasColor*color.rgb*fxTint.rgb,gasAlpha);
     return;
   }
   if(n64CombinerEnabled>0.5) {
     n64Noise=vec3(fract(sin(dot(floor(love_PixelCoord)
       +vec2(n64NoiseSeed*7.13,n64NoiseSeed*3.71),vec2(12.9898,78.233)))*43758.5453));
     vec4 combined=mobileN64Cycle(n64ColorCycle0,n64AlphaCycle0,vec4(0.0),
-      texel0,texel1,primitiveColor,color,environmentColor);
+      texel0,texel1,fxPrim,color,fxEnv);
     if(n64CombinerCycles>1.5)
       combined=mobileN64Cycle(n64ColorCycle1,n64AlphaCycle1,combined,
-        texel0,texel1,primitiveColor,color,environmentColor);
+        texel0,texel1,fxPrim,color,fxEnv);
     if(n64CombinerCycles>1.5&&n64CombinerCoverage<0.5)
       combined.a=texel0.a*color.a;
     texel=combined;
-  } else texel*=color*primitiveColor;
+  } else texel*=color*fxPrim;
   if (texel.a <= alphaCutoff) discard;
   vec3 n=normalize(vNormal);
   float stadiumShade=clamp(0.7725+n.x*0.06+n.y*0.225+n.z*0.11,0.30,1.0);
   float modernDiffuse=max(dot(n,-normalize(lightDir)),0.0);
   vec3 modernShade=clamp(ambient+diffuse*modernDiffuse,vec3(0.0),vec3(1.0));
-  vec3 combined=mix(texel.rgb,texel.rgb*environmentColor.rgb,environmentMix);
+  vec3 combined=mix(texel.rgb,texel.rgb*fxEnv.rgb,environmentMix);
   vec3 authoredLighting=mix(vec3(stadiumShade),modernShade,modernLightingEnabled);
   vec3 lighting=mix(vec3(1.0),authoredLighting,lightingEnabled);
-  vec3 shaded=combined*lighting*sceneTint.rgb;
+  vec3 shaded=combined*lighting*fxTint.rgb;
   if (celShadingEnabled*lightingEnabled > 0.001) {
     // Bounded phases avoid the large hash multipliers that lose precision on
     // mediump Android GPUs. No extra texture or outline draw is required.
@@ -557,7 +603,7 @@ void effect() {
   shaded=mix(shaded,vec3(1.0),flashAmount);
   shaded=mix(shaded,nativeModelColor.rgb,nativeModelColor.a);
   love_PixelColor=vec4(shaded,
-    texel.a*mix(1.0,environmentColor.a,environmentMix)*sceneTint.a);
+    texel.a*mix(1.0,fxEnv.a,environmentMix)*fxTint.a);
 }
 #endif
 ]]
@@ -1942,6 +1988,8 @@ function Renderer:updatePose(force)
         end
       end
       pcall(part.mesh.setVertexMap, part.mesh, map)
+      -- The battle-FX batcher reads the visible triangles from here.
+      part.drawMap = map
     end
   end
   if self.anchorEnabled and self.bindAnchor and anim then
