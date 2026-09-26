@@ -259,6 +259,15 @@ function Player:releaseHeld(ownerSide)
   return self.runtime:releaseHeld(ownerSide)
 end
 -- 841089D8(1) failed-move cleanup; see Runtime:abortAll.
+-- The side's Pokemon model changed: see NativeObjects:resetModel.
+function Player:resetModel(side)
+  if self.released then return false end
+  local native=self.runtime.nativeObjects
+  if not (native and native.resetModel) then return false end
+  native:resetModel(side)
+  self.runtime:touch()
+  return true
+end
 function Player:abortAll()
   if self.released then return false end
   return self.runtime:abortAll()

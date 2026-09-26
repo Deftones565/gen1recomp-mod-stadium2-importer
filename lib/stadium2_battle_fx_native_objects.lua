@@ -359,6 +359,19 @@ function NativeObjects:_releaseSlot(slot)
   slot.active = false
 end
 
+-- 8003F454/8003F4DC write fog/blend colour and opacity into the model
+-- object itself, so a newly sent-out Pokemon is a fresh model at full
+-- opacity. Model colour state here is keyed by side; when that side's model
+-- changes, drop the old model's colour and stop writes still aimed at it
+-- (a recall's fade to 0 must not carry over to the replacement).
+function NativeObjects:resetModel(side)
+  for _,instance in ipairs(self.modelColorInstances) do
+    if instance.side==side then instance.active=false end
+  end
+  self.modelColors[side]=nil
+  return true
+end
+
 function NativeObjects:release(index)
   if index == nil then
     for slotIndex = 0, self.capacity - 1 do

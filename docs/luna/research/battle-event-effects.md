@@ -138,3 +138,17 @@ Timing differs from Stadium, where the recall state runs 70 frames before
 the send-out: Gen 1's cue is 7 frames before the swap, so 0x126 keeps
 playing on the player's slot into the new mon's send-out. Gen 2's cue is
 the message line, before the send-out animation.
+
+## Recall fade and model colour ownership (2026-09-27)
+
+Measured with the port's player (test room, US ROM data): entry 0x126 turns
+the outgoing model white and fades its opacity (8003F4DC) to 0 within about
+50 ticks, and the write holds. Entry 0x122 (send-out) holds opacity 0 while
+the ball opens, then shows the model white and fades the blend back out.
+8003F454/8003F4DC write into the model object, so a newly sent-out Pokemon is
+a fresh model at full opacity. The port kept these writes per side, so the
+replacement inherited the recall's 0 and stayed invisible whenever the
+send-out did not run (POKE BALL off). `NativeObjects:resetModel(side)` now
+drops the side's colour state and stops writes still aimed at the old model
+when the shown Pokemon changes (Gen 1 and Gen 2 scene `sync`). POKE BALL OFF
+(non-native user option) skips both 0x122 and 0x126.

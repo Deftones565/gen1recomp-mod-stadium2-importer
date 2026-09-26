@@ -23,8 +23,8 @@ local presentation = read(root .. "lib/battle_presentation.lua")
 local uiOwnership = read(root .. "lib/battle_ui_ownership.lua")
 
 ok(manifest:find('"dependencies": %[%]', 1) ~= nil, "importer has no required mod dependency")
-ok(manifest:find('"version": "0.16.2"', 1, true) ~= nil,
-  "public API release is pinned to 0.16.2")
+ok(manifest:find('"version": "0.16.3"', 1, true) ~= nil,
+  "public API release is pinned to 0.16.3")
 ok(main:find('require("mods.STADIUM2_IMPORTER.lib.battle_router")', 1, true) ~= nil,
   "main dispatches battles through the generation router")
 ok(main:find('lib.battle_presentation',1,true)~=nil and main:find('mod.exports.presentation',1,true)~=nil,

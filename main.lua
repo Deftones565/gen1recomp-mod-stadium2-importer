@@ -137,7 +137,7 @@ return function(mod)
       choices={{"ON",true},{"LITE","lite"},{"OFF",false}},
       help="Costly extras, for speed on slow phones. LITE keeps move effects but draws about half of each big particle burst (sparkles, trails, bubbles; single objects like the Poke Ball always show) and turns off Kenney-scene shadows, rain/thunderstorms and ambient Pokemon. OFF also hides all move-effect particles. Move timing is unchanged. Not in the original game." },
     { key="stadium2_fx_pokeball", label="POKE BALL", type="toggle", default=true,
-      visible_if={key="stadium2_graphics", equals=true}, help="Play Stadium's Poke Ball send-out effect (with Move Effects on). OFF skips it for speed on slow phones; the Pokemon still comes out. Not in the original game." },
+      visible_if={key="stadium2_graphics", equals=true}, help="Play Stadium's Poke Ball send-out and return effects (with Move Effects on). OFF skips both for speed on slow phones; the Pokemon still comes out and goes back. Not in the original game." },
     { key="stadium2_weather", label="SCENE WEATHER", type="choice", visible_if={key="stadium2_graphics", equals=true}, default="off",
       choices={{"OFF","off"},{"RAIN","rain"},{"THUNDERSTORM","storm"}},
       help="Stylized rain and surface splashes in outdoor custom scenes. Thunderstorm adds occasional lightning and a brief scene illumination. Cosmetic only." },
@@ -188,7 +188,7 @@ return function(mod)
     end,
   })
 
-  mod.exports.version = "0.16.2"
+  mod.exports.version = "0.16.3"
   mod.exports.configure = Importer.configure
   mod.exports.status = Importer.status
   mod.exports.cacheStatus = Importer.cacheStatus

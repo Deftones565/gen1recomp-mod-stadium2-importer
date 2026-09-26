@@ -43,7 +43,7 @@ No ROM is included. Never add one to the mod ZIP.
 | 3D RESOLUTION | `AUTO`, 100%, 75% or 50%. Lower is faster; the UI stays sharp. |
 | BATTLE AA | Anti-aliasing: off, 2x or 4x. |
 | EXTRA EFFECTS | `LITE` or `OFF` cuts particles, shadows, weather and visitors for slow phones. |
-| POKE BALL | Stadium's send-out effect. |
+| POKE BALL | Stadium's send-out and return effects. |
 | SCENE WEATHER | Rain or thunderstorms in outdoor scenes. |
 | BATTLE ENVIRONMENT | `CLASSIC` or the painted `KENNEY NATURE` scenes. |
 | AMBIENT POKEMON | Harmless visitors in the painted scenes. |

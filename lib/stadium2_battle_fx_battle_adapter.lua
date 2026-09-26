@@ -642,6 +642,12 @@ function Adapter:_firePendingVariants()
   self.pendingVariants = kept
 end
 
+-- A side's Pokemon model was replaced (switch or send-out of another mon).
+function Adapter:modelChanged(side)
+  if not (self.player and type(self.player.resetModel) == "function") then return false end
+  return self.player:resetModel(side)
+end
+
 -- 8410890C(id, owner): latch the signal and play FX entry `id` (entries
 -- 252..301 are non-move battle effects) with `owner` as the source.
 function Adapter:signalEffect(id, owner)
@@ -650,8 +656,10 @@ function Adapter:signalEffect(id, owner)
   end
   local source, target = sides(owner)
   if type(self.player.signalContext) == "function" then self.player:signalContext(tonumber(id)) end
-  -- User option (POKE BALL, non-native): OFF skips the send-out effect.
-  if tonumber(id) == Sequence.SEND_OUT_ENTRY and type(self.sendOutEnabled) == "function" then
+  -- User option (POKE BALL, non-native): OFF skips the send-out and the
+  -- recall (return) effects.
+  if (tonumber(id) == Sequence.SEND_OUT_ENTRY or tonumber(id) == Sequence.RECALL_ENTRY)
+      and type(self.sendOutEnabled) == "function" then
     local ok, enabled = pcall(self.sendOutEnabled)
     if ok and enabled == false then return nil end
   end

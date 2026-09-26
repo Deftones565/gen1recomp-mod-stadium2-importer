@@ -49,7 +49,20 @@ ball=false
 adapter:signalEffect(Sequence.SEND_OUT_ENTRY,"player")
 ok(#played==1,"POKE BALL OFF skips the send-out")
 adapter:signalEffect(Sequence.RECALL_ENTRY,"player")
-ok(played[2]==Sequence.RECALL_ENTRY,"POKE BALL OFF leaves other entries alone")
+ok(#played==1,"POKE BALL OFF also skips the recall (return) effect")
+adapter:signalEffect(Sequence.FAINT_ENTRIES.first,"player")
+ok(played[2]==Sequence.FAINT_ENTRIES.first,"POKE BALL OFF leaves other entries alone")
+-- A recall's held fade-out belongs to the outgoing model only.
+local NativeObjects=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native_objects")
+local native=NativeObjects.new({})
+local fading={side="player",active=true}
+native.modelColorInstances={fading,{side="enemy",active=true}}
+native.modelColors={player={opacity=0},enemy={opacity=0}}
+native:resetModel("player")
+ok(native.modelColors.player==nil and not fading.active,
+  "a new model on a side drops the old model's opacity and stops its writes")
+ok(native.modelColors.enemy.opacity==0 and native.modelColorInstances[2].active,
+  "the other side keeps its model colour")
 -- EXTRA EFFECTS off also stops torch/lamp shadows, in every instance.
 local TorchShadows=require("mods.STADIUM2_IMPORTER.lib.battle_torch_shadows")
 local lamps=TorchShadows.new()

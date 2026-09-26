@@ -237,6 +237,15 @@ function Scene:sync()
   for _,side in ipairs({"player","enemy"}) do
     local actor=self.actors[side]
     local mon=self:shownMon(side)
+    -- A different Pokemon is a fresh Stadium model: native colour/opacity
+    -- writes (a recall's fade-out) belong to the one it replaced.
+    self.shownMons=self.shownMons or {}
+    if mon~=self.shownMons[side] then
+      if self.shownMons[side]~=nil and self.battleFx and self.battleFx.modelChanged then
+        pcall(self.battleFx.modelChanged,self.battleFx,side)
+      end
+      self.shownMons[side]=mon
+    end
     if mon and Importer.modelsEnabled() then
       local battler=self:shownBattler(side)
       local copied=self.transformSprites and self.transformSprites[battler.sprite]

@@ -196,6 +196,15 @@ function Scene:sync()
     or self.battle and self.battle.data
   for _, side in ipairs({"player", "enemy"}) do
     local actor, mon = self.actors[side], self:shownMon(side)
+    -- A different Pokemon is a fresh Stadium model: native colour/opacity
+    -- writes (a recall's fade-out) belong to the one it replaced.
+    self.shownMons = self.shownMons or {}
+    if mon ~= self.shownMons[side] then
+      if self.shownMons[side] ~= nil and self.battleFx and self.battleFx.modelChanged then
+        pcall(self.battleFx.modelChanged, self.battleFx, side)
+      end
+      self.shownMons[side] = mon
+    end
     -- Do not follow an in-place Transform until its queue event is presented;
     -- Gold resolves a whole turn before showing its first message.
     if actor.mon ~= mon then actor:load(data, mon) end
