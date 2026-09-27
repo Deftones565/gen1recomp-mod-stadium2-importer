@@ -227,21 +227,44 @@ adapter:impact(33, "player", 1)
 ok(#effectFor(keepEntry).particles == 0, "released particles are no longer exempt from the abort")
 ok(#effectFor(otherOwner).particles > 0, "the other owner's held particles survive both")
 
--- Scheduled impact at the dispatch hit frame.
+-- Attack-state timeline (Sequence.attackTiming, 84114BF4): the move route
+-- starts at the attacker's rebased hit frame. With no defender row the
+-- impact falls back to that same frame, so both banks start together.
 local attacker = {renderer = {model = {fxDispatch = bytes}}}
 adapter:playMoveAndImpact(2, "player", attacker)
 local startFrame = runtime.frame
 local pendingBefore = #runtime.effectOrder
 adapter:update(13 / 30)
-ok(#runtime.effectOrder == pendingBefore, "impact waits for the hit frame")
+ok(#runtime.effectOrder == pendingBefore, "route and impact wait for the hit frame")
 adapter:update(1 / 30)
-ok(runtime.frame - startFrame == 14 and #runtime.effectOrder == pendingBefore + 1,
-  "impact bank starts at the dispatch hit frame")
+ok(runtime.frame - startFrame == 14 and #runtime.effectOrder == pendingBefore + 2,
+  "without a defender row, route and impact start at the attacker's hit frame")
 local warned = false
 for _, message in ipairs(warnings) do
-  if message:find("approach phases are not emulated", 1, true) then warned = true end
+  if message:find("defender row unavailable", 1, true) then warned = true end
 end
-ok(warned, "approximate impact timing is reported")
+ok(warned, "the fallback impact timing is reported")
+-- With a defender row, the impact comes from the defender's own row.
+local timed = assert(Sequence.attackTiming(bytes, 2, {defenderDispatch = bytes}))
+ok(timed.route == 14 and timed.impact ~= nil, "a defender row yields its own impact frame")
+adapter:update(4)
+adapter:playMoveAndImpact(2, "player", attacker, nil, attacker)
+startFrame, pendingBefore = runtime.frame, #runtime.effectOrder
+local seen = {}
+for _ = 1, math.max(timed.route, timed.impact) + 1 do
+  adapter:update(1 / 30)
+  seen[runtime.frame - startFrame] = #runtime.effectOrder - pendingBefore
+end
+-- Each bank starts on the update that reaches its tick (tick 0: the first).
+local function started(tick)
+  local at = math.max(1, tick)
+  return (seen[at] or 0) - (seen[at - 1] or 0)
+end
+local routeAt, impactAt = math.max(1, timed.route), math.max(1, timed.impact)
+ok(started(timed.route) == (routeAt == impactAt and 2 or 1),
+  "the move route starts at the attacker's hit frame")
+ok(started(timed.impact) == (routeAt == impactAt and 2 or 1),
+  "the impact starts at the defender row's frame, independently of the route")
 adapter:playMoveAndImpact(2, "player", {renderer = {model = {}}})
 local missing = false
 for _, message in ipairs(warnings) do

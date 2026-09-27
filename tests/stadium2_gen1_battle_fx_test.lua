@@ -100,12 +100,25 @@ scene:syncPresentationState()
 ok(signals[#signals].id==0x103 and signals[#signals].owner=="enemy" and #adapterTrigger==triggers,
   "Leech Seed's ABSORB row -> 0x103 on the seeded side, no Absorb move FX")
 battle.animPlaying=false;scene:syncPresentationState()
-battle.pendingHit={animType=4}
+-- The host assigns pendingHit only after AnimPlayer:start, so both rows
+-- start with it nil; the move's own row (moveAnimRow, just dequeued) tells
+-- them apart.
+battle.pendingHit=nil
+battle.queue={}
+battle.moveAnimRow={anim="ABSORB",attackerIsPlayer=true}
+triggers=#adapterTrigger
+local signalCount=#signals
 battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="ABSORB",true,true
 scene:syncPresentationState()
-ok(#adapterTrigger==triggers+1 and adapterTrigger[#adapterTrigger][1]==71,
-  "a real Absorb (with hit data) still plays its move FX")
+ok(#adapterTrigger==triggers+1 and adapterTrigger[#adapterTrigger][1]==71 and #signals==signalCount,
+  "the move Absorb's own row plays Absorb's FX, not Leech Seed's, before pendingHit is set")
 battle.animPlaying=false;scene:syncPresentationState()
+battle.animName,battle.animAttackerIsPlayer,battle.animPlaying="ABSORB",true,true
+scene:syncPresentationState()
+ok(signals[#signals].id==0x103 and #adapterTrigger==triggers+1,
+  "a later Leech Seed ABSORB row from the same side is the residual")
+battle.animPlaying=false;scene:syncPresentationState()
+battle.moveAnimRow=nil
 
 -- Charge rows: Fly's TELEPORT row is its charge, not Teleport's move FX.
 battle.data.moves.FLY={index=19}

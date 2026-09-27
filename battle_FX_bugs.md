@@ -1,5 +1,27 @@
 Move bug list
 
+Battle follow-up (2026-09-27, Gen 1 Absorb vs Leech Seed, local session):
+- Fixes item 1 of the parity audit below. In Gen 1, an ordinary Absorb (71)
+  could play Leech Seed's drain effect (0x103) instead of its own move FX:
+  the recomp sets `pendingHit` only after the animation starts, so the old
+  check saw every ABSORB row as the Leech Seed drain.
+- Now the move's own row (`moveAnimRow`) decides it: the first ABSORB start
+  after that row has left the queue is the move; any other ABSORB start is
+  the Leech Seed drain on the seeded side. No host code is wrapped or changed
+  (`lib/gen1_battle.lua`, `Scene.isResidualAbsorb`). The Gen 1 FX test now
+  follows the host's real ordering (`pendingHit` still nil at start).
+- Needs your retest: a Gen 1 battle where one side uses Absorb and the
+  other has Leech Seed.
+
+Test follow-up (2026-09-27, ROM acceptance gate, local session):
+- `stadium2_battle_fx_sequence_test.lua` expected the old timing (one bank
+  at the hit frame). Since the attack-state timeline, the move route starts
+  at the attacker's hit frame and, with no defender row, the impact starts
+  on the same frame. The test now checks that, plus a defender-row case
+  where route and impact are checked at their own frames. The strict ROM
+  gate (`STADIUM2_REQUIRE_ROM=1 tools/run_battle_fx_worker_checks.sh`)
+  passes again. Test-only change; no visual change.
+
 Parity research follow-up (2026-09-27; current backlog, no runtime fixes):
 
 Checked importer `aede59e9c230b994eeddd5fb527e3b885d0813ab` against current

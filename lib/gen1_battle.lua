@@ -161,6 +161,27 @@ end
 -- One native animation row starting: the attacker's Stadium clip, battle FX
 -- (move and impact banks, charge turns) and residual effects. `name` is the
 -- host animation key; `attackerIsPlayer` its attacker flag.
+-- Red plays Leech Seed's drain as an ABSORB row from the healing side, and
+-- the move Absorb as the battle's moveAnimRow. The host sets pendingHit only
+-- after AnimPlayer:start, so it cannot tell them apart. The move row has just
+-- left the queue when it starts; the first start that finds it gone claims
+-- it, and any other ABSORB start (a later drain, or after a miss cleared
+-- moveAnimRow) is the residual.
+local claimedMoveRows=setmetatable({},{__mode="k"})
+
+function Scene.isResidualAbsorb(battle,attackerIsPlayer)
+  local row=battle.moveAnimRow
+  if not (row and row.anim=="ABSORB" and (row.attackerIsPlayer and true or false)==attackerIsPlayer) then
+    return true
+  end
+  if claimedMoveRows[row] then return true end
+  for _,item in ipairs(battle.queue or {}) do
+    if item==row then return true end -- the move row has not started yet
+  end
+  claimedMoveRows[row]=true
+  return false
+end
+
 function Scene:presentAnimStart(name,attackerIsPlayer)
   local battle=self.battle
   if not battle then return end
@@ -177,7 +198,7 @@ function Scene:presentAnimStart(name,attackerIsPlayer)
     residual=status=="BRN" and FxSequence.RESIDUAL_ENTRIES.burn
       or status=="PSN" and FxSequence.RESIDUAL_ENTRIES.poison or nil
     if residual then residual={entry=residual,side=rowSide} end
-  elseif name=="ABSORB" and battle.pendingHit==nil then
+  elseif name=="ABSORB" and Scene.isResidualAbsorb(battle,rowSide=="player") then
     residual={entry=FxSequence.RESIDUAL_ENTRIES.leechSeed,
       side=rowSide=="player" and "enemy" or "player"}
     def=nil
