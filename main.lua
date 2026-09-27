@@ -32,6 +32,11 @@ return function(mod)
     return scene~=nil and (scene.battle==state or scene.screen==state
       or (state and scene.battle==state.battle))
   end)
+  BattleUIOwnership.setMessageClaim(function(state)
+    local scene=Battle.currentScene()
+    return scene~=nil and type(scene.stadiumMessageOwned)=="function"
+      and scene:stadiumMessageOwned(state)==true
+  end)
   local Models = ModelApi.new(Importer)
   local importScreen
   local mapContext,pendingEncounter,lastTimeOfDay
@@ -120,6 +125,12 @@ return function(mod)
     { key="stadium2_battle_hud", label="BATTLE HUD", type="toggle",
       default=true,
       help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
+    { key="stadium2_stadium_ui", label="STADIUM UI", type="toggle", default=false,
+      help="Pokemon Stadium 2's own battle status panels, font and textures, read from your imported ROM, in place of the glass HUD. Needs BATTLE HUD on." },
+    { key="stadium2_menu_controls", label="MENU CONTROLS", type="choice", default="cursor",
+      visible_if={key="stadium2_stadium_ui", equals=true},
+      choices={{"CURSOR","cursor"},{"STADIUM","stadium"}},
+      help="With a controller the menus always use Stadium 2's controls: no cursor, A BATTLE, B POKeMON, START RUN, R PACK, C buttons (right stick) pick, hold the D-pad for a move's info, L (LB) cancels. On keyboard, CURSOR keeps the moving cursor (hold R for info); STADIUM uses the controller scheme (C = I/J/K/L). PACK is not in Stadium 2." },
     { key="stadium2_graphics", label="GRAPHICS", type="choice", default=false,
       choices={{"HIDE",false},{"SHOW",true}},
       help="Show or hide the graphics settings: shader style, 3D resolution, battle AA, extra effects, Poke Ball and scene weather." },
@@ -278,6 +289,64 @@ return function(mod)
   mod.exports.battleSceneCapabilities = BattleSceneApi.capabilities()
   mod.exports.models = Models
   mod.exports.modelCapabilities = Models.capabilities()
+
+  -- STADIUM UI menus: act before the engine promotes this tick's presses
+  -- (input.step), and see taps the touch overlay did not take (input.pointer).
+  local StadiumMenu = require("mods.STADIUM2_IMPORTER.lib.stadium_menu")
+  local function stadiumMenuContext()
+    local scene = type(Battle.currentScene) == "function" and Battle.currentScene() or nil
+    local ok, ctx = pcall(function()
+      return scene and type(scene.stadiumMenuContext) == "function"
+        and scene:stadiumMenuContext() or nil
+    end)
+    return ok and ctx or nil
+  end
+  -- Gamepad shoulders: the host binds LB/RB to game speed and returns before
+  -- they become L/R, so while a Stadium menu is open they are handed to the
+  -- host's own Input:gamepadpressed (which presses "l"/"r"); releases go
+  -- through unchanged. Installed on the first Stadium menu, not at load:
+  -- the host mutes its pad-repair polling while a mod owns input.gamepad.
+  -- Removed with the mod like every mod.hooks wrap.
+  local stadiumPadWrapped = false
+  local function wrapStadiumPad()
+    if stadiumPadWrapped then return end
+    stadiumPadWrapped = true
+    mod.hooks:wrap("input.gamepad", function(next, game, event)
+      if type(event) == "table" and event.phase == "pressed"
+          and (event.button == "leftshoulder" or event.button == "rightshoulder")
+          and stadiumMenuContext() then
+        local input = game and game.input
+        if input and type(input.gamepadpressed) == "function" then
+          input:gamepadpressed(event.joystick, event.button)
+          return
+        end
+      end
+      return next(game, event)
+    end, 7)
+  end
+  mod.hooks:wrap("input.step", function(next, game, dt)
+    local ctx = stadiumMenuContext()
+    if ctx then pcall(wrapStadiumPad) end
+    local okMode, mode = pcall(function() return Importer.menuControls() end)
+    pcall(StadiumMenu.step, game, ctx, okMode and mode or "cursor", function(button)
+      if mod.input and mod.input.tap then pcall(mod.input.tap, mod.input, game, button) end
+    end)
+    return next(game, dt)
+  end, 7)
+  mod.hooks:wrap("input.pointer", function(next, owner, event)
+    StadiumMenu.pointer(event)
+    return next(owner, event)
+  end, 120)
+  -- The host party menu stays live (input, rules) but is not drawn while the
+  -- Stadium switch cards stand in for it.
+  mod.hooks:wrap("screen.render_visible", function(next, state)
+    local scene = type(Battle.currentScene) == "function" and Battle.currentScene() or nil
+    if scene and type(scene.stadiumHidesState) == "function" then
+      local ok, hides = pcall(scene.stadiumHidesState, scene, state)
+      if ok and hides then return false end
+    end
+    return next(state)
+  end, 120)
 
   mod.hooks:wrap("input.step", function(next, game, dt)
     local result = next(game, dt)

@@ -1,5 +1,6 @@
 local Hud = { FROST=.55, TINT=.26, HEIGHT=72 }
 local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
+local StadiumUI = require("mods.STADIUM2_IMPORTER.lib.stadium_ui")
 
 -- Exact native Gold HUD spans.  Snap the RECT to the window edge and move the
 -- full source band by the matching amount; moving a 160px band to x=0 leaves
@@ -397,20 +398,78 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer,options)
   local playerLive=statusOwned and screen.showPlayerHud and not screen.showPlayerTrainer
     and not screen.tutorial
   local er,pr=Hud.HUD_RECT.enemy,Hud.HUD_RECT.player
+  -- STADIUM UI: Stadium 2's own status panels replace the live glass panels
+  -- and the captured native status bands.
+  -- With STADIUM UI on (options.stadiumPanels given) no glass plate and no
+  -- native status band draws: sides that are not live show nothing, or
+  -- their party balls when the provider gives ballsOnly data.
+  local stadiumOn=type(options.stadiumPanels)=="function" and statusOwned
+  local stadiumPanels
+  if stadiumOn then
+    local built,data=pcall(options.stadiumPanels)
+    stadiumPanels=built and type(data)=="table" and data or nil
+  end
+  if stadiumPanels then
+    local area=scene.width>=scene.height
+      and {x=0,y=0,w=scene.width,h=scene.height}
+      or {x=box.lx,y=box.ly,w=160*s,h=144*s}
+    local messageLayout=type(options.stadiumMessage)=="function"
+      and scene.bottomUiVisible~=false
+    local function pick(side,live)
+      local d=stadiumPanels[side]
+      if live then return d end
+      local balls=stadiumPanels[side.."Balls"]
+      return balls
+    end
+    if StadiumUI.tryDrawPanels(area,{
+      player=pick("player",playerLive),
+      enemy=pick("enemy",enemyLive)},options.warn,messageLayout) then
+      enemyLive,playerLive=false,false
+    else
+      stadiumPanels=nil
+    end
+  end
+  -- glass plate, or the Stadium card behind host UI that stays native
+  local stadiumBacking=stadiumPanels~=nil
+  local function backing(rect)
+    if stadiumBacking and StadiumUI.backing(rect,s*144/240) then return end
+    if decorate then panel(scene,rect) end
+  end
   if decorate and enemyLive then
     panel(scene,{layout.enemyPanelX,layout.enemyPanelY,er[3]*ps,er[4]*ps})
   end
   if decorate and playerLive then
     panel(scene,{layout.playerPanelX,layout.playerPanelY,pr[3]*ps,pr[4]*ps})
   end
-  if decorate and bottomVisible then panel(scene,{box.lx,lowerY,160*s,48*s}) end
-  if decorate and crystalMovePane then
+  -- STADIUM UI menus / message box in place of the lower glass and band.
+  local stadiumMessage=false
+  if type(options.stadiumMenu)=="function" and bottomVisible then
+    local built,draw=pcall(options.stadiumMenu)
+    if built and type(draw)=="function" then
+      local area=scene.width>=scene.height
+        and {x=0,y=0,w=scene.width,h=scene.height}
+        or {x=box.lx,y=box.ly,w=160*s,h=144*s}
+      stadiumMessage=StadiumUI.tryDrawMenu(area,draw,options.warn)
+    end
+  elseif type(options.stadiumMessage)=="function" and bottomVisible then
+    local built,lines,side=pcall(options.stadiumMessage)
+    if built and lines then
+      local area=scene.width>=scene.height
+        and {x=0,y=0,w=scene.width,h=scene.height}
+        or {x=box.lx,y=box.ly,w=160*s,h=144*s}
+      stadiumMessage=StadiumUI.tryDrawMessage(area,lines,side,options.warn)
+    end
+  end
+  if bottomVisible and not stadiumMessage then backing({box.lx,lowerY,160*s,48*s}) end
+  -- the Stadium move diamond replaces Crystal's TYPE/PP pane as well
+  if stadiumMessage then crystalMovePane=false end
+  if crystalMovePane then
     local r=Hud.CRYSTAL_MOVE_INFO_RECT
     -- Preserve the cartridge's eight-row overlap: MoveInfo starts at y=64
     -- and the lower move window at y=96. Their shared rows are the joined
     -- seam, not two independently spaced panel edges.
     local joinedY=lowerY-(96-r[2])*s
-    panel(scene,{box.lx+r[1]*s,joinedY,r[3]*s,r[4]*s})
+    backing({box.lx+r[1]*s,joinedY,r[3]*s,r[4]*s})
   end
   g.setColor(1,1,1,1)
   local oldShader=g.getShader and g.getShader() or nil
@@ -430,7 +489,10 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer,options)
   -- player band, this is what prevents Gold's per-move BattleAnimClearHud from
   -- making a status card blink off for the duration of an attack.
   local upper=statusOwned and ((layout.snap and hudLayer) or layer) or layer
-  if statusOwned then
+  if stadiumPanels then
+    -- the Stadium panels above replace both status bands (and the trainer
+    -- intro's native ball rows)
+  elseif statusOwned then
     g.draw(upper,enemy,layout.enemyPanelX,layout.enemyPanelY,0,ps,ps)
     g.draw(upper,player,layout.playerPanelX,layout.playerPanelY,0,ps,ps)
   else
@@ -448,7 +510,7 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer,options)
     local joined=g.newQuad(0,64,160,80,160,144)
     local joinedY=lowerY-(96-64)*s
     g.draw(modalLayer or layer,joined,box.lx,joinedY,0,s,s)
-  else
+  elseif not stadiumMessage then
     g.draw(layer,lower,box.lx,lowerY,0,s,s)
   end
   if key then g.setShader(oldShader) end
@@ -460,7 +522,7 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer,options)
   -- This is intentionally after the gauge-key shader is removed: the nickname
   -- rectangle occupies the player HP/EXP source rows and must not inherit that
   -- tile-specific key.
-  if bottomVisible and layout.asking and layout.modal then
+  if bottomVisible and layout.asking and layout.modal and not stadiumMessage then
     local left=(screen.phase=="ask-shift" or screen.phase=="ask-next-mon")
       and 8 or 112
     local r={left,56,48,40}
@@ -473,9 +535,9 @@ function Hud.composite(scene,screen,layer,hudLayer,modalLayer,options)
       target[1]=box.lx
       target[2]=math.max(edgeInset*s,lowerY-r[4]*s)
     end
-    if decorate then
+    if decorate or stadiumBacking then
       restoreSceneRect(scene,target)
-      panel(scene,target)
+      backing(target)
     end
     local modalQuad=g.newQuad(r[1],r[2],r[3],r[4],160,144)
     g.setColor(1,1,1,1)

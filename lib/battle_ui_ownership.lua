@@ -19,6 +19,10 @@ local installed = false
 local claims = setmetatable({}, {__mode="k"})
 local probing = setmetatable({}, {__mode="k"})
 local capturing = setmetatable({}, {__mode="k"})
+local bottomProbing = setmetatable({}, {__mode="k"})
+-- STADIUM UI message box: a resolver(state) that is true while Stadium's own
+-- message box shows the battle text, so the host skips its text box.
+local messageClaim
 local unpack = table.unpack or unpack
 
 local function pack(...) return {n=select("#",...),...} end
@@ -199,6 +203,10 @@ function Ownership.bind(mod,resolver)
   end,-10000)
   hooks:wrap("battle.bottom_ui_visible",function(next,state)
     if active(state) and legacyOwns("bottom",state) then return false end
+    if active(state) and not bottomProbing[state] and messageClaim then
+      local ok,claimed=pcall(messageClaim,state)
+      if ok and claimed then return false end
+    end
     return next(state)
   end,-10000)
   installed=true
@@ -233,8 +241,17 @@ function Ownership.bottomVisible(state)
   if type(state.bottomUIVisible)~="function" then
     return true
   end
+  -- Our own message claim is transparent here: this asks whether another
+  -- provider owns the bottom UI.
+  bottomProbing[state]=(bottomProbing[state] or 0)+1
   local ok,value=pcall(state.bottomUIVisible,state)
+  bottomProbing[state]=bottomProbing[state]-1
+  if bottomProbing[state]<=0 then bottomProbing[state]=nil end
   return not ok or value~=false
+end
+
+function Ownership.setMessageClaim(resolver)
+  messageClaim=type(resolver)=="function" and resolver or nil
 end
 
 function Ownership.withNativeStatus(state,fn)

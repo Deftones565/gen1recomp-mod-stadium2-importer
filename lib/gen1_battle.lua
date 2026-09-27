@@ -14,6 +14,9 @@ local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 local UIOwnership = require("mods.STADIUM2_IMPORTER.lib.battle_ui_ownership")
 local BattleViewport = require("mods.STADIUM2_IMPORTER.lib.battle_viewport")
+local StadiumUI = require("mods.STADIUM2_IMPORTER.lib.stadium_ui")
+local StadiumPortrait = require("mods.STADIUM2_IMPORTER.lib.stadium_portrait")
+local StadiumMenu = require("mods.STADIUM2_IMPORTER.lib.stadium_menu")
 local BattleFxAdapter = require(
   "mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
 local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
@@ -143,6 +146,7 @@ function Scene.new(battle,context)
 end
 
 function Scene:release()
+  StadiumPortrait.release()
   UIOwnership.release(self.battle)
   self.substituteActors.player:release()
   self.substituteActors.enemy:release()
@@ -580,6 +584,199 @@ local function textRects(battle)
   return out
 end
 
+-- Data for a Stadium UI status panel (STADIUM UI option), from the same
+-- battler state the native HUD draws: shown HP, shown status, name, level.
+function Scene:stadiumPanel(side)
+  local battle,b=self.battle,self:shownBattler(side)
+  if not (battle and b and b.mon) then return nil end
+  local hp=b.shownHP or b.mon.hp or 0
+  hp=hp>(b.mon.hp or 0) and math.ceil(hp) or math.floor(hp)
+  local status=b.shownStatus
+  if status and battle.statusLabel then
+    local ok,label=pcall(battle.statusLabel,battle,{status=status})
+    if ok then status=label end
+  end
+  local tag
+  if side=="player" then
+    local save=battle.game and battle.game.save
+    tag=save and save.player and save.player.name or nil
+  elseif battle.trainer and battle.kind~="wild" then
+    tag=battle.trainer.name
+  end
+  local party
+  if side=="player" then
+    local okParty,view=pcall(battle.playerPartyView,battle)
+    party=okParty and view or nil
+  elseif battle.kind=="trainer" or battle.kind=="link" then
+    party=battle.enemyParty
+  end
+  -- Portrait: a separate idle model of the battler (func_8411F400); the
+  -- Substitute doll (species 0xFC) has none.
+  local portrait
+  local actor=self.actors and self.actors[side]
+  if actor and actor.dex and not self:substituteVisible(side) then
+    portrait=StadiumPortrait.render(side,{dex=actor.dex,variant=actor.variant,
+      opponent=side=="enemy",pixels=StadiumUI.portraitPixels,newRenderer=Importer.newRenderer})
+  end
+  return {name=b.name or "",level=b.mon.level,hp=hp,
+    maxHp=b.mon.stats and b.mon.stats.hp or b.mon.maxHP or hp,
+    status=StadiumUI.statusKey(status,b.fainted),tag=tag,
+    balls=party and StadiumUI.partyBallStates(party) or nil,portrait=portrait}
+end
+
+-- Party balls alone, for the host's intro / send-out ball rows.
+function Scene:stadiumBalls(side)
+  local battle=self.battle
+  local party
+  if side=="player" then
+    local ok,view=pcall(battle.playerPartyView,battle)
+    party=ok and view or nil
+  else
+    party=battle.enemyParty
+  end
+  if type(party)~="table" then return nil end
+  return {ballsOnly=true,balls=StadiumUI.partyBallStates(party)}
+end
+
+-- STADIUM UI: the battle's bottom UI is Stadium's while a message shows or
+-- the command/move menus are open (the host then skips its own box through
+-- battle.bottom_ui_visible).
+local function stadiumUiActive(scene)
+  return not scene.battleArtUI and UIOwnership.hudEnabled()
+    and Importer.stadiumUiEnabled() and StadiumUI.available()
+end
+
+function Scene:stadiumMessageOwned(state)
+  local battle=self.battle
+  if not battle or (state~=nil and state~=battle) then return false end
+  if not stadiumUiActive(self) then return false end
+  if self:stadiumMenuContext() then self.stadiumLastLines=nil return true end
+  -- the whole message phase, including the text-less stretches during move
+  -- animations (the box keeps the last message, as Stadium's does), so the
+  -- host's empty box never shows through
+  return battle.phase=="messages" and type(battle.visibleText)=="function"
+end
+
+-- Stadium tabs over the host's FIGHT/PKMN/ITEM/RUN (menuIndex 1..4).
+local STADIUM_TABS={{button="A",label="BATTLE",hostIndex=1},
+  {button="B",label="POK\233MON",hostIndex=2},{button="S",label="RUN",hostIndex=4},
+  {button="R",label="PACK",hostIndex=3}}
+
+-- The host party menu this battle opened (PKMN, or a forced replacement),
+-- when it is the top state and a plain battle pick (not an item or TM use).
+function Scene:stadiumPartyMenu()
+  local battle=self.battle
+  local game=battle and battle.game
+  local states=game and game.stack and game.stack.states
+  local top=states and states[#states]
+  if not top then return nil end
+  local okModule,PartyMenu=pcall(require,"src.ui.PartyMenu")
+  if not okModule or getmetatable(top)~=PartyMenu then return nil end
+  if top.battle~=battle or top.itemUse or top.tmhm or top.evoStone or top.pickOnly then return nil end
+  return top
+end
+
+-- The host's YES/NO (src.ui.ChoiceBox) opened over this battle, with the
+-- default YES/NO labels; other two-option boxes stay native.
+function Scene:stadiumChoiceBox()
+  local battle=self.battle
+  local game=battle and battle.game
+  local states=game and game.stack and game.stack.states
+  local top=states and states[#states]
+  if not top or states[#states-1]~=battle then return nil end
+  local okModule,ChoiceBox=pcall(require,"src.ui.ChoiceBox")
+  if not okModule or getmetatable(top)~=ChoiceBox then return nil end
+  local labels=top.labels
+  if type(labels)~="table" or labels[1]~="YES" or labels[2]~="NO" then return nil end
+  return top
+end
+
+-- The open menu the Stadium UI draws and drives, or nil.
+function Scene:stadiumMenuContext()
+  local battle=self.battle
+  if not battle or not stadiumUiActive(self) then return nil end
+  local choice=self:stadiumChoiceBox()
+  if choice then
+    return {kind="yesno",menu=choice,
+      select=function(i) if choice.pending==nil then choice.index=i end end}
+  end
+  local party=self:stadiumPartyMenu()
+  if party then
+    local members=party.party or battle:playerPartyView() or {}
+    return {kind="switch",menu=party,memberCount=#members,
+      select=function(i) party.index=i end,
+      submenuOpen=function() return party.submenu~=nil end,
+      selectSub=function(action)
+        for i,entry in ipairs(party.subItems or {}) do
+          if entry.action==action then party.subIndex=i; return true end
+        end
+        return false
+      end}
+  end
+  if battle.safari or battle.demo then return nil end
+  if battle.phase=="menu" then
+    if battle.player and battle.player.mon and (battle.player.mon.hp or 0)<=0 then return nil end
+    return {kind="command",tabs=STADIUM_TABS,
+      select=function(i) battle.menuIndex=i end,
+      current=function() return battle.menuIndex end}
+  elseif battle.phase=="moveSelect" and not battle.moveSwapIndex then
+    local moves=battle.player and battle.player.curMoves or {}
+    return {kind="moves",moveCount=#moves,
+      select=function(i) battle.moveIndex=i end}
+  end
+  return nil
+end
+
+-- Party members for the switch cards.
+function Scene:stadiumMembers(menu)
+  local battle=self.battle
+  local out={}
+  for i,mon in ipairs(menu.party or battle:playerPartyView() or {}) do
+    local def=battle.data and battle.data.pokemon and battle.data.pokemon[mon.species]
+    out[i]={name=mon.nickname or (def and def.name) or "",level=mon.level,
+      hp=mon.hp or 0,maxHp=mon.stats and mon.stats.hp or mon.hp or 0,
+      status=StadiumUI.statusKey(mon.status,(mon.hp or 0)<=0)}
+  end
+  return out
+end
+
+-- screen.render_visible: hide the host party menu while the Stadium switch
+-- cards stand in for it (only its list; its submenu, STATS and messages).
+function Scene:stadiumHidesState(state)
+  local menu=self:stadiumMenuContext()
+  return menu~=nil and (menu.kind=="switch" or menu.kind=="yesno") and menu.menu==state
+end
+
+-- Move data for the diamond.
+function Scene:stadiumMoves()
+  local battle=self.battle
+  local out={}
+  local data=battle.data and battle.data.moves or {}
+  for i,move in ipairs(battle.player and battle.player.curMoves or {}) do
+    local def=data[move.id] or {}
+    local basePp=def.pp or move.pp or 0
+    out[i]={name=def.name or tostring(move.id),type=def.type,pp=move.pp or 0,
+      maxPp=basePp+(move.ppUps or 0)*math.floor(basePp/5),
+      power=def.power,accuracy=def.accuracy,number=tonumber(def.index or def.num)}
+  end
+  return out
+end
+
+-- The host's visible message window, cut to the glyphs typed so far.
+function Scene:stadiumMessageLines()
+  local battle=self.battle
+  local ok,lines=pcall(battle.visibleText,battle)
+  if not (ok and lines) then return self.stadiumLastLines or {} end
+  local shown=battle.shown or {}
+  local out={}
+  for i,text in ipairs(lines) do
+    local typed=shown[i] and #shown[i] or #text
+    out[i]=typed<#text and text:sub(1,typed) or text
+  end
+  self.stadiumLastLines=out
+  return out
+end
+
 function Scene:captureHud(slide)
   if not originals.drawHUDs then return nil end
   local battle=self.battle
@@ -676,15 +873,73 @@ function Scene:composeWorld()
     local enemyPanelX,enemyPanelY=panels.enemyX,panels.enemyY
     local playerPanelX,playerPanelY=panels.playerX,panels.playerY
 
+    -- STADIUM UI: Stadium 2's own status panels (and party balls before a
+    -- Pokemon is out) replace every glass panel and the captured native
+    -- status bands; none of the glass HUD draws while it is on.
+    local stadiumUI=statusOwned and stadiumUiActive(self)
+    if stadiumUI and (enemyLive or playerLive or enemyBalls or playerBalls) then
+      local area=viewport.portrait and {x=box.lx,y=box.ly,w=160*s,h=144*s}
+        or {x=viewport.x,y=viewport.y,w=viewport.w,h=viewport.h}
+      local built,data=pcall(function()
+        local out={}
+        for _,side in ipairs({"player","enemy"}) do
+          local live=side=="player" and playerLive or side=="enemy" and enemyLive
+          local balls=side=="player" and playerBalls or side=="enemy" and enemyBalls
+          if live then out[side]=self:stadiumPanel(side)
+          elseif balls then out[side]=self:stadiumBalls(side) end
+        end
+        return out
+      end)
+      local messageLayout=bottomVisible and self:stadiumMessageOwned(battle)
+        and not self:stadiumMenuContext()
+      if built and StadiumUI.tryDrawPanels(area,data,warn,messageLayout) then
+        enemyLive,playerLive,enemyBalls,playerBalls=false,false,false,false
+      end
+    end
+
     if enemyLive or enemyBalls then
       Hud.panel(self,{enemyPanelX,enemyPanelY,er[3]*ps,er[4]*ps})
     end
     if playerLive or playerBalls then
       Hud.panel(self,{playerPanelX,playerPanelY,pr[3]*ps,pr[4]*ps})
     end
-    if bottomVisible then
+    -- STADIUM UI menus: the command bar, move diamond or switch cards
+    -- (stadium_menu.lua decides whether the host cursor shows).
+    local menu=bottomVisible and self:stadiumMenuContext()
+    local stadiumMessage=false
+    if menu then
+      local area=viewport.portrait and {x=box.lx,y=box.ly,w=160*s,h=144*s}
+        or {x=viewport.x,y=viewport.y,w=viewport.w,h=viewport.h}
+      local moves=menu.kind=="moves" and self:stadiumMoves() or nil
+      stadiumMessage=StadiumUI.tryDrawMenu(area,function()
+        StadiumMenu.draw({kind=menu.kind,tabs=STADIUM_TABS,commandIndex=battle.menuIndex,
+          members=menu.kind=="switch" and self:stadiumMembers(menu.menu) or nil,
+          switchIndex=menu.menu and menu.menu.index,
+          -- a refusal ("There's no will to fight!") from the hidden host menu
+          message=menu.kind=="switch" and menu.menu.message or nil,
+          lines=menu.kind=="yesno" and self:stadiumMessageLines() or nil,
+          yesIndex=menu.kind=="yesno" and menu.menu.index or nil,
+          moves=moves,moveIndex=battle.moveIndex,game=battle.game,mode=Importer.menuControls()})
+      end,warn)
+    elseif bottomVisible and self:stadiumMessageOwned(battle) then
+      stadiumMessage=true
+      local area=viewport.portrait and {x=box.lx,y=box.ly,w=160*s,h=144*s}
+        or {x=viewport.x,y=viewport.y,w=viewport.w,h=viewport.h}
+      local lines=self:stadiumMessageLines()
+      local side=self.lastAnimAttacker==false and "enemy" or "player"
+      if not (lines and StadiumUI.tryDrawMessage(area,lines,side,warn)) then
+        stadiumMessage=false
+      end
+    end
+    if bottomVisible and not stadiumMessage then
+      -- host text the Stadium box does not own (prompts, learn-move, ...):
+      -- on a Stadium card with STADIUM UI on, else on glass
+      local stadiumBacking=stadiumUiActive(self)
       for _,r in ipairs(textRects(battle)) do
-        Hud.panel(self,{box.lx+r[1]*s,box.ly+r[2]*s,r[3]*s,r[4]*s})
+        local rect={box.lx+r[1]*s,box.ly+r[2]*s,r[3]*s,r[4]*s}
+        if not (stadiumBacking and StadiumUI.backing(rect,s*144/240)) then
+          Hud.panel(self,rect)
+        end
       end
     end
 

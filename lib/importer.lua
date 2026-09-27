@@ -148,6 +148,26 @@ function Importer.battleHudEnabled()
   return true
 end
 
+-- STADIUM UI option: Stadium 2's own battle UI (stadium_ui.lua).
+function Importer.stadiumUiEnabled()
+  if modRef and modRef.options and modRef.options.get then
+    local ok, value = pcall(modRef.options.get, modRef.options,
+      "stadium2_stadium_ui")
+    if ok and value == true then return true end
+  end
+  return false
+end
+
+-- MENU CONTROLS: "cursor" (default) or "stadium" button mapping.
+function Importer.menuControls()
+  if modRef and modRef.options and modRef.options.get then
+    local ok, value = pcall(modRef.options.get, modRef.options,
+      "stadium2_menu_controls")
+    if ok and value == "stadium" then return "stadium" end
+  end
+  return "cursor"
+end
+
 function Importer.weatherStyle()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_weather")

@@ -38,6 +38,8 @@ No ROM is included. Never add one to the mod ZIP.
 | 3D POKEMON MODELS | Stadium models on or off. |
 | 3D BATTLE SCENE | The 3D battle presentation on or off. |
 | BATTLE HUD | Stadium's glass HUD; turn off to use the native or another mod's UI. |
+| STADIUM UI | Stadium 2's own battle UI read from your ROM (status panels with live portraits, message box, command bar, move diamond and info, switch cards, YES/NO) in place of the glass HUD. Needs BATTLE HUD on. |
+| MENU CONTROLS | With a controller the menus use Stadium 2's controls (no cursor, C buttons on the right stick, hold the D-pad for move info). On keyboard, `CURSOR` keeps a moving cursor and `STADIUM` uses the controller scheme. |
 | GRAPHICS | Shows the graphics settings below. |
 | SHADER STYLE | `STADIUM` or `WATERCOLOR MANGA`. |
 | 3D RESOLUTION | `AUTO`, 100%, 75% or 50%. Lower is faster; the UI stays sharp. |
@@ -55,7 +57,8 @@ No ROM is included. Never add one to the mod ZIP.
 | MOVE EFFECTS (BETA) | Stadium 2's own move effects, decoded from your ROM. |
 
 The painted scenes, weather, visitors, Extra Effects and the Poke Ball toggle
-are mod additions, not part of Stadium 2.
+are mod additions, not part of Stadium 2. In the Stadium UI, PACK, the
+cursor, sharp portraits and the second row of switch cards are additions too.
 
 ## Test room
 
