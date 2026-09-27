@@ -1,5 +1,60 @@
 # Battle FX missing implementation audit — 2026-09-23
 
+## Current sweep and reading guide — 2026-09-27
+
+Research-only refresh at importer commit
+`aede59e9c230b994eeddd5fb527e3b885d0813ab`. Current merged decomp consulted:
+`michiiik/pokestadiumgs` **`0ed78d46e9cd11432f217203675a839efcb1cc1c`**;
+still-ASM routines were read from the supported US assembly at pret commit
+`c0e10f23d90cc4f335b654711f13e53c2c07323b`. The prioritized current findings
+are at the top of [battle_FX_bugs.md](../battle_FX_bugs.md). Older counts and
+"still missing" lists below are historical; do not sum them into a current
+backlog or treat their "none found" rows as visual confirmation.
+
+The **251-move simulation sweep was regenerated** using the supported ROM:
+1,004 separate-bank/source-side scenarios, 360 ticks each, draw sampling every
+15 ticks, finish signal at tick 120; 395 programs statically inspected,
+343 referenced by move dispatch, 30 lifecycle rows, **zero execution
+failures**. These are coverage counts, not counts of correct-looking moves.
+
+| Diagnostic | Unmodified audit: moves / contexts | With real CPU FX pose evaluator | Interpretation |
+|---|---:|---:|---|
+| `dynamic-anchor-write` | 11 / 26 | 0 / 0 | Original stub cannot supply posed FX marker 1. |
+| `unresolved-dynamic-anchor-read` | 9 / 20 | 0 / 0 | Consequence of that missing stub writer. |
+| `unresolved-model-animation` | 130 / 366 | 0 / 0 | Original stub has no `seekFrame`; real FX model animation resolves. |
+| `unsupported-native-condition` | 0 / 17 | 0 / 17 | Static program probes call `Native.execute` without species/battle state. This does not mean those 17 programs are unused or that live host state is complete. |
+
+The second sweep uses a temporary copy of `tools/audit_battle_fx.lua` with
+only its FX renderer factory changed to `Renderer.new`, retaining a CPU
+finite-matrix draw validator. It resolves FX animation/marker evaluation;
+battlers still use bind poses. The repository harness was not edited.
+Thus the first three rows are demonstrated harness limitations, not missing
+runtime implementations. No warnings in this fixture does not establish
+native caller timing, result branches, draw order, or GPU parity.
+
+The 2026-09-23 diagnostic table below, and the 2026-09-25 missing-anchor,
+particle-pool, billboard, animation and ordinary render-mode claims, are
+superseded where later implementation notes or this refresh say implemented.
+The old **502-bank draw/peak table and 528-function call-graph census have
+not been regenerated**. Neither current sweep covers complete battle event
+sequences, charge variants, all status/result combinations, entries 252..301
+as live host events, all species/arenas, or actual GPU drawing. Their results
+must not be extrapolated to those cases.
+
+Validation: strict-ROM `tools/run_battle_fx_worker_checks.sh` passed the ROM
+catalog audit but **failed** at `stadium2_battle_fx_sequence_test.lua:238`.
+The tests following that file in runner order were then run separately and
+passed, as did both Gen 1/Gen 2 integration tests. This is an existing failed
+acceptance gate; it is not an all-green run. Initial `git diff --check` was
+clean. See the integration research for the stale timing expectation.
+
+Evidence and reproduction details:
+
+- [Battle integration and actor behavior](luna/research/parity-2026-09-27-integration.md)
+- [Rendering, materials and pass ordering](luna/research/parity-2026-09-27-rendering.md)
+- [Runtime, release helpers and lifecycle review](luna/research/parity-2026-09-27-runtime.md)
+- [Camera and validation method](luna/research/parity-2026-09-27-camera-and-validation.md)
+
 ## Remaining-gap inventory (2026-09-25, code vs. decomp cross-reference)
 
 Method: every fragment-79 address cited in `lib/` (497) and in docs/bug log

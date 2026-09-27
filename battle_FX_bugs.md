@@ -1,5 +1,140 @@
 Move bug list
 
+Parity research follow-up (2026-09-27; current backlog, no runtime fixes):
+
+Checked importer `aede59e9c230b994eeddd5fb527e3b885d0813ab` against current
+merged michiiik/pokestadiumgs master
+`0ed78d46e9cd11432f217203675a839efcb1cc1c`, with the supported US assembly
+for functions still marked GLOBAL_ASM. The original observations and earlier
+follow-ups below are retained. This section supersedes older implementation
+status claims; **nothing is newly marked visually fixed**.
+
+Confirmed missing/wrong integration, highest priority:
+
+1. **Gen 1 Absorb (71) can take the Leech Seed residual path instead of its
+   move FX.** `gen1_battle.lua:presentAnimStart` tests `pendingHit == nil`
+   to distinguish them. The real `AnimPlayer:start` hook runs before
+   `BattleState` assigns that move's `pendingHit`, so an ordinary Absorb
+   meets the residual condition, signals `0x103`, and clears the move route.
+   The existing test supplies hit data before the hook and misses this
+   ordering. Needs an explicit move/residual discriminator from the host.
+
+2. **Curse (174), and result/status-dependent branches, lack live inputs.**
+   The adapter requires native result bit `0x80` to start Curse's primary
+   route, but the host bridge only reconstructs damaging-result values
+   `0..5`; no Ghost-Curse outcome supplies that bit. Separately, the computed
+   damage result is used for impact selection but is not passed into the
+   particle evaluator's `nativeBattleState`. Thief (168), Snore (173),
+   Present (217), and entries 274/290/292/298/299 still need their result,
+   source status, or owner status-pattern inputs for `841083B0`. The viewer's
+   neutral zeros hide this integration gap. This corrects the older broad
+   claim that the battle result byte is fully fed through.
+
+3. **Some battle-event effects still have no host trigger.** Gen 2:
+   full paralysis (`0x10C`), attraction turn state (`0x108`), Spikes
+   switch-in damage (`0x10B`), Leftovers recovery (`0x10D`), Destiny Bond's
+   event (`0x123`), and player recall (`0x126`). Spikes' move-191 setup FX
+   and Attract's move-213 FX are separate from these event entries. Gen 1
+   stat-change and full-paralysis presentation also remain open. Do not
+   infer a side or outcome from an ambiguous message. Native selectors:
+   `84118DD4`, `841189EC`, `84119630`; recall: `8411ABAC`.
+
+4. **The FX banks are only part of several moves.** Actor behavior dispatch
+   `84123F60/84124104` still has unported kinds for Surf (57), Submission
+   (66), Seismic Toss (69), Meditate (96), Withdraw (110, with native species
+   exceptions), Waterfall (127), Faint Attack (185), Belly Drum (187),
+   Destiny Bond (194), and Rapid Spin (229). Their particles reaching the
+   renderer does not prove their Pokemon movement/visibility is complete.
+   Agility (97), Double Team (104), and Minimize (107) have implementations
+   now and belong in the retest list, not the "no implementation" list.
+
+Remaining rendering, timing and lifecycle work:
+
+5. **Inherited material state is incomplete.** A model that never sets its
+   environment color receives white from our renderer instead of the native
+   submission's inherited value. This is consistent with the previously
+   reported white jaws (11/12/44). Cross-model combiner/environment state
+   still needs tracing; do not prescribe guessed colors. Wind sheets
+   (13/16/18/46), Strength (70), and Swords Dance (14) have subsequent
+   material fixes and need retests before attributing their current output
+   to this remaining gap.
+
+6. **Native layer/pass and pool ordering are not fully represented.**
+   `84103394` selects mode-1 draws by the child object's layer; `84103478`
+   handles its separate overlay predicates. The player lacks that complete
+   native layer selection, and sorts mixed screen packets by birth tick
+   instead of native pool-slot order. Slot reuse can therefore change
+   overlap order. This is a code-level difference; its visible impact needs
+   a targeted capture. See the rendering note for actual mode-1 routes.
+
+7. **Status particles lack their selective release/hide/show operations.**
+   `84108AF8/84108CE8/84108E00/84108F88/84109118` operate on status shapes
+   `0x12/0xD3/0x13D`, ownership, and descriptor flags. Ordinary held release
+   (`84108A10`) is implemented, but does not cover these cases. Wiring a
+   weather-end entry alone also does not implement `84109118`'s pool scan.
+   These are status/event lifecycle gaps, not evidence that every move
+   using the same texture is wrong.
+
+8. **Sequence parity remains partial.** Battle playback has the newer
+   attacker/defender-row schedule. Viewer SEQ still starts the move bank
+   immediately and uses the attacker's hit frame for impact, so it cannot
+   validate the battle timing. The defender clip still begins at impact
+   instead of native hit-state entry, and `84117948`'s result-dependent
+   reaction suppression is not applied. Other defender handlers, approach
+   and release latency, and missed/failed move presentation need caller
+   traces; the hosts skip missed move animations before FX dispatch.
+
+9. **The battle camera is still a field/manual-shot camera.** Native
+   event-selected camera programs (`84111348/841113F8`, `841119CC`) and
+   their evolving actor-relative anchors are absent. Even manual presets
+   use estimated model bounds and raw table FOV, where `8410C934/8410CAE4`
+   overwrite FOV with 45 or 80 degrees. This affects framing and the camera
+   input used by already-implemented camera-ray/wave effects. Onix also has
+   no producer for the camera-owned `nativeFxHeightPoint` required by
+   `8411EF90`, leaving its height-flagged attachment path unresolved.
+
+Performance, requested behavior, and visual acceptance:
+
+- No new frame-time measurements were made. The historical improvements
+  (roughly 8.6–15 ms warmed frames, one roughly 360 ms initial model-load
+  frame) are previous measurements, not today's results. First-use loading
+  and the reported lag still need target-machine retests. Particle counts
+  alone do not identify the bottleneck.
+- Growl/Sing/Supersonic (45/47/48): native wave-grid placement is already
+  camera-relative. Full viewport coverage has not been established. Keep
+  the requested whole-camera behavior open; if it requires going beyond
+  native coverage, implement and label it as a separate extension.
+- Retest the original no-draw and unfinished-texture reports after the
+  09-24/25 changes. Empty primary banks are intentional for many physical
+  moves; test their complete sequence. Animation, marker emission,
+  camera-ray anchors, 300-slot allocation/pool-origin spawning, billboards,
+  render modes, wave finish, and two-turn routing have implementations.
+  Old per-move "missing" rows for those paths are historical. The original
+  user table still has moves 57–251 marked untested; later developer checks
+  are not a substitute for user visual confirmation.
+
+What was checked this time:
+
+- Fresh ROM sweep: **251 moves, 1,004 bank/side scenarios, 360 ticks each,
+  zero execution failures**. Repeating it with the real CPU FX pose evaluator
+  removes all animation/dynamic-anchor warnings from the stub-renderer run.
+  This tests execution and resource/pose availability, not GPU appearance.
+- The required strict-ROM worker check **fails** at
+  `stadium2_battle_fx_sequence_test.lua:238`: its old expectation counts one
+  new bank at tick 14; the new schedule queues both banks there when the
+  defender row is absent. The remaining tests were run separately and pass.
+  The stale assertion still needs updating; the full gate is not green.
+- The old 502-bank peak/draw table and full call-graph census were not
+  regenerated. All species, result/status branches, live event sequences,
+  GPU pixels, and performance remain outside this sweep.
+
+Detailed evidence, addresses and current-source references:
+[integration](docs/luna/research/parity-2026-09-27-integration.md),
+[rendering](docs/luna/research/parity-2026-09-27-rendering.md),
+[runtime](docs/luna/research/parity-2026-09-27-runtime.md),
+[camera and validation](docs/luna/research/parity-2026-09-27-camera-and-validation.md).
+Updated diagnostic counts: [implementation audit](docs/battle_fx_missing_implementation_audit.md).
+
 Viewer follow-up (2026-09-25, moves 11, 12, 13, 16, 18, 44, local session):
 - The jaw (Vice Grip, Guillotine, Bite) and wind-sheet (Razor Wind, Gust,
   Whirlwind) models now use the combiner and colours their own display
