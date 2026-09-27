@@ -48,6 +48,8 @@ ok(Cache.read(1,"normal")=="normal-pack" and Cache.read(1,"shiny")=="shiny-pack"
 ok(Cache.writeSpecial("substitute","special-pack")
   and Cache.readSpecial("substitute")=="special-pack",
   "special model packs use the same scoped storage")
+-- A complete import always carries the Egg; Cache.inspect requires it.
+ok(Cache.writeSpecial("egg","egg-pack"),"the Egg special pack writes too")
 for species=2,151 do
   ok(Cache.writePair(species,"normal-pack","shiny-pack"),
     "complete sandbox cache includes species "..species)

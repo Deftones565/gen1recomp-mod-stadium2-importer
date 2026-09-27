@@ -109,54 +109,6 @@ local function activeEmitterCount(effect)
   return active, particles
 end
 
-local function fileExists(path)
-  local handle = path and io.open(path, "rb") or nil
-  if not handle then return false end
-  handle:close()
-  return true
-end
-
-local function readFile(path)
-  local handle = path and io.open(path, "rb") or nil
-  if not handle then return nil end
-  local bytes = handle:read("*a")
-  handle:close()
-  return bytes
-end
-
-local function shellQuote(value)
-  return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
-local function discoverCacheRoot()
-  local env = os.getenv("STADIUM2_CACHE_ROOT")
-  if env and fileExists(env .. "/normal/109.dsm") then return env end
-  if fileExists("stadium2_importer/normal/109.dsm") then return "stadium2_importer" end
-  local home = os.getenv("HOME")
-  local xdg = os.getenv("XDG_DATA_HOME")
-  local candidates = {}
-  if xdg and xdg ~= "" then
-    candidates[#candidates + 1] = xdg .. "/love/pokemon-love2d/stadium2_importer"
-  end
-  if home and home ~= "" then
-    candidates[#candidates + 1] = home .. "/.local/share/love/pokemon-love2d/stadium2_importer"
-    candidates[#candidates + 1] = home .. "/.local/share/stadium2_importer"
-  end
-  for _, root in ipairs(candidates) do
-    if fileExists(root .. "/normal/109.dsm") then return root end
-  end
-  if io.popen and home and home ~= "" then
-    local command = "find " .. shellQuote(home .. "/.local/share")
-      .. " -type f -path '*/stadium2_importer/normal/109.dsm' -print -quit 2>/dev/null"
-    local pipe = io.popen(command, "r")
-    if pipe then
-      local found = pipe:read("*l")
-      pipe:close()
-      if found then return found:match("^(.*)/normal/109%.dsm$") end
-    end
-  end
-  return nil
-end
 
 local function fragmentOffset(extension, pointer)
   pointer = tonumber(pointer)
@@ -181,6 +133,7 @@ end
 -- Discovery only sees ROMs packaged inside a bound mod, so standalone runs
 -- name the ROM explicitly, like the other ROM-backed tests.
 local romPath = os.getenv("STADIUM2_ROM") or arg[1]
+  or (io.open("mods/STADIUM2_IMPORTER/baseroms/stadium2.z64", "rb") and "mods/STADIUM2_IMPORTER/baseroms/stadium2.z64")
 local candidate
 if romPath then
   local f = io.open(romPath, "rb")
@@ -655,14 +608,21 @@ check(approx(expired.y, 2 + 0.5 * modelScaleY + 0.2), "expiry still performs fin
 check(approx(expired.sx, 0.4 + growth), "expiry still performs final ASM growth sx=%s expected=%.9g", tostring(expired.sx), 0.4 + growth)
 
 emit("GEOMETRY_ORACLE_BEGIN")
-local cacheRoot = discoverCacheRoot()
-check(cacheRoot ~= nil, "Koffing cache root found=%s", tostring(cacheRoot))
+-- Build Koffing's pack from the ROM in memory with the importer's own job
+-- (the cache is sharded scoped storage; there is no per-species file).
 local model
-if cacheRoot then
-  local marker = readFile(cacheRoot .. "/pack.info") or ""
-  check(marker:find("format=" .. require("mods.STADIUM2_IMPORTER.lib.cache").FORMAT, 1, true) ~= nil, "Koffing cache format is current; stale caches must be re-imported")
-  local packBytes = readFile(cacheRoot .. "/normal/109.dsm")
-  check(type(packBytes) == "string", "Koffing DSM pack readable")
+do
+  local Extract = require("mods.STADIUM2_IMPORTER.lib.extract")
+  local packBytes
+  local job = Extract.newJob(rom, function(name, normal)
+    if tonumber(name) == 109 then packBytes = normal end
+    return true
+  end, function() return true end, { species = { 109 }, specials = false })
+  for _ = 1, 10000000 do
+    if not job:step() then break end
+  end
+  check(job.phase == "done" and job.success == true, "Koffing pack builds from the ROM")
+  check(type(packBytes) == "string", "Koffing DSM pack built")
   if packBytes then
     local parseErr
     model, parseErr = Pack.parse(packBytes)

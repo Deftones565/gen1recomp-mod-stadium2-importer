@@ -52,8 +52,7 @@ list it under "Needs local verification" below. The local session runs it.
    - Intensity (I4/I8) textures are decoded fully opaque, but on the N64
      their alpha equals the intensity. This makes the wind and streak sheets
      (13, 16, 18, 46, 36, 38) draw as dark opaque stripes. Next fix.
-   - Hydro Pump's water shape (56, shape 423) is invisible although its
-     combiners decode. Not diagnosed yet.
+   - Hydro Pump (56): draws; confirmed by the user 2026-09-27.
    - 0x81000138 nodes without a colour block (810024E0 path 81002A7C) set no
      combiner; their combiner is inherited RDP state.
 2. **Draw passes** (roadmap §4): the flag-0x1000 second pass (84103394).

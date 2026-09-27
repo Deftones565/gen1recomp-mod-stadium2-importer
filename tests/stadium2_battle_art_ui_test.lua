@@ -1,5 +1,7 @@
 -- Run the real composeWorld handoff without GPU or ROM data.
-local f=assert(io.open("lib/gen1_battle.lua","rb"));local s=f:read("*a");f:close()
+-- Resolve lib/ from this script, so the test runs from any directory.
+local ROOT=((arg and arg[0]) or ""):match("^(.-)tests/[^/]*$") or ""
+local f=assert(io.open(ROOT.."lib/gen1_battle.lua","rb"));local s=f:read("*a");f:close()
 local a=assert(s:find("function Scene:composeWorld()",1,true))
 local b=assert(s:find("local function animationProjection",a,true))
 local calls=0

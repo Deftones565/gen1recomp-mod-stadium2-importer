@@ -5,6 +5,8 @@ local FxRom = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_rom")
 local Lifecycle = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_lifecycle")
 
 local path = os.getenv("STADIUM2_ROM") or arg[1]
+  or (io.open("mods/STADIUM2_IMPORTER/baseroms/stadium2.z64", "rb")
+    and "mods/STADIUM2_IMPORTER/baseroms/stadium2.z64")
 if not path then
   io.stderr:write("usage: STADIUM2_ROM=/path/to/stadium2.z64 lua "
     .. "mods/STADIUM2_IMPORTER/tests/stadium2_battle_fx_lifecycle_rom_test.lua\n")

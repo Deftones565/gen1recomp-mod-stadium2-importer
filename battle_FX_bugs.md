@@ -1,5 +1,9 @@
 Move bug list
 
+User retest (2026-09-27, Hydro Pump):
+- Hydro Pump (56) draws; confirmed by the user in game. Remove it from the
+  open "invisible water shape" item in docs/WORK_SPLIT.md and older notes.
+
 Battle follow-up (2026-09-27, Gen 1 Absorb vs Leech Seed, local session):
 - Fixes item 1 of the parity audit below. In Gen 1, an ordinary Absorb (71)
   could play Leech Seed's drain effect (0x103) instead of its own move FX:

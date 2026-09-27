@@ -1,4 +1,6 @@
-local f=assert(io.open("lib/gen1_battle.lua","rb")); local s=f:read("*a"); f:close()
+-- Resolve lib/ from this script, so the test runs from any directory.
+local ROOT=((arg and arg[0]) or ""):match("^(.-)tests/[^/]*$") or ""
+local f=assert(io.open(ROOT.."lib/gen1_battle.lua","rb")); local s=f:read("*a"); f:close()
 local models,battles=true,true
 local loads,releases=0,0
 local Scene={new=function() return {sync=function() end} end}
@@ -16,7 +18,8 @@ section("function Scene:sync()", "local function safeCall")
 local function actor() return {load=function() loads=loads+1 end,
  release=function() releases=releases+1 end} end
 local scene=setmetatable({battle={data={}},actors={player=actor(),enemy=actor()},
- substituteActors={player=actor(),enemy=actor()},shownMon=function() return {} end},{__index=Scene})
+ substituteActors={player=actor(),enemy=actor()},shownMon=function() return {} end,
+ shownBattler=function() return {} end},{__index=Scene})
 for _,choice in ipairs({{true,true},{false,true},{true,false},{false,false},{true,true}}) do
  models,battles=choice[1],choice[2]
  assert(Gen1.enabled()==battles)

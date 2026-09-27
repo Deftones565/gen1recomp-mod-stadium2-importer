@@ -3,6 +3,8 @@ package.path="./?.lua;./?/init.lua;"..package.path
 -- static clips (Articuno clip 11), and authored negative scales (Dugtrio's
 -- Dig clips hide the heads with -1) reach the skeleton unclamped.
 local path=os.getenv("STADIUM2_ROM") or arg[1]
+  or (io.open("mods/STADIUM2_IMPORTER/baseroms/stadium2.z64", "rb")
+    and "mods/STADIUM2_IMPORTER/baseroms/stadium2.z64")
 if not path then
   io.stderr:write("usage: STADIUM2_ROM=/path/to/stadium2.z64 luajit "
     .."mods/STADIUM2_IMPORTER/tests/stadium2_raw_pose_rom_test.lua\n")

@@ -30,59 +30,6 @@ local function hex(value)
   return value and ("0x%X"):format(value) or "-"
 end
 
-local function readFile(path)
-  local handle = io.open(path, "rb")
-  if not handle then return nil end
-  local bytes = handle:read("*a")
-  handle:close()
-  return bytes
-end
-
-local function fileExists(path)
-  local handle = io.open(path, "rb")
-  if not handle then return false end
-  handle:close()
-  return true
-end
-
-local function dirname(path)
-  return path and path:match("^(.*)[/\\]normal[/\\]109%.dsm$") or nil
-end
-
-local function shellQuote(value)
-  return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
-local function discoverCacheRoot()
-  local supplied = arg and arg[1] or nil
-  if supplied and fileExists(supplied .. "/normal/109.dsm") then return supplied end
-  local env = os.getenv("STADIUM2_CACHE_ROOT")
-  if env and fileExists(env .. "/normal/109.dsm") then return env end
-  if fileExists("stadium2_importer/normal/109.dsm") then return "stadium2_importer" end
-  local home = os.getenv("HOME")
-  local xdg = os.getenv("XDG_DATA_HOME")
-  local bases = {}
-  if xdg and xdg ~= "" then bases[#bases + 1] = xdg .. "/love" end
-  if home and home ~= "" then
-    bases[#bases + 1] = home .. "/.local/share/love"
-    bases[#bases + 1] = home .. "/.local/share"
-  end
-  if io.popen then
-    for _, base in ipairs(bases) do
-      local command = "find " .. shellQuote(base)
-        .. " -type f -path '*/stadium2_importer/normal/109.dsm' -print -quit 2>/dev/null"
-      local pipe = io.popen(command, "r")
-      if pipe then
-        local found = pipe:read("*l")
-        pipe:close()
-        local root = dirname(found)
-        if root and fileExists(root .. "/normal/159.dsm") then return root end
-      end
-    end
-  end
-  return nil
-end
-
 local function materialText(material)
   if type(material) ~= "table" then return "-" end
   local image = material.textureImage or {}
@@ -309,24 +256,41 @@ local function inspect(target, model)
   out("END species=%d name=%s", target.species, target.name)
 end
 
-local root = discoverCacheRoot()
-if not root then
-  io.stderr:write("[stadium2-texture-test] could not locate stadium2_importer cache\n")
-  io.stderr:write("[stadium2-texture-test] run with STADIUM2_CACHE_ROOT=/path/to/stadium2_importer or pass the cache root as argv[1]\n")
-  os.exit(2)
+-- Build both packs from the ROM in memory with the importer's own job (the
+-- cache is sharded scoped storage; there is no per-species file to read).
+local romPath = os.getenv("STADIUM2_ROM") or (arg and arg[1])
+  or "mods/STADIUM2_IMPORTER/baseroms/stadium2.z64"
+local handle = io.open(romPath, "rb")
+if not handle then
+  if os.getenv("STADIUM2_REQUIRE_ROM") == "1" then
+    io.stderr:write("[stadium2-texture-test] required Stadium 2 ROM unavailable\n")
+    os.exit(2)
+  end
+  out("SKIP Stadium 2 ROM unavailable (set STADIUM2_ROM)")
+  os.exit(0)
 end
-
-out("cache=%s", root)
-local marker = readFile(root .. "/pack.info") or ""
-local expectedFormat = require("mods.STADIUM2_IMPORTER.lib.cache").FORMAT
-if not marker:find("format=" .. expectedFormat, 1, true) then
-  fail("cache format is stale; expected " .. expectedFormat)
+local Rom = require("mods.STADIUM2_IMPORTER.lib.rom")
+local Extract = require("mods.STADIUM2_IMPORTER.lib.extract")
+local rom = assert(Rom.normalise(handle:read("*a")))
+Extract.configure({ count = 251 }) -- Croconaw is a Gen 2 species
+handle:close()
+local packs = {}
+local species = {}
+for _, target in ipairs(TARGETS) do species[#species + 1] = target.species end
+local job = Extract.newJob(rom, function(name, normal)
+  packs[tonumber(name)] = normal
+  return true
+end, function() return true end, { species = species, specials = false })
+for _ = 1, 10000000 do
+  if not job:step() then break end
+end
+if not (job.phase == "done" and job.success == true) then
+  fail("pack build from the ROM did not finish: %s", tostring(job.failed[1]))
 end
 for _, target in ipairs(TARGETS) do
-  local path = ("%s/normal/%03d.dsm"):format(root, target.species)
-  local bytes = readFile(path)
+  local bytes = packs[target.species]
   if not bytes then
-    fail("species=%d pack missing: %s", target.species, path)
+    fail("species=%d pack was not built", target.species)
   else
     local model, err = Pack.parse(bytes)
     if not model then
