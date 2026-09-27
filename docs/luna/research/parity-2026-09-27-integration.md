@@ -1,5 +1,12 @@
 # Battle FX integration parity audit
 
+Final review: the findings below describe baseline `aede59e`. A concurrent
+local session fixed the Absorb discriminator and stale sequence assertion in
+`f3eac59`; the strict-ROM worker runner now passes on `c029438` plus current
+UI edits. Those two baseline findings remain as evidence, not open
+implementation defects. Absorb still needs user retest. This research task
+did not implement or commit those fixes.
+
 Audit date: 2026-09-27. This is a research note only; no runtime or test
 code was changed. The decomp source cited below is
 `/tmp/stadium2-parity-decomp-20260927` at full commit
@@ -31,6 +38,12 @@ uncertainty. The native status dispatcher `func_84118DD4` calls
 (`/opt/git/pokestadiumgs/asm/us/nonmatchings/fragments/79/fragment79_37A6E0/func_84118DD4.s`,
 around `0x84118F34-0x84118F50`); it does not justify using a move-name test as
 the discriminator. `func_8411ABAC` / `0x126` is the separate recall path.
+
+Before that concurrent fix, a temporary reproduction using the Gen 1 test
+fixture with `pendingHit=nil` called `presentAnimStart("ABSORB", true)`:
+it emitted `0x103` and made zero move triggers. The real host call order
+above supplies exactly that pre-hit input. The committed regression now
+checks that ordering with the new discriminator.
 
 ## Confirmed missing integration inputs and dispatch
 
@@ -75,6 +88,11 @@ Gen 1 and Gen 2 callers pass no raw result byte, so the authored Curse route
 cannot be selected by the normal battle path. An explicit test caller can
 still supply a raw value, so the route program itself is not being called
 absent.
+
+A temporary adapter probe with a Gengar attacker and valid zeroed dispatch
+rows produced zero primary triggers with no host result, and one with
+explicit native result `0x80`. This confirms the route gate; the absent
+host producer follows from the callers and result-byte construction above.
 
 ### Gen 2 event cases still have no source-side FX event
 

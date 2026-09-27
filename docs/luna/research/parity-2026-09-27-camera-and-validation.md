@@ -66,6 +66,13 @@ promote the older field-shot assumptions to ROM-verified camera behavior.
 
 ## Validation method
 
+Completion update: a concurrent local session committed the Absorb fix and
+sequence-test correction in `f3eac59`. A fresh strict-ROM worker run on
+`c029438` plus concurrent UI work passes; the initial failure below is kept
+as baseline evidence. Only documentation was edited by this research task.
+The extra entry-261 probe subsequently found the family-29 gap documented
+in the runtime note. It does not expand the original 251-move sweep counts.
+
 Commands are run from `/opt/git/gen1recomp`. Temporary logs and research
 harnesses stay in `/tmp`; they are not deliverables.
 

@@ -37,7 +37,7 @@ semantics come from the US assembly/ROM rather than neighboring C.
 | --- | --- | --- |
 | `84108AF8(owner)` | Scans all 300 particle slots, restricted to active slots whose owner is `owner`. It preserves particles for the status/shape cases `(status low 3 != 0 and shape 0x12)`, `(status == 0x20 and shape 0x13D)`, and `(status bit 0x4 and shape 0xD3)`. Every other matching particle has runtime flags `0x10080` cleared through `84100030`; if object flag `0x8000` is set, `84100348` clears the particle completion byte, then the linked renderer's bit 0 is cleared in place. | **Missing.** `Runtime:releaseHeld` is the separate `84108A10` held-particle operation and does not implement these status exemptions, completion-byte clear, or renderer-bit operation. |
 | `84108CE8(owner)` | Scans active particles owned by `owner`; shape `0xD3` is exempt. All other matches clear `0x10080`, clear the completion byte when object flag `0x8000` is set, and clear linked-renderer bit 0. | **Missing.** |
-| `84108E00(owner, mode)` | Mode 0 clears renderer bit 0 for shape `0xD3`; mode 1 clears it for shape `0x13D`; mode 2 clears particle object flag `0x100000` for shape `0x12` through `84100030`. | **Missing.** `nativeHidden` in draw packets is not the native renderer flag operation, and no current path performs this shape-specific clear. |
+| `84108E00(owner, mode)` | Mode 0 clears renderer bit 0 for shape `0xD3`; mode 1 clears it for shape `0x13D`; mode 2 sets particle object flag `0x100000` for shape `0x12` through `84100020` (US instruction `84108F44`). | **Missing.** `nativeHidden` in draw packets is not the native renderer flag operation, and no current path performs this owner/shape-specific operation. |
 | `84108F88(owner, mode)` | Mode 0/1 sets renderer bit 0 for shape `0xD3`/`0x13D`; mode 2 clears particle object flag `0x100000` for shape `0x12`. Each successful mode exits after the first match. | **Missing.** The first-match behavior and the three shape-specific paths are absent. |
 | `84109118(arg0)` | For `arg0 == 1`, calls `84105E3C` and emits context `0x11F` through `8410890C`. Otherwise scans all active particles without an owner filter, tests object flag `0x40000`, and clears `0x40080` on matching particles through `84100030`. | **Missing.** There is no equivalent global `0x40000` test/clear or proven `0x11F` callback path in the runtime. |
 
@@ -87,9 +87,10 @@ packet layer intentionally keeps that plumbing behind its renderer adapter.
 The current lifecycle table has hard termination thresholds in
 `lib/stadium2_battle_fx_lifecycle.lua:718-736`. The thresholds reviewed here
 are supported by current callback evidence rather than an inferred default:
-current decomp `fragment79_3C60B0.c` shows `84156E8C` (family 4),
-`84157398` (family 6), and `8415782C` (family 21) incrementing their counters
-and returning `-1` at `0xB5`; the same source/US callback evidence shows the
+current decomp `fragment79_3C60B0.c` shows `84156E8C` (family 4), and the
+US assembly shows `8415758C` (family 6) and `841579EC` (family 21),
+incrementing their counters and returning `-1` at `0xB5`.
+The same source/US callback evidence shows the
 family-2 `0x709` cutoff and family-20 `0xB5` cutoff. Family 12 and family 17
 also have direct `0x32` callback returns. The current Lua thresholds therefore
 are not a confirmed lifecycle bug.
@@ -100,11 +101,29 @@ claims to simulate: stochastic families 3/15, four-stream 12, terrain family
 radial families 4/6/21, Swift family 2, beam families, wave-grid families
 9/10/11, and ribbon families 23/26/27 (`lib/stadium2_battle_fx_lifecycle.lua:
 211-647`). Those paths should not be labeled unimplemented merely because
-their retail callees remain outside the callback range. The confirmed
-unsupported fallback is limited to nonempty families that reach `_missing`
-when no injected callback or explicit kernel handles them (notably shared
-wrapper rows 0/5/18/19 and model-parameter row 29); reachability still comes
-from the dispatch table, not the family number alone.
+their retail callees remain outside the callback range. In particular,
+`Beam.families` includes 0/5/18; those wrappers are implemented. A ROM
+catalog scan of primary, alternate and variant dispatch for entries 1..301
+finds no route to family 19, but finds family 29 at entry 261 (`0x105`).
+
+**Confirmed missing event geometry: family 29.** `Ribbon.families` only
+includes 23/26/27, so entry 261 reaches `_missing` and has no geometry.
+`Sequence.TRAP_ENTRIES[20]` and `[35]` select this entry for Bind/Wrap
+residual damage, and Gen 2's `signalEventFx` forwards it. The initial move
+banks for Bind/Wrap are a separate, implemented path.
+
+The native callbacks are `8415703C` (setup via `841569C0` and `841569A0`,
+then `8415BBA0`), `841570B4` (update `8415BD48(1)`), and `841570D4`
+(draw `8415C2E0`), all present in current `fragment79_3C60B0.c`.
+Do not alias it blindly to family 23: that family uses different setup
+inputs and `8415BD48(0)`.
+
+A targeted CPU run of entry 261 with the real pose evaluator, both banks
+and both owners for 360 ticks, returns zero execution failures but reports
+`unsupported-lifecycle-callback` and `lifecycle-model-unresolved` on both
+primary-side scenarios. This is a confirmed missing draw path excluded by
+the 251-move sweep. The temporary probe derives from that sweep with its
+loop restricted to entry 261; no repository test or runtime was modified.
 
 The family draw packets correctly preserve the observed common display-list
 shape (`0xDA380003` and pointer `0x841A4D08`) as renderer evidence. They do not
@@ -129,22 +148,18 @@ The frame order does not match. Retail `841055D8` invokes native-object
 callbacks (`84107B68`) before the common particle update/cleanup pass
 (`841029DC`). In the current runtime, `Runtime:step` calls `_stepEffect` for
 all effects first, which advances existing particles and spawns new ones,
-then `_stepManagers`, which ticks native objects and lifecycle managers. A
-particle born during a step therefore does not receive the same update timing
-as a retail particle, and pool-origin reads happen after earlier particles have
-advanced. Existing integration tests intentionally assert the current Lua
+then `_stepManagers`, which ticks native objects and lifecycle managers.
+This establishes a phase-order difference. Its consequences for particle
+birth, sampled colors and pool-origin readers need a complete native frame
+trace; this audit did not execute that complete frame against the ROM.
+Existing integration tests intentionally assert the current Lua
 order (`motion, material, native, lifecycle:update`); that test describes the
 adapter contract, not the US order.
 
-Retail cleanup is also more explicit. `84100350` clears particle state,
-unlinks the pool list, and marks the slot free. `8410488C` routes linked
-renderer cleanup through `84104818`, which clears renderer bookkeeping and
-calls `8003F1DC`. The Lua runtime marks particles inactive or dropped and
-allows later allocation to reuse their logical slot, while the player cleans
-renderer entries during draw or `Player:release`. This is safe for current
-snapshots but does not reproduce immediate native unlink/detach timing. The
-native-object release path and lifecycle instance removal likewise do not
-perform the full `841093E8` callback-table/global cleanup sequence.
+The Lua runtime's logical-slot reuse and cached-renderer release replace
+native unlink/detach bookkeeping. No observable stale render or leaked
+callback was demonstrated from that representation difference, so it is
+not listed as a separate confirmed visual bug.
 
 ## Performance and bounded-work observations
 
@@ -166,21 +181,26 @@ not be treated as a current performance result.
 
 1. Trace the status-table producers and the owner/descriptor layout needed by
    `84108AF8`, `84108CE8`, `84108E00`, `84108F88`, and `84109118`. Preserve
-   their shape-specific flags and renderer detach behavior rather than mapping
-   them to a generic hide/kill API.
+   their shape-specific flags and renderer visibility behavior rather than
+   mapping them to a generic hide/kill API.
 2. Decide where the runtime frame boundary should expose the retail sequence
    `84107B68` before `841029DC`, including whether a newly allocated particle
    receives its first update on the birth tick. The answer must be verified
    against the route/particle caller, not inferred from the Lua test order.
-3. Trace the helper returns for lifecycle families 2, 4, 6, and 21 before
-   retaining hard termination thresholds. The direct callback evidence only
-   proves terminal returns for families 12, 17, and 20.
+3. Implement the separately proven family-29 setup/update contract and
+   verify entry 261 in actual Bind/Wrap residual-damage sequences.
 4. Model or explicitly document the eight-slot lifecycle callback table and
    `84109394/841093E8` cleanup side effects if callers can observe them.
 5. Add a target-machine profile after behavior is settled. No visual or GPU
    result is established by this document.
 
 ## Validation
+
+Architect completion: the strict-ROM runner was rerun after the concurrent
+`f3eac59` test correction and passes on `c029438` plus UI work. The initial
+failure discussed below is historical. The architect also reviewed the US
+set/clear helpers (`84100020` sets, `84100030` clears), verified the direct
+lifecycle timeout returns, and reproduced the missing family-29 path.
 
 No runtime or test source was changed. The repository-wide worker runner was
 not rerun here because the architect reported a pre-existing baseline failure

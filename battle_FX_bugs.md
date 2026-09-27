@@ -1,5 +1,28 @@
 Move bug list
 
+Research completion (2026-09-27; incorporates the newer local follow-ups):
+- **New confirmed no-draw path: Bind/Wrap residual damage (20/35), entry
+  261 / `0x105`, lifecycle family 29.** The Gen 2 event hook exists, but the
+  runtime ribbon implementation only handles families 23/26/27. Family 29
+  reports `unsupported-lifecycle-callback` and `lifecycle-model-unresolved`.
+  A real-pose CPU probe reproduces both warnings on both owners. Native
+  callbacks `8415703C/841570B4/841570D4` establish separate setup inputs and
+  `8415BD48(1)`; the implemented family 23 uses mode 0. This corrects the
+  earlier blanket claim that trap ticks/all lifecycle families are complete.
+  Initial Bind/Wrap move FX are separate and remain implemented.
+- The Absorb diagnosis below was addressed by local commit `f3eac59` during
+  this audit; user retest is still required. That commit also corrected the
+  sequence-test expectation. I reran the strict-ROM worker checks on the
+  current checkout (`c029438` plus concurrent UI work): **passed**. The old
+  failed gate below is the initial audit result, not the current result.
+- Hydro Pump (56) drawing is user-confirmed in the local follow-up below.
+  The remaining highest priorities are family 29, Ghost Curse/result/status
+  input plumbing, and the unported actor/event paths listed in the audit.
+- Runtime frame-phase ordering also differs from `841055D8`; its visible
+  consequences need a complete-frame ROM comparison. Native global/table
+  bookkeeping and the reviewed lifecycle timeouts are not counted as
+  missing effects. See the corrected runtime research note.
+
 User retest (2026-09-27, Hydro Pump):
 - Hydro Pump (56) draws; confirmed by the user in game. Remove it from the
   open "invisible water shape" item in docs/WORK_SPLIT.md and older notes.

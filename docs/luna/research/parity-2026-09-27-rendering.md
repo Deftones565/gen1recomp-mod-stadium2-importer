@@ -194,7 +194,8 @@ rounding, anti-aliasing coverage, wind/Strength state diagnosis, and user
 visual retests.
 
 The targeted mode-1 enumeration above does not regenerate the ROM-wide sweep.
-Root should update the full sweep in
+The architect's separately regenerated sweep and reviewed counts are in
 [`docs/battle_fx_missing_implementation_audit.md`](../../battle_fx_missing_implementation_audit.md)
-only after its own count review and a targeted renderer check for pool-order
-reuse. No runtime files were changed here.
+alongside its coverage limits. Pool-order overlap still needs a targeted
+renderer comparison; that is not measured by the CPU sweep. No runtime files
+were changed here.

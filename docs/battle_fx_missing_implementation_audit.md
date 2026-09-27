@@ -2,6 +2,23 @@
 
 ## Current sweep and reading guide — 2026-09-27
 
+Final follow-up: local commit `f3eac59` fixed the diagnosed Gen 1 Absorb
+discriminator and updated the stale sequence test while this research was
+under review. The architect reran `STADIUM2_REQUIRE_ROM=1
+mods/STADIUM2_IMPORTER/tools/run_battle_fx_worker_checks.sh` at `c029438`
+plus concurrent UI edits: **passed**. The failure recorded below is the
+initial baseline. Absorb still needs user visual retest; Hydro Pump drawing
+has a user confirmation recorded in the bug log.
+
+**Additional event-only probe:** entry 261 (`0x105`, family 29), used by
+Bind/Wrap residual damage, produces `unsupported-lifecycle-callback` and
+`lifecycle-model-unresolved` for both primary-bank owners with the real pose
+evaluator (360 ticks, zero execution failures). The event hook is wired but
+its geometry is missing. Family 29 is outside the 251-move sweep; do not
+fold this result into the move counts below. Native evidence:
+`8415703C/841570B4/841570D4`; see the runtime note. The remaining 252..301
+entries were not exhaustively simulated as battle sequences.
+
 Research-only refresh at importer commit
 `aede59e9c230b994eeddd5fb527e3b885d0813ab`. Current merged decomp consulted:
 `michiiik/pokestadiumgs` **`0ed78d46e9cd11432f217203675a839efcb1cc1c`**;
