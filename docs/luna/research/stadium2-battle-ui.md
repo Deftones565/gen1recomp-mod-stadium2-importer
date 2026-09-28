@@ -1,5 +1,13 @@
 # Stadium 2 battle UI — reference capture (2026-09-27)
 
+> **2026-09-28:** the importer no longer draws this UI from the ROM. Its
+> STADIUM UI option now runs the Stadium-2-UI repository (git submodule at
+> `ui/`, painted in Lua, shared with the standalone Stadium 2 UI mod); the
+> importer keeps only the ROM portrait camera records
+> (`lib/stadium_portrait_data.lua`). The findings below remain the reference
+> the painted UI follows.
+
+
 Local session. Sources: the supported US ROM run in mupen64plus 2.6
 (glide64mk2 and rice video plugins), seven save states taken by the user in a
 Free Battle, headless `--testshots` captures from those states, and 13

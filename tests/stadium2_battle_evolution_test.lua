@@ -27,7 +27,7 @@ package.loaded["mods.STADIUM2_IMPORTER.lib.renderer"]={
 package.loaded["mods.STADIUM2_IMPORTER.lib.battle_camera"]={project=function() return 0,0,true end}
 local uiAvailable=true
 local drawn
-package.loaded["mods.STADIUM2_IMPORTER.lib.stadium_ui"]={available=function() return uiAvailable end,
+package.loaded["mods.STADIUM2_IMPORTER.ui.lib.stadium_ui"]={available=function() return uiAvailable end,
   toLatin1=function(s) return s end,tryDrawMessage=function(_,lines) drawn=lines return true end}
 package.loaded["mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence"]={SEND_OUT_ENTRY=0x122}
 
@@ -159,6 +159,35 @@ ok(drawn[2]=="stopped evolving!","Gen 2's lines in the Stadium box")
 anim.phase="congrats"; anim.canceled=false
 Evolution.step(scene2,.2)
 ok(e2.phase=="evolved","congrats: evolved")
+
+-- The camera: in front of the Pokemon (towards its opponent), and steady
+-- while forms of different heights trade places on the flash beats.
+do
+  local tall={[155]=10,[156]=18}
+  local scene3={screen=screen,game=game2,readyFrame=true,actors={player={}},
+    shownMon=function() return g2mon end,
+    actorPosition=function(_,side) return side=="player" and {0,0,24} or {0,0,-24} end,
+    modelMatrix=function(_,_,actor) return {1,0,0,0, 0,1,0,0, 0,0,1,24, 0,0,0,1} end}
+  local anim3=setmetatable({mon=g2mon,oldSpecies=155,newSpecies=156,phase="flash",showNew=false,
+    lines={},rounds={1,2,3,4,5,6,7,8},round=1},EA)
+  game2.stack.states={screen,anim3}
+  Evolution.step(scene3,.1)
+  local e3=scene3.evolution
+  for _,a in ipairs({e3.oldActor,e3.newActor}) do
+    local h=tall[a.dex]
+    a.renderer={worldMetrics=function() return {floor=0,height=h,radius=5} end}
+  end
+  for _=1,60 do Evolution.step(scene3,.1) end
+  local c1,s1=e3:bounds()
+  anim3.showNew=true; Evolution.step(scene3,1/60)
+  local c2,s2=e3:bounds()
+  ok(math.abs(c1[2]-c2[2])<1e-3 and math.abs(s1-s2)<1e-3 and math.abs(s1-18)<1e-3,
+    "the framing holds both forms: no jump when they swap")
+  local fr=e3:frame({eye={0,20,70},focus={0,0,0},projection={},view={},letterbox={}})
+  ok(fr.eye[3]<24 and math.abs(fr.focus[2]-9)<1e-6,"the camera stands in front of the Pokemon (on its opponent's side)")
+  game2.stack.states={screen}
+  for _=1,40 do Evolution.step(scene3,.1) end
+end
 
 -- install: the battle's own text box and HUD stay off while presenting
 local hooks={}

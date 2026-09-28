@@ -24,7 +24,8 @@
 local Actor = require("mods.STADIUM2_IMPORTER.lib.battle_actor")
 local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
 local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
-local StadiumUI = require("mods.STADIUM2_IMPORTER.lib.stadium_ui")
+-- the Stadium message box from the embedded Stadium-2-UI (ui/ submodule)
+local StadiumUI = require("mods.STADIUM2_IMPORTER.ui.lib.stadium_ui")
 local Sequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
 
 local Evolution = {}
@@ -35,8 +36,6 @@ Evolution.WHITE_TIME = 1.1   -- seconds to turn fully white
 Evolution.REVEAL_TIME = 1.0  -- seconds for the white to leave the new form
 Evolution.DIM = .5           -- field darkening at full strength
 Evolution.FRAME = 3.4        -- camera distance in model heights
-Evolution.DRIFT = .12        -- camera drift around the Pokemon, radians/s
-Evolution.DRIFT_MAX = .5
 
 -- Gen 1 EvolutionState timing (engine/movie/evolution.asm, as the host
 -- implements it in src/ui/EvolutionState.lua): 80 frames before the flash
@@ -44,6 +43,7 @@ Evolution.DRIFT_MAX = .5
 local GEN1_GRACE, GEN1_LOOP = 80, 288
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
+local atan2 = math.atan2 or function(y, x) return math.atan(y, x) end
 local function smooth(t) t = clamp(t, 0, 1) return t * t * (3 - 2 * t) end
 local function approach(v, goal, rate, dt)
   if v < goal then return math.min(goal, v + rate * dt) end
@@ -338,6 +338,7 @@ function Evolution:update(dt)
   for _, actor in ipairs({ self.oldActor, self.newActor }) do
     if actor then actor:update(dt) end
   end
+  self:stepFraming(dt)
 end
 
 -- The model standing in the player's slot now, with its white amount.
@@ -354,42 +355,106 @@ local function apply(m, x, y, z)
     m[9] * x + m[10] * y + m[11] * z + m[12]
 end
 
--- World centre and size of the Pokemon in the player's slot.
-function Evolution:bounds()
-  local actor = self:actor()
+-- World floor, top and position of one form standing in the player's slot.
+function Evolution:formBounds(actor)
   if not (actor and actor.renderer and self.scene.modelMatrix) then return nil end
   local okM, matrix = pcall(self.scene.modelMatrix, self.scene, "player", actor)
   local okW, metrics = pcall(actor.renderer.worldMetrics, actor.renderer)
   if not (okM and okW and matrix and metrics) then return nil end
   local floor, top = tonumber(metrics.floor) or 0, tonumber(metrics.height) or 1
-  local cx, cy, cz = apply(matrix, 0, (floor + top) / 2, 0)
   local tx, ty, tz = apply(matrix, 0, top, 0)
   local bx, by, bz = apply(matrix, 0, floor, 0)
-  local size = math.sqrt((tx - bx) ^ 2 + (ty - by) ^ 2 + (tz - bz) ^ 2)
-  return { cx, cy, cz }, math.max(size, 1e-3)
+  return { x = (tx + bx) / 2, z = (tz + bz) / 2, floor = math.min(by, ty), top = math.max(by, ty) }
 end
 
--- The default frame, closed in on the evolving Pokemon by `self.camera`.
+-- The framing the camera and the effects hold on: both forms together (the
+-- one on screen changes on every flash beat; the framing must not), eased
+-- towards any change (the new form loading, the Pokemon sent out).
+Evolution.FRAMING_RATE = 3 -- per second (exponential ease)
+function Evolution:targetBounds()
+  local union
+  for _, actor in ipairs({ self.oldActor, self.newActor }) do
+    local b = self:formBounds(actor)
+    if b then
+      if not union then union = { x = b.x, z = b.z, floor = b.floor, top = b.top }
+      else
+        union.floor, union.top = math.min(union.floor, b.floor), math.max(union.top, b.top)
+      end
+    end
+  end
+  if not union then return nil end
+  return { union.x, (union.floor + union.top) / 2, union.z }, math.max(union.top - union.floor, 1e-3)
+end
+
+function Evolution:stepFraming(dt)
+  local centre, size = self:targetBounds()
+  if not centre then return end
+  local f = self.framing
+  if not f then
+    self.framing = { centre = centre, size = size }
+    return
+  end
+  local k = 1 - math.exp(-Evolution.FRAMING_RATE * (dt or 0))
+  for i = 1, 3 do f.centre[i] = f.centre[i] + (centre[i] - f.centre[i]) * k end
+  f.size = f.size + (size - f.size) * k
+end
+
+-- World centre and size the evolution is framed on.
+function Evolution:bounds()
+  if not self.framing then self:stepFraming(0) end
+  local f = self.framing
+  if not f then return nil end
+  return f.centre, f.size
+end
+
+-- The way the Pokemon in the player's slot faces: towards its opponent's
+-- slot (on the ground plane).
+function Evolution:facing()
+  local scene = self.scene
+  if type(scene.actorPosition) ~= "function" then return nil end
+  local okP, p = pcall(scene.actorPosition, scene, "player")
+  local okE, e = pcall(scene.actorPosition, scene, "enemy")
+  if not (okP and okE and p and e) then return nil end
+  local dx, dz = e[1] - p[1], e[3] - p[3]
+  local len = math.sqrt(dx * dx + dz * dz)
+  if len < 1e-6 then return nil end
+  return dx / len, dz / len
+end
+
+Evolution.ELEVATION = math.rad(12) -- camera height above the Pokemon's middle
+Evolution.SWAY = math.rad(10)      -- slow side-to-side sway at the front
+Evolution.SWAY_PERIOD = 14         -- seconds
+
+-- The default frame, swung round to the front of the evolving Pokemon by
+-- `self.camera`: the eye orbits the Pokemon (yaw, height and distance
+-- eased together) instead of cutting across the field.
 function Evolution:frame(frame)
   local w = smooth(self.camera)
   if w <= 0 then return frame end
   local centre, size = self:bounds()
   if not centre then return frame end
   local e0, f0 = frame.eye, frame.focus
-  local dx, dy, dz = e0[1] - f0[1], e0[2] - f0[2], e0[3] - f0[3]
-  local len = math.sqrt(dx * dx + dy * dy + dz * dz)
-  if len < 1e-6 then return frame end
-  dx, dy, dz = dx / len, dy / len, dz / len
-  -- a slow drift around the Pokemon while it evolves
-  local drift = math.min(Evolution.DRIFT_MAX, self.time * Evolution.DRIFT)
-  local c, s = math.cos(drift), math.sin(drift)
-  dx, dz = dx * c - dz * s, dx * s + dz * c
-  local d = size * Evolution.FRAME
-  local ex, ey, ez = centre[1] + dx * d, centre[2] + dy * d * .6, centre[3] + dz * d
+  -- where the default eye sits around the Pokemon
+  local vx, vy, vz = e0[1] - centre[1], e0[2] - centre[2], e0[3] - centre[3]
+  local flat0 = math.sqrt(vx * vx + vz * vz)
+  local r0 = math.sqrt(flat0 * flat0 + vy * vy)
+  if r0 < 1e-6 then return frame end
+  local yaw0, elev0 = atan2(vx, vz), atan2(vy, flat0)
+  -- the front: along the way it faces
+  local fx1, fz1 = self:facing()
+  local yaw1 = fx1 and atan2(fx1, fz1) or yaw0
+  yaw1 = yaw1 + Evolution.SWAY * math.sin(self.time * 2 * math.pi / Evolution.SWAY_PERIOD)
+  local elev1, r1 = Evolution.ELEVATION, size * Evolution.FRAME
+  local dyaw = (yaw1 - yaw0 + math.pi) % (2 * math.pi) - math.pi
+  local yaw = yaw0 + dyaw * w
+  local elev = elev0 + (elev1 - elev0) * w
+  local r = r0 + (r1 - r0) * w
+  local ex = centre[1] + math.sin(yaw) * math.cos(elev) * r
+  local ey = centre[2] + math.sin(elev) * r
+  local ez = centre[3] + math.cos(yaw) * math.cos(elev) * r
   local fx = f0[1] + (centre[1] - f0[1]) * w
   local fy = f0[2] + (centre[2] - f0[2]) * w
   local fz = f0[3] + (centre[3] - f0[3]) * w
-  ex, ey, ez = e0[1] + (ex - e0[1]) * w, e0[2] + (ey - e0[2]) * w, e0[3] + (ez - e0[3]) * w
   local view = Renderer.lookAt(ex, ey, ez, fx, fy, fz)
   local out = {}
   for k, v in pairs(frame) do out[k] = v end

@@ -48,9 +48,9 @@ the game's own evolution screen is used.
 | 3D POKEMON MODELS | Stadium models on or off. |
 | 3D BATTLE SCENE | The 3D battle presentation on or off. |
 | BATTLE HUD | Stadium's glass HUD; turn off to use the native or another mod's UI. |
-| STADIUM UI | Stadium 2's own battle UI read from your ROM (status panels with live portraits, message box, command bar, move diamond and info, switch cards, YES/NO) in place of the glass HUD. Needs BATTLE HUD on. |
+| STADIUM UI | Stadium 2's battle UI (status panels with live portraits, message box, command bar, move diamond and info, switch cards, PACK, YES/NO) in place of the glass HUD. It is the [Stadium 2 UI](https://github.com/Deftones565/Stadium-2-UI) mod, included in this mod. |
 | MENU CONTROLS | With a controller the menus use Stadium 2's controls (no cursor, C buttons on the right stick, hold the D-pad for move info). On keyboard, `CURSOR` keeps a moving cursor and `STADIUM` uses the controller scheme. |
-| UI DETAIL | `HD` (default) smooths the Stadium UI's art and font from your ROM and redraws the N64 button icons sharply for big screens; `N64 PIXELS` shows the original pixels. |
+| UI DETAIL | `HD` (default) smooths the Stadium UI's art and font for big screens; `N64 PIXELS` shows them as crisp pixels. |
 | CONTROLLER ICONS | Button prompts in the Stadium UI: `AUTO` follows the controller you last used; or pick `XBOX`, `PLAYSTATION`, `AYN THOR`, `STEAM DECK`, or `NATIVE N64` for Stadium's own icons. Keyboard play shows the N64 icons under `AUTO`. |
 | THOR INPUT MODE | Shown for `AYN THOR`: match the Thor's controller style so A/B and X/Y prompts line up. |
 | GRAPHICS | Shows the graphics settings below. |
@@ -102,6 +102,12 @@ on the work of these decompilation projects:
 Thank you to the maintainers and contributors of both projects.
 
 ## For developers
+
+The Stadium UI is the Stadium-2-UI repository, a git submodule at `ui/`
+(one codebase with the standalone Stadium 2 UI mod). Clone with
+`git clone --recursive`, or run `git submodule update --init` in an
+existing clone. Build a release ZIP with `sh tools/build_release.sh`
+(it includes `ui/`, which `git archive` leaves out).
 
 The integration API, UI-mod compatibility, rendering notes, tests and tools
 are in [docs/INTEGRATION.md](docs/INTEGRATION.md). Release notes are in

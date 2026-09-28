@@ -4,7 +4,7 @@
 -- previous version's modules back from require. Evict them when the build
 -- changed; within one build the cached modules (and their caches) are kept.
 -- MOD_BUILD must match manifest.json's version (stadium2_independence_test).
-local MOD_BUILD = "0.18.0"
+local MOD_BUILD = "0.19.0"
 do
   local PREFIX = "mods.STADIUM2_IMPORTER."
   local STAMP = PREFIX .. "__build"
@@ -52,13 +52,6 @@ return function(mod)
     return scene~=nil and (scene.battle==state or scene.screen==state
       or (state and scene.battle==state.battle))
   end)
-  if type(BattleUIOwnership.setMessageClaim)=="function" then
-    BattleUIOwnership.setMessageClaim(function(state)
-      local scene=Battle.currentScene()
-      return scene~=nil and type(scene.stadiumMessageOwned)=="function"
-        and scene:stadiumMessageOwned(state)==true
-    end)
-  end
   local Models = ModelApi.new(Importer)
   local importScreen
   local mapContext,pendingEncounter,lastTimeOfDay
@@ -148,7 +141,7 @@ return function(mod)
       default=true,
       help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
     { key="stadium2_stadium_ui", label="STADIUM UI", type="toggle", default=false,
-      help="Pokemon Stadium 2's own battle status panels, font and textures, read from your imported ROM, in place of the glass HUD. Needs BATTLE HUD on." },
+      help="Pokemon Stadium 2's battle UI (status panels, message box, command bar, move diamond, switch cards, PACK, YES/NO) in place of the glass HUD, with live 3D portraits. The same UI as the Stadium 2 UI mod, included here." },
     { key="stadium2_menu_controls", label="MENU CONTROLS", type="choice", default="cursor",
       visible_if={key="stadium2_stadium_ui", equals=true},
       choices={{"CURSOR","cursor"},{"STADIUM","stadium"}},
@@ -156,7 +149,7 @@ return function(mod)
     { key="stadium2_ui_detail", label="UI DETAIL", type="choice", default="hd",
       visible_if={key="stadium2_stadium_ui", equals=true},
       choices={{"HD","hd"},{"N64 PIXELS","native"}},
-      help="HD smooths Stadium 2's UI art and font from your ROM (enlarged 4x and filtered) so it looks clean on big screens. N64 PIXELS shows the original pixels. HD is a mod addition." },
+      help="HD smooths the UI's art and font for big screens. N64 PIXELS shows them as crisp pixels, like the N64." },
     { key="stadium2_controller_icons", label="CONTROLLER ICONS", type="choice", default="auto",
       visible_if={key="stadium2_stadium_ui", equals=true},
       choices={{"AUTO","auto"},{"XBOX","xbox"},{"PLAYSTATION","playstation"},
@@ -325,82 +318,23 @@ return function(mod)
   mod.exports.models = Models
   mod.exports.modelCapabilities = Models.capabilities()
 
-  -- STADIUM UI menus: act before the engine promotes this tick's presses
-  -- (input.step), and see taps the touch overlay did not take (input.pointer).
-  local StadiumMenu = require("mods.STADIUM2_IMPORTER.lib.stadium_menu")
-  local StadiumController = require("mods.STADIUM2_IMPORTER.lib.stadium_controller")
-  local StadiumGlyphs = require("mods.STADIUM2_IMPORTER.lib.stadium_button_glyphs")
-  local StadiumUIAssets = require("mods.STADIUM2_IMPORTER.lib.stadium_ui_assets")
-  StadiumGlyphs.bindMod(mod)
-  StadiumGlyphs.bindWarning(function(message)
-    if mod.log and mod.log.warn then mod.log:warn("%s",message) end
-  end)
-  lifecycle:add(StadiumGlyphs.release)
-  lifecycle:add(StadiumController.reset)
-  lifecycle:add(StadiumMenu.reset)
-  local function stadiumMenuContext()
-    local scene = type(Battle.currentScene) == "function" and Battle.currentScene() or nil
-    local ok, ctx = pcall(function()
-      return scene and type(scene.stadiumMenuContext) == "function"
-        and scene:stadiumMenuContext() or nil
-    end)
-    return ok and ctx or nil
-  end
-  -- Gamepad shoulders: the host binds LB/RB to game speed and returns before
-  -- they become L/R, so while a Stadium menu is open they are handed to the
-  -- host's own Input:gamepadpressed (which presses "l"/"r"); releases go
-  -- through unchanged. Installed on the first Stadium menu, not at load:
-  -- the host mutes its pad-repair polling while a mod owns input.gamepad.
-  -- Removed with the mod like every mod.hooks wrap.
-  local stadiumPadWrapped = false
-  local function wrapStadiumPad()
-    if stadiumPadWrapped then return end
-    stadiumPadWrapped = true
-    mod.hooks:wrap("input.gamepad", function(next, game, event)
-      StadiumMenu.gamepad(event)
-      if type(event) == "table" and event.phase == "pressed"
-          and (event.button == "leftshoulder" or event.button == "rightshoulder")
-          and stadiumMenuContext() then
-        local input = game and game.input
-        if input and type(input.gamepadpressed) == "function" then
-          input:gamepadpressed(event.joystick, event.button)
-          return
-        end
-      end
-      return next(game, event)
-    end, 7)
-  end
-  mod.hooks:wrap("input.step", function(next, game, dt)
-    local ctx = stadiumMenuContext()
-    if ctx then pcall(wrapStadiumPad) end
-    local okMode, mode = pcall(function() return Importer.menuControls() end)
-    -- prompt artwork only; a failure here must never block menu input
-    pcall(function()
-      StadiumUIAssets.setDetail(Importer.uiDetail())
-      local iconStyle = Importer.controllerIcons()
-      StadiumController.setStyle(iconStyle)
-      StadiumGlyphs.setStyle(iconStyle)
-      StadiumController.setThorLayout(Importer.thorInputMode())
-    end)
-    pcall(StadiumMenu.step, game, ctx, okMode and mode or "cursor", function(button)
-      if mod.input and mod.input.tap then pcall(mod.input.tap, mod.input, game, button) end
-    end)
-    return next(game, dt)
-  end, 7)
-  mod.hooks:wrap("input.pointer", function(next, owner, event)
-    StadiumMenu.pointer(event)
-    return next(owner, event)
-  end, 120)
-  -- The host party menu stays live (input, rules) but is not drawn while the
-  -- Stadium switch cards stand in for it.
-  mod.hooks:wrap("screen.render_visible", function(next, state)
-    local scene = type(Battle.currentScene) == "function" and Battle.currentScene() or nil
-    if scene and type(scene.stadiumHidesState) == "function" then
-      local ok, hides = pcall(scene.stadiumHidesState, scene, state)
-      if ok and hides then return false end
-    end
-    return next(state)
-  end, 120)
+  -- STADIUM UI: the Stadium 2 UI (the Stadium-2-UI repository, a git
+  -- submodule at ui/, shared with the standalone STADIUM2_UI mod) installs
+  -- its visibility hooks, window-space draw and menu input here. It hides
+  -- the host's status HUD and bottom box itself, so the glass HUD stands
+  -- aside for it as for any other UI mod.
+  -- Stadium's portrait camera records from the ROM, for the UI's live 3D
+  -- portraits (the UI finds this module in package.loaded).
+  require("mods.STADIUM2_IMPORTER.lib.stadium_portrait_data")
+  require("mods.STADIUM2_IMPORTER.ui.lib.embed").install(mod, {
+    embedded = true, assetBase = "ui/",
+    enabled = function() return Importer.stadiumUiEnabled() end,
+    menuControls = function() return Importer.menuControls() end,
+    detail = function() return Importer.uiDetail() end,
+    controllerIcons = function() return Importer.controllerIcons() end,
+    thorMode = function() return Importer.thorInputMode() end,
+    warn = function(message) if mod.log and mod.log.warn then pcall(mod.log.warn, mod.log, "%s", message) end end,
+  })
   -- In-battle evolution (user-requested extension; lib/battle_evolution.lua).
   require("mods.STADIUM2_IMPORTER.lib.battle_evolution").install(mod,
     function() return type(Battle.currentScene) == "function" and Battle.currentScene() or nil end,

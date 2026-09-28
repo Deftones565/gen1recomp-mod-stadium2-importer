@@ -9,9 +9,6 @@ local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
 local Actor = require("mods.STADIUM2_IMPORTER.lib.battle_actor")
 local Presentation = require("mods.STADIUM2_IMPORTER.lib.battle_scene")
 local Hud = require("mods.STADIUM2_IMPORTER.lib.battle_hud")
-local StadiumUI = require("mods.STADIUM2_IMPORTER.lib.stadium_ui")
-local StadiumPortrait = require("mods.STADIUM2_IMPORTER.lib.stadium_portrait")
-local StadiumMenu = require("mods.STADIUM2_IMPORTER.lib.stadium_menu")
 local TrainerSprite = require("mods.STADIUM2_IMPORTER.lib.trainer_sprite")
 local ArenaRuntime = require("mods.STADIUM2_IMPORTER.lib.arena_runtime")
 local ArenaSelector = require("mods.STADIUM2_IMPORTER.lib.arena_selector")
@@ -169,7 +166,6 @@ function Scene.new(battle,context)
 end
 
 function Scene:release()
-  StadiumPortrait.release()
   if self.screen then
     self.screen.stadium2ImporterRetainedAnim=nil
     local images=self.trainerImageOriginals
@@ -185,209 +181,6 @@ function Scene:release()
   self.substituteActors.player:release()
   self.substituteActors.enemy:release()
   Presentation.release(self)
-end
-
--- STADIUM UI message box (Gen 2): owns the bottom text only for Gold's
--- plain message phases; menus, the move list, YES/NO prompts, party and
--- stats screens keep the native bottom UI.
-local STADIUM_MESSAGE_PHASES={resolving=true,intro=true,["locked-in"]=true,
-  ["refuse-switch"]=true,["refuse-shift"]=true,["refuse-move"]=true,
-  ["refuse-menu"]=true,["shift-intro"]=true,["learn-intro"]=true,
-  ["cant-escape-then-switch"]=true,
-  -- the command menu's prompt while it types; the Stadium bar replaces it
-  -- once the host menu takes input (stadiumMenuContext)
-  menu=true,
-  -- YES/NO questions: the Stadium box types the question, then the Stadium
-  -- YES/NO window takes over (stadiumMenuContext)
-  ["ask-nickname"]=true,["ask-shift"]=true,["ask-next-mon"]=true,
-  ["ask-forget"]=true,["stop-learning"]=true}
-
--- Gold's YesNoBox phases and the field holding each one's cursor (1 = YES).
-local STADIUM_YESNO={["ask-nickname"]="nicknameIndex",["ask-shift"]="shiftIndex",
-  ["ask-next-mon"]="nextMonIndex",["ask-forget"]="forgetChoice",
-  ["stop-learning"]="forgetChoice"}
-
-local function stadiumUiActive()
-  return UIOwnership.hudEnabled() and Importer.stadiumUiEnabled() and StadiumUI.available()
-end
-
-function Scene:stadiumMessageOwned(state)
-  local screen=self.screen
-  if not screen or (state~=nil and state~=screen and state~=self.battle) then return false end
-  if not stadiumUiActive() then return false end
-  if self:stadiumMenuContext() then self.stadiumLastLines=nil return true end
-  -- the whole phase, including the text-less stretches during move
-  -- animations (the box keeps the last message, as Stadium's does), so the
-  -- host's empty box never shows through
-  -- the Bug Contest's own menu keeps the native box
-  if screen.phase=="menu" and screen.contest then return false end
-  return STADIUM_MESSAGE_PHASES[screen.phase]==true
-end
-
--- True only for the message box, not the menus (panel layout).
-function Scene:stadiumMessageShowing()
-  return self:stadiumMessageOwned(self.screen) and not self:stadiumMenuContext()
-end
-
--- Stadium tabs over Gold's FIGHT/PKMN/PACK/RUN (menuIndex 1..4). The Bug
--- Contest's own menu keeps the native box.
-local STADIUM_TABS={{button="A",label="BATTLE",hostIndex=1},
-  {button="B",label="POK\233MON",hostIndex=2},{button="S",label="RUN",hostIndex=4},
-  {button="R",label="PACK",hostIndex=3}}
-Scene.STADIUM_TABS=STADIUM_TABS
-
--- Gold's party list opened from this battle (PKMN or a forced switch).
-function Scene:stadiumPartyMenu()
-  local screen=self.screen
-  local states=screen and screen.game and screen.game.stack and screen.game.stack.states
-  local top=states and states[#states]
-  if not top then return nil end
-  local okModule,PartyMenu=pcall(require,"src.ui.gen2.PartyMenu")
-  if not okModule or getmetatable(top)~=PartyMenu or top.battle~=true then return nil end
-  if top.tmhm or top.itemUse then return nil end
-  return top
-end
-
-local SUB_IDS={battle_switch="SWITCH",stats="STATS"}
-
-function Scene:stadiumMenuContext()
-  local screen=self.screen
-  if not screen or not stadiumUiActive() then return nil end
-  local field=STADIUM_YESNO[screen.phase]
-  if field and (screen.messageTimer or 0)<=0 and screen.game and screen.game.stack
-      and screen.game.stack.states[#screen.game.stack.states]==screen then
-    return {kind="yesno",field=field,
-      select=function(i) screen[field]=i end}
-  end
-  local party=self:stadiumPartyMenu()
-  if party then
-    return {kind="switch",menu=party,memberCount=#(party.party or {}),
-      select=function(i) party.index=i end,
-      submenuOpen=function() return party.submenu~=nil end,
-      selectSub=function(action)
-        local sub=party.submenu
-        for i,item in ipairs(sub and sub.items or {}) do
-          if item.id==SUB_IDS[action] then sub.index=i; return true end
-        end
-        return false
-      end}
-  end
-  if screen.phase=="menu" and not screen.contest and (screen.messageTimer or 0)<=0 then
-    return {kind="command",tabs=STADIUM_TABS,select=function(i) screen.menuIndex=i end,
-      current=function() return screen.menuIndex end}
-  elseif screen.phase=="moves" and not screen.moveSwapIndex then
-    local ok,moves=pcall(screen.playerMoves,screen)
-    return {kind="moves",moveCount=ok and #moves or 0,
-      select=function(i) screen.moveIndex=i end}
-  end
-  return nil
-end
-
-function Scene:stadiumMembers(menu)
-  local screen=self.screen
-  local out={}
-  for i,mon in ipairs(menu.party or {}) do
-    local name=screen and type(screen.name)=="function" and screen:name(mon) or mon.nickname or mon.name or ""
-    out[i]={name=mon.isEgg and "EGG" or name,level=mon.level,hp=mon.hp or 0,
-      maxHp=mon.maxHp or (mon.stats and mon.stats.hp) or mon.hp or 0,
-      status=StadiumUI.statusKey(mon.status,(mon.hp or 0)<=0),
-      gender=mon.gender=="male" and "M" or mon.gender=="female" and "F" or nil}
-  end
-  return out
-end
-
-function Scene:stadiumHidesState(state)
-  local menu=self:stadiumMenuContext()
-  return menu~=nil and menu.kind=="switch" and menu.menu==state
-end
-
-function Scene:stadiumMoves()
-  local screen=self.screen
-  local ok,moves=pcall(screen.playerMoves,screen)
-  local data=screen.game and screen.game.data
-  local defs=data and data.moves or {}
-  local Mon=package.loaded["src.battle.gen2.Mon"]
-  local out={}
-  for i,move in ipairs(ok and moves or {}) do
-    local def=defs[move.id] or {}
-    local maxPp=move.maxPp
-    if not maxPp and Mon and Mon.maxPpOf then
-      local okPp,value=pcall(Mon.maxPpOf,move,data)
-      maxPp=okPp and value or nil
-    end
-    out[i]={name=def.name or tostring(move.id),type=def.type,pp=move.pp or 0,
-      maxPp=maxPp or def.pp or 0,power=def.power,accuracy=def.accuracy,
-      number=moveNumber(data,move.id)}
-  end
-  return out
-end
-
-function Scene:stadiumMessageLines()
-  local screen=self.screen
-  if not (screen and type(screen.messageLines)=="function") then return nil end
-  local ok,lines=pcall(screen.messageLines,screen)
-  if ok and type(lines)=="table" and #lines>0 then
-    self.stadiumLastLines=lines
-    return lines
-  end
-  return self.stadiumLastLines or {}
-end
-
--- Data for Stadium UI status panels (STADIUM UI option), from the values
--- Gold's own HUD prints: hudHp/hudStatus lag the engine the same way.
-function Scene:stadiumPanels(screen)
-  local out={}
-  for _,side in ipairs({"player","enemy"}) do
-    local mon=self:shownMon(side)
-    if mon then
-      local function call(name,...)
-        local fn=screen and screen[name]
-        if type(fn)~="function" then return nil end
-        local ok,value=pcall(fn,screen,...)
-        return ok and value or nil
-      end
-      local hp=call("hudHp",mon,side) or mon.hp or 0
-      local status=call("hudStatus",mon,side)
-      local tag
-      if side=="player" then
-        local save=screen and screen.save
-        tag=save and save.player and save.player.name or nil
-      else
-        local battle=screen and screen.battle
-        local trainer=battle and battle.trainer
-        tag=type(trainer)=="table" and (trainer.name or trainer.className) or nil
-      end
-      out[side]={name=call("name",mon) or mon.nickname or mon.name or "",
-        level=mon.level,hp=math.floor(hp),
-        maxHp=mon.maxHp or (mon.stats and mon.stats.hp) or hp,
-        status=StadiumUI.statusKey(status,(mon.hp or 0)<=0),
-        gender=mon.gender=="male" and "M" or mon.gender=="female" and "F" or nil,
-        tag=tag}
-      local battle=screen and screen.battle
-      local party=battle and (side=="player" and battle.party
-        or (tag and battle.enemyParty) or nil)
-      if type(party)=="table" then out[side].balls=StadiumUI.partyBallStates(party) end
-      -- Portrait: a separate idle model of the battler (func_8411F400); the
-      -- Substitute doll (species 0xFC) has none.
-      local actor=self.actors and self.actors[side]
-      local okState,state=pcall(self.visualState,self,side,screen)
-      if actor and actor.dex and not (okState and state=="substitute") then
-        out[side].portrait=StadiumPortrait.render(side,{dex=actor.dex,variant=actor.variant,
-          opponent=side=="enemy",pixels=StadiumUI.portraitPixels,newRenderer=Importer.newRenderer})
-      end
-    end
-    -- the host's intro / send-out ball rows (screen.ballRows), as Stadium
-    -- balls; Hud.composite uses them only while that side is not live
-    local rows=screen and screen.ballRows
-    local battle=screen and screen.battle
-    if type(rows)=="table" and rows[side] and battle then
-      local party=side=="player" and battle.party or battle.enemyParty
-      if type(party)=="table" then
-        out[side.."Balls"]={ballsOnly=true,balls=StadiumUI.partyBallStates(party)}
-      end
-    end
-  end
-  return out
 end
 
 function Scene:shownMon(side)
@@ -645,10 +438,6 @@ function Scene:handleEvent(event)
     end
   end
   local side = event.side
-  -- STADIUM UI: the message box takes the acting side's card colour.
-  if event.kind=="move" and (side=="player" or side=="enemy") then
-    self.stadiumMessageSide=side
-  end
   if event.kind=="move" and side then
     local data=self.screen and self.screen.game and self.screen.game.data
     local def=data and data.moves and data.moves[event.move]
@@ -1193,27 +982,10 @@ local function installScreenHooks()
     if not layerOk then error(layer,0) end
     if not hudLayerOk then error(hudLayer,0) end
     if not modalLayerOk then error(modalLayer,0) end
+    -- STADIUM UI is the embedded Stadium-2-UI (ui/ submodule), drawn in
+    -- window space over this picture; the glass stands aside for it.
     local composed=Hud.composite(scene,self,layer,hudLayer,modalLayer,
-      {decorate=UIOwnership.hudEnabled(),
-       stadiumPanels=Importer.stadiumUiEnabled() and StadiumUI.available()
-         and function() return scene:stadiumPanels(self) end or nil,
-       stadiumMessage=scene:stadiumMessageShowing()
-         and function() return scene:stadiumMessageLines(),scene.stadiumMessageSide or "player" end or nil,
-       stadiumMenu=scene:stadiumMenuContext() and function()
-         local menu=scene:stadiumMenuContext()
-         if not menu then return nil end
-         local moves=menu.kind=="moves" and scene:stadiumMoves() or nil
-         return function()
-           local result=menu.kind=="switch" and menu.menu.itemResult or nil
-           StadiumMenu.draw({kind=menu.kind,tabs=STADIUM_TABS,commandIndex=self.menuIndex,
-             members=menu.kind=="switch" and scene:stadiumMembers(menu.menu) or nil,
-             switchIndex=menu.menu and menu.menu.index,
-             message=type(result)=="table" and result.text or nil,
-             lines=menu.kind=="yesno" and scene:stadiumMessageLines() or nil,
-             yesIndex=menu.kind=="yesno" and self[menu.field] or nil,
-             moves=moves,moveIndex=self.moveIndex,game=self.game,mode=Importer.menuControls()})
-         end
-       end or nil})
+      {decorate=UIOwnership.hudEnabled()})
     if deferObjects and objectRunner and self.animView and not hideObjects then
       local box=scene.hudBox
       g.push()
