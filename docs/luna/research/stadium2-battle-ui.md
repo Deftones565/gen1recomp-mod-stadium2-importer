@@ -277,6 +277,20 @@ slot + label; left/right (and taps) pick, since the host toggles with
 up/down; A and B stay the host's (B = NO). The host's own box is hidden
 (`screen.render_visible` for `ChoiceBox`; the bottom claim for Gen 2).
 
+## Controller icons (2026-09-28, port extension)
+
+Requested by the user; not ROM behaviour. Astra's generated art
+(`assets/controller_buttons/*.png`, prompts in `prompts.json`) with
+measured glyph rects (`lib/stadium_button_atlas.lua`). `stadium_controller`
+identifies the family from the host's normalised gamepad events (Valve
+28de:1205 = Steam Deck, Sony vendor/names = PlayStation, "AYN Thor" names,
+any other SDL gamepad = Xbox layout) and maps each logical N64 control to
+the physical button through the host's `padBindings`; C buttons are the
+right stick the Stadium menus read. `stadium_button_glyphs` draws them in
+place of the ROM icons (CONTROLLER ICONS option; `NATIVE N64` and keyboard
+play under `AUTO` keep the ROM textures). A missing image or an unusual
+binding draws a labelled placeholder, never a different button.
+
 ## Open
 
 - Locate the UI fragment and its textures (panel gradients, bracket

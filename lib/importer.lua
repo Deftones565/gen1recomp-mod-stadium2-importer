@@ -168,6 +168,21 @@ function Importer.menuControls()
   return "cursor"
 end
 
+-- These preferences change prompt artwork only; the host owns bindings.
+function Importer.controllerIcons()
+  local value = modRef and modRef.options and modRef.options.get
+    and modRef.options:get("stadium2_controller_icons")
+  if value == "xbox" or value == "playstation" or value == "ayn_thor"
+      or value == "steamdeck" or value == "native" then return value end
+  return "auto"
+end
+
+function Importer.thorInputMode()
+  local value = modRef and modRef.options and modRef.options.get
+    and modRef.options:get("stadium2_thor_input_mode")
+  return value == "xbox" and "xbox" or "thor"
+end
+
 function Importer.weatherStyle()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_weather")

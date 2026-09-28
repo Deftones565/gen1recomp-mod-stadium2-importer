@@ -1,3 +1,23 @@
+-- The host keeps a mod's Lua modules in package.loaded across game sessions
+-- (it only purges src.*). After an in-app mod update without an app
+-- restart (usual on phones), this new main.lua would otherwise get the
+-- previous version's modules back from require. Evict them when the build
+-- changed; within one build the cached modules (and their caches) are kept.
+-- MOD_BUILD must match manifest.json's version (stadium2_independence_test).
+local MOD_BUILD = "0.17.1"
+do
+  local PREFIX = "mods.STADIUM2_IMPORTER."
+  local STAMP = PREFIX .. "__build"
+  if package.loaded[STAMP] ~= MOD_BUILD then
+    for name in pairs(package.loaded) do
+      if type(name) == "string" and name:sub(1, #PREFIX) == PREFIX then
+        package.loaded[name] = nil
+      end
+    end
+    package.loaded[STAMP] = MOD_BUILD
+  end
+end
+
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
 local Battle = require("mods.STADIUM2_IMPORTER.lib.battle_router")
 local BattleAA = require("mods.STADIUM2_IMPORTER.lib.battle_aa")
@@ -32,11 +52,13 @@ return function(mod)
     return scene~=nil and (scene.battle==state or scene.screen==state
       or (state and scene.battle==state.battle))
   end)
-  BattleUIOwnership.setMessageClaim(function(state)
-    local scene=Battle.currentScene()
-    return scene~=nil and type(scene.stadiumMessageOwned)=="function"
-      and scene:stadiumMessageOwned(state)==true
-  end)
+  if type(BattleUIOwnership.setMessageClaim)=="function" then
+    BattleUIOwnership.setMessageClaim(function(state)
+      local scene=Battle.currentScene()
+      return scene~=nil and type(scene.stadiumMessageOwned)=="function"
+        and scene:stadiumMessageOwned(state)==true
+    end)
+  end
   local Models = ModelApi.new(Importer)
   local importScreen
   local mapContext,pendingEncounter,lastTimeOfDay
@@ -131,6 +153,15 @@ return function(mod)
       visible_if={key="stadium2_stadium_ui", equals=true},
       choices={{"CURSOR","cursor"},{"STADIUM","stadium"}},
       help="With a controller the menus always use Stadium 2's controls: no cursor, A BATTLE, B POKeMON, START RUN, R PACK, C buttons (right stick) pick, hold the D-pad for a move's info, L (LB) cancels. On keyboard, CURSOR keeps the moving cursor (hold R for info); STADIUM uses the controller scheme (C = I/J/K/L). PACK is not in Stadium 2." },
+    { key="stadium2_controller_icons", label="CONTROLLER ICONS", type="choice", default="auto",
+      visible_if={key="stadium2_stadium_ui", equals=true},
+      choices={{"AUTO","auto"},{"XBOX","xbox"},{"PLAYSTATION","playstation"},
+        {"AYN THOR","ayn_thor"},{"STEAM DECK","steamdeck"},{"NATIVE N64","native"}},
+      help="AUTO follows the last controller used. Choose a family if a driver or Steam Input hides its identity. Changes prompts only; your control bindings stay in effect." },
+    { key="stadium2_thor_input_mode", label="THOR INPUT MODE", type="choice", default="thor",
+      visible_if={key="stadium2_controller_icons", equals="ayn_thor"},
+      choices={{"THOR","thor"},{"XBOX","xbox"}},
+      help="Match the Controller Style on your AYN Thor. XBOX swaps the printed A/B and X/Y prompts. Select AYN THOR under CONTROLLER ICONS to override an unidentified handheld." },
     { key="stadium2_graphics", label="GRAPHICS", type="choice", default=false,
       choices={{"HIDE",false},{"SHOW",true}},
       help="Show or hide the graphics settings: shader style, 3D resolution, battle AA, extra effects, Poke Ball and scene weather." },
@@ -293,6 +324,15 @@ return function(mod)
   -- STADIUM UI menus: act before the engine promotes this tick's presses
   -- (input.step), and see taps the touch overlay did not take (input.pointer).
   local StadiumMenu = require("mods.STADIUM2_IMPORTER.lib.stadium_menu")
+  local StadiumController = require("mods.STADIUM2_IMPORTER.lib.stadium_controller")
+  local StadiumGlyphs = require("mods.STADIUM2_IMPORTER.lib.stadium_button_glyphs")
+  StadiumGlyphs.bindMod(mod)
+  StadiumGlyphs.bindWarning(function(message)
+    if mod.log and mod.log.warn then mod.log:warn("%s",message) end
+  end)
+  lifecycle:add(StadiumGlyphs.release)
+  lifecycle:add(StadiumController.reset)
+  lifecycle:add(StadiumMenu.reset)
   local function stadiumMenuContext()
     local scene = type(Battle.currentScene) == "function" and Battle.currentScene() or nil
     local ok, ctx = pcall(function()
@@ -312,6 +352,7 @@ return function(mod)
     if stadiumPadWrapped then return end
     stadiumPadWrapped = true
     mod.hooks:wrap("input.gamepad", function(next, game, event)
+      StadiumMenu.gamepad(event)
       if type(event) == "table" and event.phase == "pressed"
           and (event.button == "leftshoulder" or event.button == "rightshoulder")
           and stadiumMenuContext() then
@@ -328,6 +369,13 @@ return function(mod)
     local ctx = stadiumMenuContext()
     if ctx then pcall(wrapStadiumPad) end
     local okMode, mode = pcall(function() return Importer.menuControls() end)
+    -- prompt artwork only; a failure here must never block menu input
+    pcall(function()
+      local iconStyle = Importer.controllerIcons()
+      StadiumController.setStyle(iconStyle)
+      StadiumGlyphs.setStyle(iconStyle)
+      StadiumController.setThorLayout(Importer.thorInputMode())
+    end)
     pcall(StadiumMenu.step, game, ctx, okMode and mode or "cursor", function(button)
       if mod.input and mod.input.tap then pcall(mod.input.tap, mod.input, game, button) end
     end)

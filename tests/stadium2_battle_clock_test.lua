@@ -43,6 +43,10 @@ local mod = {
   events={ on=function() end },
 }
 
+-- The stubs above stand in for this build's cached modules: stamp them as
+-- the current build so main.lua's stale-module eviction keeps them.
+local manifest = assert(io.open("mods/STADIUM2_IMPORTER/manifest.json", "rb")):read("*a")
+package.loaded["mods.STADIUM2_IMPORTER.__build"] = manifest:match('"version": "([^"]+)"')
 local install = assert(loadfile("mods/STADIUM2_IMPORTER/main.lua"))()
 install(mod)
 ok(type(pipeline) == "table" and type(pipeline.update) == "function",

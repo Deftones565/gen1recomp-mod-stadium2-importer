@@ -23,9 +23,11 @@
 -- host command menus ignore those buttons), C buttons pick, L cancels, and
 -- a tap on a tab, move or card picks it. PACK is not in Stadium 2.
 --
--- Button glyphs shown are the N64's for now; Menu.bindings is the one place
--- a per-controller layout would plug in later.
+-- Generated controller prompts are a port extension. Native N64 glyphs
+-- remain available on keyboard and through the icon preference.
 local UI = require("mods.STADIUM2_IMPORTER.lib.stadium_ui")
+local Controller = require("mods.STADIUM2_IMPORTER.lib.stadium_controller")
+local ButtonGlyphs = require("mods.STADIUM2_IMPORTER.lib.stadium_button_glyphs")
 
 local Menu = {}
 
@@ -55,7 +57,8 @@ local function currentC()
   local joystick = love and love.joystick
   if joystick and joystick.getJoysticks then
     local stick = Menu.bindings.stick
-    for _, js in ipairs(joystick.getJoysticks()) do
+    local active = Controller.activeJoystick()
+    for _, js in ipairs(active and {active} or {}) do
       if js:isGamepad() then
         local x, y = js:getGamepadAxis(stick.axisX), js:getGamepadAxis(stick.axisY)
         if y < -stick.threshold then now.CUP = true; from = "pad"
@@ -108,6 +111,10 @@ function Menu.noteDevice(game, cFrom)
 end
 
 function Menu.device() return device end
+
+function Menu.gamepad(event)
+  if Controller.observe(event) then device = "pad" end
+end
 
 function Menu.stadiumControls(mode)
   return mode == "stadium" or device == "pad"
@@ -197,6 +204,9 @@ end
 --   { kind = "yesno", select = fn(i) } (1 = YES, 2 = NO)
 -- tap = fn(button) queues a host button press (mod.input:tap).
 function Menu.step(game, ctx, mode, tap, cNow)
+  Controller.update(game)
+  if device == "pad" and love and love.joystick and love.joystick.getJoysticks
+      and not Controller.activeJoystick() then device = "keyboard" end
   local edges, cFrom = Menu.cEdges(cNow)
   Menu.noteDevice(game, cFrom)
   local stadium = Menu.stadiumControls(mode)
@@ -333,6 +343,7 @@ end
 -- Draw the open menu. view = { kind, tabs, commandIndex, members,
 -- switchIndex, moves, moveIndex, message, lines, yesIndex, game, mode }.
 function Menu.draw(view)
+  ButtonGlyphs.setContext(view.game, device)
   local stadium = Menu.stadiumControls(view.mode)
   if view.kind == "command" then
     local selected

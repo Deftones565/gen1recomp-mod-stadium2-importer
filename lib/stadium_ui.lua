@@ -12,6 +12,7 @@
 --   frame piece geometry, text origin and advances.
 -- Anything not covered there is marked below.
 local Assets = require("mods.STADIUM2_IMPORTER.lib.stadium_ui_assets")
+local ButtonGlyphs = require("mods.STADIUM2_IMPORTER.lib.stadium_button_glyphs")
 
 local UI = {}
 
@@ -508,6 +509,7 @@ end
 
 local function buttonIcon(name, x, y, tint)
   local b = UI.BUTTON[name]
+  if ButtonGlyphs.draw(g, name, x, y, b and b.wide and 24 or 16, 17) then return end
   local icon = b and tex(30, b.entry)
   if not icon then return end
   setColor(tint or b.tint or { 255, 255, 255 })
@@ -636,7 +638,9 @@ function UI.hint(labelEntry, x, y, w)
   UI.card(x, y, w or 42, 5, { 255, 255, 255 })
   local cross, label = tex(32, 2), tex(32, labelEntry)
   setColor({ 255, 255, 255 })
-  if cross then blit(cross, 0, 0, cross.w, cross.h, x + 1, y, cross.w, cross.h) end
+  if not ButtonGlyphs.draw(g, "DPAD", x + 1, y, 11, 10) and cross then
+    blit(cross, 0, 0, cross.w, cross.h, x + 1, y, cross.w, cross.h)
+  end
   if label then blit(label, 0, 0, label.w, label.h, x + 14, y + 1, label.w, label.h) end
 end
 

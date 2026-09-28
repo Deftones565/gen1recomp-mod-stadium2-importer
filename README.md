@@ -40,6 +40,8 @@ No ROM is included. Never add one to the mod ZIP.
 | BATTLE HUD | Stadium's glass HUD; turn off to use the native or another mod's UI. |
 | STADIUM UI | Stadium 2's own battle UI read from your ROM (status panels with live portraits, message box, command bar, move diamond and info, switch cards, YES/NO) in place of the glass HUD. Needs BATTLE HUD on. |
 | MENU CONTROLS | With a controller the menus use Stadium 2's controls (no cursor, C buttons on the right stick, hold the D-pad for move info). On keyboard, `CURSOR` keeps a moving cursor and `STADIUM` uses the controller scheme. |
+| CONTROLLER ICONS | Button prompts in the Stadium UI: `AUTO` follows the controller you last used; or pick `XBOX`, `PLAYSTATION`, `AYN THOR`, `STEAM DECK`, or `NATIVE N64` for Stadium's own icons. Keyboard play shows the N64 icons under `AUTO`. |
+| THOR INPUT MODE | Shown for `AYN THOR`: match the Thor's controller style so A/B and X/Y prompts line up. |
 | GRAPHICS | Shows the graphics settings below. |
 | SHADER STYLE | `STADIUM` or `WATERCOLOR MANGA`. |
 | 3D RESOLUTION | `AUTO`, 100%, 75% or 50%. Lower is faster; the UI stays sharp. |
@@ -58,7 +60,8 @@ No ROM is included. Never add one to the mod ZIP.
 
 The painted scenes, weather, visitors, Extra Effects and the Poke Ball toggle
 are mod additions, not part of Stadium 2. In the Stadium UI, PACK, the
-cursor, sharp portraits and the second row of switch cards are additions too.
+cursor, sharp portraits, the second row of switch cards and the controller
+icons are additions too.
 
 ## Test room
 

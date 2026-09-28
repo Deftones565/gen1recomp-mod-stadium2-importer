@@ -23,8 +23,10 @@ local presentation = read(root .. "lib/battle_presentation.lua")
 local uiOwnership = read(root .. "lib/battle_ui_ownership.lua")
 
 ok(manifest:find('"dependencies": %[%]', 1) ~= nil, "importer has no required mod dependency")
-ok(manifest:find('"version": "0.17.0"', 1, true) ~= nil,
-  "public API release is pinned to 0.17.0")
+ok(manifest:find('"version": "0.17.1"', 1, true) ~= nil,
+  "public API release is pinned to 0.17.1")
+ok(main:find('local MOD_BUILD = "' .. manifest:match('"version": "([^"]+)"') .. '"', 1, true) ~= nil,
+  "main.lua's module-cache build stamp matches the manifest version")
 ok(main:find('require("mods.STADIUM2_IMPORTER.lib.battle_router")', 1, true) ~= nil,
   "main dispatches battles through the generation router")
 ok(main:find('lib.battle_presentation',1,true)~=nil and main:find('mod.exports.presentation',1,true)~=nil,
