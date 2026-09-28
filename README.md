@@ -77,6 +77,19 @@ Stadium arena, day or night. Works with touch, mouse, keyboard and gamepad;
 - **Controller:** right stick.
 - **Touch:** drag with one finger, pinch to zoom.
 
+## Credits
+
+This mod's research into Stadium 2's formats, battle effects and UI builds
+on the work of these decompilation projects:
+
+- [pret/pokestadiumgs](https://github.com/pret/pokestadiumgs) — the original
+  Pokemon Stadium 2 decompilation and its contributors.
+- [michiiik/pokestadiumgs](https://github.com/michiiik/pokestadiumgs) — the
+  continued decompilation work, including battle and UI routines used as
+  references for this port.
+
+Thank you to the maintainers and contributors of both projects.
+
 ## For developers
 
 The integration API, UI-mod compatibility, rendering notes, tests and tools
