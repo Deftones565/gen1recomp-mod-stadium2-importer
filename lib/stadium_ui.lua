@@ -67,12 +67,22 @@ local function tex(file, entry)
   return set and set[entry]
 end
 
--- Draw a sub-rectangle of a texture, stretched to w x h.
+-- Draw a sub-rectangle of a texture, stretched to w x h. Coordinates are
+-- Stadium pixels; an HD texture holds k texels per pixel, and its quad is
+-- inset half a texel so linear filtering never samples a neighbour piece.
 local function blit(t, sx, sy, sw, sh, x, y, w, h)
   if not t then return end
-  local q = g.newQuad(sx, sy, sw, sh, t.w, t.h)
-  g.draw(t.image, q, x, y, 0, w / sw, h / sh)
+  local k = t.k or 1
+  local inset = k > 1 and 0.5 or 0
+  local qw, qh = sw * k - 2 * inset, sh * k - 2 * inset
+  local q = g.newQuad(sx * k + inset, sy * k + inset, qw, qh, t.w * k, t.h * k)
+  g.draw(t.image, q, x, y, 0, w / qw, h / qh)
   if q.release then q:release() end
+end
+
+-- A font glyph image (k texels per Stadium pixel) at x, y.
+local function glyphDraw(img, k, x, y)
+  if k > 1 then g.draw(img, x, y, 0, 1 / k, 1 / k) else g.draw(img, x, y) end
 end
 
 -- A card: the 64x1 gradient strip (file 31) stretched over the body and the
@@ -126,7 +136,7 @@ function UI.text(text, x, y, color)
     local glyph = Assets.glyphFor(images.font, text:byte(i))
     if glyph then
       local img = images.glyphs[glyph]
-      if img then g.draw(img, pen - 1, y) end
+      if img then glyphDraw(img, images.k or 1, pen - 1, y) end
       pen = pen + Assets.advance(images.font, glyph)
     end
   end
@@ -141,7 +151,7 @@ function UI.glyph(index, x, y, color)
   local img = images and images.glyphs[index]
   if not img then return end
   setColor(color or { 255, 255, 255 })
-  g.draw(img, x - 1, y)
+  glyphDraw(img, images.k or 1, x - 1, y)
 end
 
 -- Digits from the file 32 #7 strip (8x9 cells: 0-9, '/', 'L', '-').
@@ -716,7 +726,7 @@ function UI.smallText(text, x, y)
       local glyph = Assets.glyphFor(font, text:byte(i))
       if glyph then
         local img = images.smallGlyphs[glyph]
-        if img then g.draw(img, pen - 1, y + (pass == 1 and 1 or 0)) end
+        if img then glyphDraw(img, images.k or 1, pen - 1, y + (pass == 1 and 1 or 0)) end
         pen = pen + math.max(1, (font.widths[glyph] or 7) - 1)
       end
     end

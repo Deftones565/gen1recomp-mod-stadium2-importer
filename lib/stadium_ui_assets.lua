@@ -315,24 +315,121 @@ function Assets.loadNow()
   return cached
 end
 
--- LOVE images for the decoded assets, built once.
-local images
+-- LOVE images for the decoded assets, built once per detail level.
+-- HD UI (port extension, requested by the user 2026-09-28; not ROM
+-- behaviour): the ROM textures and font glyphs are enlarged 4x by bilinear
+-- interpolation with edge restoration: where the four source texels around
+-- an output texel differ strongly (a letter or icon outline), the blend is
+-- re-sharpened with a smoothstep, so outlines become smooth curves and
+-- diagonals instead of square steps; soft gradients (the card strips) keep
+-- the plain interpolation, which removes their banding. The art is the
+-- ROM's own; NATIVE keeps the 1x nearest-filtered textures.
+Assets.HD_SCALE = 4
+Assets.HD_EDGE = 0.12   -- neighbourhood contrast above which edges sharpen
+local detail = "hd"
+
+function Assets.setDetail(value)
+  detail = value == "native" and "native" or "hd"
+end
+
+function Assets.detail() return detail end
+
+local floor, min, max, char = math.floor, math.min, math.max, string.char
+local byte = string.byte
+
+local function sharpen(t)
+  -- smoothstep over the middle 60% of the blend
+  t = (t - 0.2) / 0.6
+  if t <= 0 then return 0 elseif t >= 1 then return 1 end
+  return t * t * (3 - 2 * t)
+end
+
+function Assets.upscale(rgba, w, h, k)
+  -- premultiplied channels, 0..1
+  local R, G, B, A = {}, {}, {}, {}
+  for i = 0, w * h - 1 do
+    local r, g, b, a = byte(rgba, i * 4 + 1, i * 4 + 4)
+    a = a / 255
+    R[i], G[i], B[i], A[i] = r / 255 * a, g / 255 * a, b / 255 * a, a
+  end
+  local edge = Assets.HD_EDGE
+  local W, H = w * k, h * k
+  local out = {}
+  local function channel(C, i00, i10, i01, i11, fx, fy)
+    local c00, c10, c01, c11 = C[i00], C[i10], C[i01], C[i11]
+    local v = (c00 * (1 - fx) + c10 * fx) * (1 - fy) + (c01 * (1 - fx) + c11 * fx) * fy
+    local lo, hi = min(c00, c10, c01, c11), max(c00, c10, c01, c11)
+    if hi - lo > edge then v = lo + (hi - lo) * sharpen((v - lo) / (hi - lo)) end
+    return v
+  end
+  for oy = 0, H - 1 do
+    local sy = (oy + 0.5) / k - 0.5
+    local y0 = floor(sy)
+    local fy = sy - y0
+    local ya, yb = max(0, min(h - 1, y0)), max(0, min(h - 1, y0 + 1))
+    for ox = 0, W - 1 do
+      local sx = (ox + 0.5) / k - 0.5
+      local x0 = floor(sx)
+      local fx = sx - x0
+      local xa, xb = max(0, min(w - 1, x0)), max(0, min(w - 1, x0 + 1))
+      local i00, i10, i01, i11 = ya * w + xa, ya * w + xb, yb * w + xa, yb * w + xb
+      local a = channel(A, i00, i10, i01, i11, fx, fy)
+      local r, g, b = 0, 0, 0
+      if a > 0.002 then
+        r = channel(R, i00, i10, i01, i11, fx, fy) / a
+        g = channel(G, i00, i10, i01, i11, fx, fy) / a
+        b = channel(B, i00, i10, i01, i11, fx, fy) / a
+      else
+        -- transparent: keep the neighbours' colour so filtering has no fringe
+        -- (the 3x3 source texels around, so every texel next to art has it)
+        local s = 0
+        for dy = -1, 1 do
+          local yy = max(0, min(h - 1, floor(sy + 0.5) + dy))
+          for dx = -1, 1 do
+            local xx = max(0, min(w - 1, floor(sx + 0.5) + dx))
+            local i = yy * w + xx
+            local ai = A[i]
+            if ai > 0 then s = s + ai; r = r + R[i]; g = g + G[i]; b = b + B[i] end
+          end
+        end
+        if s > 0 then r, g, b = r / s, g / s, b / s end
+        a = 0
+      end
+      out[oy * W + ox + 1] = char(floor(min(1, r) * 255 + 0.5), floor(min(1, g) * 255 + 0.5),
+        floor(min(1, b) * 255 + 0.5), floor(min(1, a) * 255 + 0.5))
+    end
+  end
+  return table.concat(out), W, H
+end
+
+local imagesBy = {}
+
 function Assets.images()
-  if images then return images end
+  if imagesBy[detail] then return imagesBy[detail] end
   local assets, err = Assets.load()
   if not assets then return nil, err end
   if not (love and love.image and love.graphics) then return nil, "LOVE graphics unavailable" end
+  local k = detail == "hd" and Assets.HD_SCALE or 1
   local function image(w, h, rgba)
-    local data = love.image.newImageData(w, h, "rgba8", rgba)
+    if k > 1 then rgba = Assets.upscale(rgba, w, h, k) end
+    local data = love.image.newImageData(w * k, h * k, "rgba8", rgba)
     local img = love.graphics.newImage(data)
-    img:setFilter("nearest", "nearest")
+    if k > 1 then img:setFilter("linear", "linear") else img:setFilter("nearest", "nearest") end
     return img
   end
-  local out = { sets = {}, glyphs = {} }
+  -- k: texels per Stadium pixel (drawers scale by 1/k)
+  local out = { sets = {}, glyphs = {}, k = k }
+  local Buttons = k > 1 and require("mods.STADIUM2_IMPORTER.lib.stadium_n64_buttons")
   for file, set in pairs(assets.sets) do
     out.sets[file] = {}
     for i, e in pairs(set) do
-      out.sets[file][i] = { image = image(e.w, e.h, e.rgba), w = e.w, h = e.h }
+      -- HD: file 30's N64 button icons are redrawn as vector art
+      local hd = Buttons and file == 30 and Buttons.image(i, e.w, e.h)
+      if hd then
+        out.sets[file][i] = { image = hd, w = e.w, h = e.h, k = Buttons.SCALE }
+      else
+        out.sets[file][i] = { image = image(e.w, e.h, e.rgba), w = e.w, h = e.h, k = k }
+      end
     end
   end
   for i, rgba in pairs(assets.font.glyphs) do
@@ -348,12 +445,12 @@ function Assets.images()
   end
   out.descriptions = assets.descriptions
   out.portraits = assets.portraits
-  images = out
-  return images
+  imagesBy[detail] = out
+  return out
 end
 
 function Assets.release()
-  images, cached, cachedError, failedAt = nil, nil, nil, nil
+  imagesBy, cached, cachedError, failedAt = {}, nil, nil, nil
 end
 
 return Assets

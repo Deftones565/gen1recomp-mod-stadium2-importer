@@ -168,6 +168,15 @@ function Importer.menuControls()
   return "cursor"
 end
 
+-- STADIUM UI detail: "hd" (smoothed 4x, port extension) or "native".
+function Importer.uiDetail()
+  if modRef and modRef.options and modRef.options.get then
+    local ok, value = pcall(modRef.options.get, modRef.options, "stadium2_ui_detail")
+    if ok and value == "native" then return "native" end
+  end
+  return "hd"
+end
+
 -- These preferences change prompt artwork only; the host owns bindings.
 function Importer.controllerIcons()
   local value = modRef and modRef.options and modRef.options.get

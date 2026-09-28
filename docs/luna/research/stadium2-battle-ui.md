@@ -291,6 +291,26 @@ place of the ROM icons (CONTROLLER ICONS option; `NATIVE N64` and keyboard
 play under `AUTO` keep the ROM textures). A missing image or an unusual
 binding draws a labelled placeholder, never a different button.
 
+## HD detail (2026-09-28, port extension)
+
+Requested by the user; not ROM behaviour. `UI DETAIL = HD` (default)
+builds every UI texture and font glyph at 4x (`Assets.upscale`): bilinear
+interpolation of premultiplied RGBA, re-sharpened with a smoothstep where
+the four source texels differ by more than 0.12 (letter and icon edges), so
+outlines become smooth curves; softer neighbourhoods (card gradient
+strips) stay plainly interpolated, which removes their banding. Fully
+transparent output texels take the colour of the nearby art (no dark
+fringe under linear filtering). Drawers scale by 1/4 and inset quads half a
+texel. About 110 ms once on desktop LuaJIT for all 403 images. `N64 PIXELS`
+keeps the 1x nearest-filtered ROM textures.
+
+In HD, the N64 button icons (UI archive file 30) are redrawn as vector art
+at 16x (`lib/stadium_n64_buttons.lua`) in the ROM icons' design: greyscale
+caps (round; rounded keys for L/R) with a dark rim, a face lit from the
+upper left, bold italic letters or arrows and a lower-right drop shadow,
+at the ROM sizes (16x18, 24x17), so the game's tints still apply. If the
+canvas cannot be created they fall back to the upscaled ROM icons.
+
 ## Open
 
 - Locate the UI fragment and its textures (panel gradients, bracket

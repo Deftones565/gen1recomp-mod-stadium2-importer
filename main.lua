@@ -4,7 +4,7 @@
 -- previous version's modules back from require. Evict them when the build
 -- changed; within one build the cached modules (and their caches) are kept.
 -- MOD_BUILD must match manifest.json's version (stadium2_independence_test).
-local MOD_BUILD = "0.17.1"
+local MOD_BUILD = "0.18.0"
 do
   local PREFIX = "mods.STADIUM2_IMPORTER."
   local STAMP = PREFIX .. "__build"
@@ -153,6 +153,10 @@ return function(mod)
       visible_if={key="stadium2_stadium_ui", equals=true},
       choices={{"CURSOR","cursor"},{"STADIUM","stadium"}},
       help="With a controller the menus always use Stadium 2's controls: no cursor, A BATTLE, B POKeMON, START RUN, R PACK, C buttons (right stick) pick, hold the D-pad for a move's info, L (LB) cancels. On keyboard, CURSOR keeps the moving cursor (hold R for info); STADIUM uses the controller scheme (C = I/J/K/L). PACK is not in Stadium 2." },
+    { key="stadium2_ui_detail", label="UI DETAIL", type="choice", default="hd",
+      visible_if={key="stadium2_stadium_ui", equals=true},
+      choices={{"HD","hd"},{"N64 PIXELS","native"}},
+      help="HD smooths Stadium 2's UI art and font from your ROM (enlarged 4x and filtered) so it looks clean on big screens. N64 PIXELS shows the original pixels. HD is a mod addition." },
     { key="stadium2_controller_icons", label="CONTROLLER ICONS", type="choice", default="auto",
       visible_if={key="stadium2_stadium_ui", equals=true},
       choices={{"AUTO","auto"},{"XBOX","xbox"},{"PLAYSTATION","playstation"},
@@ -326,6 +330,7 @@ return function(mod)
   local StadiumMenu = require("mods.STADIUM2_IMPORTER.lib.stadium_menu")
   local StadiumController = require("mods.STADIUM2_IMPORTER.lib.stadium_controller")
   local StadiumGlyphs = require("mods.STADIUM2_IMPORTER.lib.stadium_button_glyphs")
+  local StadiumUIAssets = require("mods.STADIUM2_IMPORTER.lib.stadium_ui_assets")
   StadiumGlyphs.bindMod(mod)
   StadiumGlyphs.bindWarning(function(message)
     if mod.log and mod.log.warn then mod.log:warn("%s",message) end
@@ -371,6 +376,7 @@ return function(mod)
     local okMode, mode = pcall(function() return Importer.menuControls() end)
     -- prompt artwork only; a failure here must never block menu input
     pcall(function()
+      StadiumUIAssets.setDetail(Importer.uiDetail())
       local iconStyle = Importer.controllerIcons()
       StadiumController.setStyle(iconStyle)
       StadiumGlyphs.setStyle(iconStyle)
@@ -395,6 +401,10 @@ return function(mod)
     end
     return next(state)
   end, 120)
+  -- In-battle evolution (user-requested extension; lib/battle_evolution.lua).
+  require("mods.STADIUM2_IMPORTER.lib.battle_evolution").install(mod,
+    function() return type(Battle.currentScene) == "function" and Battle.currentScene() or nil end,
+    function(message) if mod.log and mod.log.warn then pcall(mod.log.warn, mod.log, "%s", message) end end)
 
   mod.hooks:wrap("input.step", function(next, game, dt)
     local result = next(game, dt)

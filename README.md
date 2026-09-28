@@ -31,6 +31,16 @@ No ROM is included. Never add one to the mod ZIP.
   underground lakes and indoor pools.
 - `CLASSIC` keeps the simple classic battle stage.
 
+## Evolution in battle
+
+When a Pokemon evolves at the end of a won battle, it evolves in the 3D
+battle instead of on the game's evolution screen: the camera closes in, the
+Pokemon turns white and its old and new models trade places on the game's
+own flash beats, sparkles rise, and the white fades off the new form. The
+game's texts show in the Stadium message box. If the Pokemon evolving is not
+the one out, it is sent out first. B still cancels. If a model can't load,
+the game's own evolution screen is used.
+
 ## Options
 
 | Option | What it does |
@@ -40,6 +50,7 @@ No ROM is included. Never add one to the mod ZIP.
 | BATTLE HUD | Stadium's glass HUD; turn off to use the native or another mod's UI. |
 | STADIUM UI | Stadium 2's own battle UI read from your ROM (status panels with live portraits, message box, command bar, move diamond and info, switch cards, YES/NO) in place of the glass HUD. Needs BATTLE HUD on. |
 | MENU CONTROLS | With a controller the menus use Stadium 2's controls (no cursor, C buttons on the right stick, hold the D-pad for move info). On keyboard, `CURSOR` keeps a moving cursor and `STADIUM` uses the controller scheme. |
+| UI DETAIL | `HD` (default) smooths the Stadium UI's art and font from your ROM and redraws the N64 button icons sharply for big screens; `N64 PIXELS` shows the original pixels. |
 | CONTROLLER ICONS | Button prompts in the Stadium UI: `AUTO` follows the controller you last used; or pick `XBOX`, `PLAYSTATION`, `AYN THOR`, `STEAM DECK`, or `NATIVE N64` for Stadium's own icons. Keyboard play shows the N64 icons under `AUTO`. |
 | THOR INPUT MODE | Shown for `AYN THOR`: match the Thor's controller style so A/B and X/Y prompts line up. |
 | GRAPHICS | Shows the graphics settings below. |
@@ -58,10 +69,10 @@ No ROM is included. Never add one to the mod ZIP.
 | PARK TIME OF DAY (BETA) | Morning, day and night lighting for Free Battle Park. |
 | MOVE EFFECTS (BETA) | Stadium 2's own move effects, decoded from your ROM. |
 
-The painted scenes, weather, visitors, Extra Effects and the Poke Ball toggle
-are mod additions, not part of Stadium 2. In the Stadium UI, PACK, the
-cursor, sharp portraits, the second row of switch cards and the controller
-icons are additions too.
+The painted scenes, weather, visitors, Extra Effects, the Poke Ball toggle
+and the in-battle evolution are mod additions, not part of Stadium 2. In the Stadium UI, PACK, the
+cursor, sharp portraits, the second row of switch cards, the controller
+icons and HD detail are additions too.
 
 ## Test room
 

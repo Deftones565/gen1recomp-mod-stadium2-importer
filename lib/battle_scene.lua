@@ -22,6 +22,8 @@ local Lake = require("mods.STADIUM2_IMPORTER.lib.battle_freshwater")
 local Ocean = require("mods.STADIUM2_IMPORTER.lib.battle_ocean")
 local Town = require("mods.STADIUM2_IMPORTER.lib.battle_town")
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
+-- In-battle evolution (user-requested extension, not Stadium 2 behaviour).
+local Evolution = require("mods.STADIUM2_IMPORTER.lib.battle_evolution")
 
 local Scene = {}
 Scene.__index = Scene
@@ -114,6 +116,7 @@ function Scene.new(opts)
 end
 
 function Scene:release()
+  if self.evolution then pcall(self.evolution.release,self.evolution);self.evolution=nil end
   local battleFx=self.battleFx
   self.battleFx=nil
   if battleFx and type(battleFx.release)=="function" then
@@ -147,6 +150,9 @@ end
 -- state has advanced.  The shared scene deliberately does not own battle
 -- timing, but provides one guarded seam for the persistent FX clock.
 function Scene:updateBattleFx(dt)
+  -- the in-battle evolution (extension) steps with the scene clock
+  local evoOk,evoErr=pcall(Evolution.step,self,dt)
+  if not evoOk and self.warn then pcall(self.warn,"evolution: "..tostring(evoErr)) end
   local battleFx=self.battleFx
   if not battleFx or type(battleFx.update)~="function" then return nil end
   local ok,result=pcall(battleFx.update,battleFx,dt)
@@ -481,6 +487,7 @@ function Scene:render(requestedWidth,requestedHeight)
     cameraCtx.cameraPhase="select"
     local selectedFrame=Extensions.camera(cameraCtx,function() return defaultFrame end)
     local frame=normalizeFrame(selectedFrame,defaultFrame)
+    frame=Evolution.sceneFrame(self,frame)
     if self.visitors then
       self.visitors:update(self.pendingVisitorDT or 0,frame)
       self.visitors:prune(frame)
@@ -526,6 +533,9 @@ function Scene:render(requestedWidth,requestedHeight)
     local dynamicObjectIndex=0
     for _,side in ipairs({"enemy","player"}) do
       local actor=self:visualActor(side)
+      -- an evolution on screen stands in the player's slot, alone
+      local evolving,evolutionActor=Evolution.actorFor(self,side)
+      if evolving then actor=evolutionActor end
       if battlerModes[side]~="native" and actor and actor.renderer then
         if hasDynamicObjectHandler(actor) then
           actor.dynamicObjectIndex=dynamicObjectIndex
@@ -620,6 +630,8 @@ function Scene:render(requestedWidth,requestedHeight)
     ext.battlers={sides=resolvedModes,requested=battlerModes,drawn=providerDrawn}
     restoreWorldTarget(self,g)
 
+    Evolution.drawBackdropFor(self,g,frame,renderWidth,renderHeight)
+    restoreWorldTarget(self,g)
     local modelFailed={enemy=false,player=false}
     for _,pass in ipairs({"opaque","additive"}) do
       for _,side in ipairs({"enemy","player"}) do
@@ -644,7 +656,7 @@ function Scene:render(requestedWidth,requestedHeight)
               -- routine (Double Team) sets it.
               tint={base[1],base[2],base[3],opacity*(alphaByte or 255)/255},
               nativeModelColor=nativeColor and nativeColor.color,
-              flashAmount=actor.flash>0 and .5 or 0,
+              flashAmount=math.max(actor.flash>0 and .5 or 0,actor.evolveWhite or 0),
               sunMap=shadow and shadow.map,sunVP=shadow and shadow.sunVP,
               sunDark=shadow and shadow.sunDark,sunBias=shadow and shadow.sunBias,
               sunTexel=shadow and shadow.sunTexel,
@@ -675,6 +687,8 @@ function Scene:render(requestedWidth,requestedHeight)
       end
     end
 
+    restoreWorldTarget(self,g)
+    Evolution.drawOverlayFor(self,g,frame,renderWidth,renderHeight)
     restoreWorldTarget(self,g)
     if natureActive then
       if self.visitors then self.visitors:draw(g,frame,self.environment,environmentScene,shadow) end

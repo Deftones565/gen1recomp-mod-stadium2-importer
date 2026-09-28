@@ -185,6 +185,29 @@ ok(#ynGame.input.pressQueue==1 and #taps==0,"A reaches the host's YES/NO in eith
 ok(UI.YESNO.x==92 and UI.YESNO.y==17 and UI.YESNO.w==204 and UI.YESNO.h==50
   and UI.YESNO.optionY==26,"YES/NO window geometry from D_84186DD8..DF8")
 
+-- HD UI upscale (port extension): 4x, flat areas unchanged, soft gradients
+-- interpolated (no bands), hard edges re-sharpened, no dark fringe on
+-- transparent texels.
+local Assets=require("mods.STADIUM2_IMPORTER.lib.stadium_ui_assets")
+local function px(r,g,b,a) return string.char(r,g,b,a) end
+local flat=px(200,100,50,255):rep(4)
+local up,uw,uh=Assets.upscale(flat,2,2,4)
+ok(uw==8 and uh==8 and #up==8*8*4,"4x output size")
+ok(up:sub(1,4)==px(200,100,50,255) and up:sub(-4)==px(200,100,50,255),"flat colour stays exact")
+local grad=px(100,100,100,255)..px(110,110,110,255)
+local gu=Assets.upscale(grad,2,1,4)
+local mid=gu:byte(3*4+1)
+ok(mid>100 and mid<110,"a soft gradient is interpolated, not stepped")
+local hard=px(0,0,0,255)..px(255,255,255,255)
+local hu=Assets.upscale(hard,2,1,4)
+local near,edge=hu:byte(2*4+1),hu:byte(3*4+1)
+ok(near<40 and edge<128,"a hard edge stays sharp (smoothstep)")
+local halo=px(255,255,255,255)..px(0,0,0,0)
+local tu=Assets.upscale(halo,2,1,4)
+ok(tu:byte(7*4+4)==0 and tu:byte(7*4+1)==255,"transparent texels keep the neighbour colour (no dark fringe)")
+Assets.setDetail("native"); ok(Assets.detail()=="native","N64 PIXELS detail")
+Assets.setDetail("hd"); ok(Assets.detail()=="hd","HD detail")
+
 -- Portrait eye (func_800371B4): target + (sin yaw cos pitch, sin pitch,
 -- cos yaw cos pitch) * distance, angles quantised to the 4096-entry tables.
 local Portrait=require("mods.STADIUM2_IMPORTER.lib.stadium_portrait")

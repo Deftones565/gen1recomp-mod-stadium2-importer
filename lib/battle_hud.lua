@@ -193,7 +193,12 @@ function Hud.layer(draw,opts)
       local crystalMovePaper=opts and opts.crystalMovePane
         and crystalMovePaperRect(x,y,w,h)
       local paper=keyedPaperRect(x,y,w,h) or crystalMovePaper
-      local foreign=opts and ((y>=96 and opts.bottomOwned==false)
+      -- Chrome.clear's whole-screen fill is the battlefield's paper, never a
+      -- UI box: it is keyed even when another UI owns the status or bottom
+      -- region (a foreign status UI would otherwise leave the whole Game Boy
+      -- screen white over the 3D field).
+      local fieldClear=x==0 and y==0 and w==160 and h==144
+      local foreign=opts and not fieldClear and ((y>=96 and opts.bottomOwned==false)
         or (y<96 and opts.statusOwned==false and not crystalMovePaper))
       if not (opts and opts.preservePaper)
           and not foreign
