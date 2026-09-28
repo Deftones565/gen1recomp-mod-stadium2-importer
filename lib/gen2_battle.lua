@@ -682,7 +682,10 @@ function Scene:picScale(side, screen)
   if actor and not self.battleFx and self.minimized[side]==actor.mon and actor.mon
       and not (state and state.pic=="substitute") and not self.substituteActive[side] then return .35 end
   if not (screen and screen.anim and state) then return 1 end
-  if not screen.ballThrow then return 1 end
+  -- Only the catch throw itself: Gold leaves ballThrow set for the rest of
+  -- the battle, and the ReturnMon shrink of a later switch must not scale
+  -- the model (Stadium's recall, POKE BALL option, stands in for it).
+  if not (screen.ballThrow and screen.anim.animId=="ANIM_THROW_POKE_BALL") then return 1 end
   local size=tonumber(state.size)
   return (PIC_SCALE[side] and PIC_SCALE[side][size]) or 1
 end

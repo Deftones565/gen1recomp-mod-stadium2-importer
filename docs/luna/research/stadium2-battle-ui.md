@@ -327,3 +327,44 @@ canvas cannot be created they fall back to the upscaled ROM icons.
   framebuffer-emulating plugin (e.g. GLideN64 with FB emulation on).
 - Message box line spacing for two-line text (12 px assumed).
 - Colours per move type and status abbreviations from data, not screenshots.
+
+## Switch screen for parties of 4-6, and STATUS (2026-09-28)
+
+Decoded from the US assembly in the pret clone (`c0e10f23`, extracted asm;
+these functions are still `GLOBAL_ASM` in the michiiik snapshot
+`026460f8`), ROM data read at `vaddr - 0x83D90770`. Implemented in the
+Stadium-2-UI repository (`lib/stadium_menu.lua`, `lib/stadium_ui.lua`).
+
+- Input, `fragment79_393CA0`:
+  - `func_8413B468`, three members (UI element 0xB): pressed C-left, C-up,
+    C-right switch to members 0-2 (`func_84139618(side, i)`); held D-pad
+    left, right, up show members 0, 2, 1 (`func_8413AB2C(side, 0, i, 0xB)`).
+  - `func_8413B5D4`, four to six members (element 0xC): pressed B, C-left,
+    C-up, A, C-down, C-right switch to members 0-5. Held D-pad up/down latch
+    the status row (element +8 = 1 / 2; cleared when no D-pad direction is
+    held); then left, right, up show 0, 2, 1 (up row) and left, right, down
+    show 3, 5, 4 (down row).
+  - Both: held R = CHECK (`func_8413A6CC`), else `func_8413B08C`; pressed L
+    = cancel (`func_84139958`) while element +0xE < 2.
+- `func_8413AB2C` shows element 0xD (STATUS) for member `i` when
+  `i < party count` (UI state 7).
+- Geometry (init `func_84146610` / `func_841466B0` / `func_84146704`):
+  element 0xB frame x92 y17 207x52 (`D_84186CD4/CD8/CE4/CE8`); element 0xC
+  x92 y17 207x98, rows 46 (0x2E) apart (`D_84186CE0/CEC`, draw
+  `func_8414216C`); element 0xD x94 y17 161x100 (opponent x67 y125,
+  `D_84186D3C..D48`).
+- STATUS contents, offsets from the element frame: HP label (17,47)
+  `func_841420A4` / `D_84186D54,58`; HP bar (31,47) `func_8414216C` /
+  `D_84186D5C,58`; HP digits 50/57, row 54 (`D_84186D68/70/74`); status tag
+  (44,36) `func_841427DC` / `D_84186D60,64`; the Pokemon's types (7,69) and
+  (43,69) and each move's type label (83, 16+23i) `func_84141D1C` /
+  `D_84186D78..84`. `D_84186D88..94` (132,132,138,132) are taken as the PP
+  columns; the text pass (name, level, move names) is `func_84145340` /
+  `func_8413E63C` with blocks from `D_84186DB8..DD4`, not decoded: the port
+  places those texts in the same rows. Not compared with a capture yet.
+
+Port choice (user request, 2026-09-28, not ROM behaviour): the STATUS card
+opens while R is held together with a member's switch button (CURSOR
+controls: R held shows the cursor's member; touch: long press), not with
+the held D-pad as `func_8413B468` / `func_8413B5D4` do. The switch screen
+shows the game's L CANCEL / R CHECK tabs under the cards.

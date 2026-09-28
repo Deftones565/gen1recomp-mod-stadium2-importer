@@ -133,7 +133,7 @@ local enemyActor=scene.actors.enemy
 enemyActor.mon,enemyActor.renderer,enemyActor.dex=enemy,rig,19
 scene.screen.picHidden.enemy=true
 scene.screen.ballThrow={caught=true}
-scene.screen.anim={}
+scene.screen.anim={animId="ANIM_THROW_POKE_BALL"}
 scene.screen.animPicState=function(_,side)
   if side=="enemy" then return {hidden=false,size=4,slide=0} end
   return nil
@@ -142,6 +142,11 @@ ok(scene:visualState("enemy")=="pokemon",
   "caught foe remains visible while the Pokeball animation owns ReturnMon")
 ok(math.abs(scene:picScale("enemy")-5/7)<0.0001,
   "caught foe follows Gold's 7x7 to 5x5 ReturnMon scale")
+-- Gold keeps ballThrow set for the rest of the battle: a later switch's
+-- ReturnMon (not the catch throw) must not shrink the model.
+scene.screen.anim={animId="ANIM_RETURN_MON"}
+ok(scene:picScale("enemy")==1,"a switch's ReturnMon after a throw leaves the model its size")
+scene.screen.anim={animId="ANIM_THROW_POKE_BALL"}
 scene.screen.animPicState=function(_,side)
   if side=="enemy" then return {hidden=false,size=5,slide=0} end
   return nil

@@ -282,7 +282,7 @@ function Importer.battleFxSendOutEnabled()
     local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_fx_pokeball")
     if ok and value~=nil then return value==true end
   end
-  return true
+  return false
 end
 
 -- EXTRA EFFECTS shares the stored PARTICLES key, so saved choices carry over.

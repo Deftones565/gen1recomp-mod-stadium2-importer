@@ -63,6 +63,12 @@ ok(native.modelColors.player==nil and not fading.active,
   "a new model on a side drops the old model's opacity and stops its writes")
 ok(native.modelColors.enemy.opacity==0 and native.modelColorInstances[2].active,
   "the other side keeps its model colour")
+-- POKE BALL is off unless the player turns it on.
+local Importer=require("mods.STADIUM2_IMPORTER.lib.importer")
+ok(Importer.battleFxSendOutEnabled()==false,"POKE BALL defaults to off")
+local mainSource=io.open("mods/STADIUM2_IMPORTER/main.lua"):read("*a")
+ok(mainSource:find('key="stadium2_fx_pokeball", label="POKE BALL", type="toggle", default=false',1,true)~=nil,
+  "the POKE BALL option is defined off by default")
 -- EXTRA EFFECTS off also stops torch/lamp shadows, in every instance.
 local TorchShadows=require("mods.STADIUM2_IMPORTER.lib.battle_torch_shadows")
 local lamps=TorchShadows.new()

@@ -4,7 +4,7 @@
 -- previous version's modules back from require. Evict them when the build
 -- changed; within one build the cached modules (and their caches) are kept.
 -- MOD_BUILD must match manifest.json's version (stadium2_independence_test).
-local MOD_BUILD = "0.19.0"
+local MOD_BUILD = "0.19.1"
 do
   local PREFIX = "mods.STADIUM2_IMPORTER."
   local STAMP = PREFIX .. "__build"
@@ -175,7 +175,7 @@ return function(mod)
       visible_if={key="stadium2_graphics", equals=true},
       choices={{"ON",true},{"LITE","lite"},{"OFF",false}},
       help="Costly extras, for speed on slow phones. LITE keeps move effects but draws about half of each big particle burst (sparkles, trails, bubbles; single objects like the Poke Ball always show) and turns off Kenney-scene shadows, rain/thunderstorms and ambient Pokemon. OFF also hides all move-effect particles. Move timing is unchanged. Not in the original game." },
-    { key="stadium2_fx_pokeball", label="POKE BALL", type="toggle", default=true,
+    { key="stadium2_fx_pokeball", label="POKE BALL", type="toggle", default=false,
       visible_if={key="stadium2_graphics", equals=true}, help="Play Stadium's Poke Ball send-out and return effects (with Move Effects on). OFF skips both for speed on slow phones; the Pokemon still comes out and goes back. Not in the original game." },
     { key="stadium2_weather", label="SCENE WEATHER", type="choice", visible_if={key="stadium2_graphics", equals=true}, default="off",
       choices={{"OFF","off"},{"RAIN","rain"},{"THUNDERSTORM","storm"}},
