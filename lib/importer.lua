@@ -148,50 +148,6 @@ function Importer.battleHudEnabled()
   return true
 end
 
--- STADIUM UI option: Stadium 2's own battle UI (stadium_ui.lua).
-function Importer.stadiumUiEnabled()
-  if modRef and modRef.options and modRef.options.get then
-    local ok, value = pcall(modRef.options.get, modRef.options,
-      "stadium2_stadium_ui")
-    if ok and value == true then return true end
-  end
-  return false
-end
-
--- MENU CONTROLS: "cursor" (default) or "stadium" button mapping.
-function Importer.menuControls()
-  if modRef and modRef.options and modRef.options.get then
-    local ok, value = pcall(modRef.options.get, modRef.options,
-      "stadium2_menu_controls")
-    if ok and value == "stadium" then return "stadium" end
-  end
-  return "cursor"
-end
-
--- STADIUM UI detail: "hd" (smoothed 4x, port extension) or "native".
-function Importer.uiDetail()
-  if modRef and modRef.options and modRef.options.get then
-    local ok, value = pcall(modRef.options.get, modRef.options, "stadium2_ui_detail")
-    if ok and value == "native" then return "native" end
-  end
-  return "hd"
-end
-
--- These preferences change prompt artwork only; the host owns bindings.
-function Importer.controllerIcons()
-  local value = modRef and modRef.options and modRef.options.get
-    and modRef.options:get("stadium2_controller_icons")
-  if value == "xbox" or value == "playstation" or value == "ayn_thor"
-      or value == "steamdeck" or value == "native" then return value end
-  return "auto"
-end
-
-function Importer.thorInputMode()
-  local value = modRef and modRef.options and modRef.options.get
-    and modRef.options:get("stadium2_thor_input_mode")
-  return value == "xbox" and "xbox" or "thor"
-end
-
 function Importer.weatherStyle()
   if modRef and modRef.options and modRef.options.get then
     local ok,value=pcall(modRef.options.get,modRef.options,"stadium2_weather")

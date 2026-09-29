@@ -14,7 +14,9 @@ runs the battles; this mod only changes how they look.
 
 ## Setup
 
-1. Install and enable the mod in the Mod Manager.
+1. Install and enable the mod in the Mod Manager. It needs the
+   [Stadium 2 UI](https://github.com/Deftones565/Stadium-2-UI) mod: the game
+   offers to install it.
 2. When asked, import your own **Pokemon Stadium 2 (USA)** ROM (`.z64`,
    `.v64` or `.n64`). MD5: `1561c75d11cedf356a8ddb1a4a5f9d5d`.
 3. Start the game. Models are imported once, with a progress screen; after
@@ -48,11 +50,6 @@ the game's own evolution screen is used.
 | 3D POKEMON MODELS | Stadium models on or off. |
 | 3D BATTLE SCENE | The 3D battle presentation on or off. |
 | BATTLE HUD | Stadium's glass HUD; turn off to use the native or another mod's UI. |
-| STADIUM UI | Stadium 2's battle UI (status panels with live portraits, message box, command bar, move diamond and info, switch cards, PACK, YES/NO) in place of the glass HUD. It is the [Stadium 2 UI](https://github.com/Deftones565/Stadium-2-UI) mod, included in this mod. |
-| MENU CONTROLS | With a controller the menus use Stadium 2's controls (no cursor, C buttons on the right stick, hold the D-pad for move info). On keyboard, `CURSOR` keeps a moving cursor and `STADIUM` uses the controller scheme. |
-| UI DETAIL | `HD` (default) smooths the Stadium UI's art and font for big screens; `N64 PIXELS` shows them as crisp pixels. |
-| CONTROLLER ICONS | Button prompts in the Stadium UI: `AUTO` follows the controller you last used; or pick `XBOX`, `PLAYSTATION`, `AYN THOR`, `STEAM DECK`, or `NATIVE N64` for Stadium's own icons. Keyboard play shows the N64 icons under `AUTO`. |
-| THOR INPUT MODE | Shown for `AYN THOR`: match the Thor's controller style so A/B and X/Y prompts line up. |
 | GRAPHICS | Shows the graphics settings below. |
 | SHADER STYLE | `STADIUM` or `WATERCOLOR MANGA`. |
 | 3D RESOLUTION | `AUTO`, 100%, 75% or 50%. Lower is faster; the UI stays sharp. |
@@ -68,6 +65,11 @@ the game's own evolution screen is used.
 | CONTEXT ARENAS (BETA) | Gen 2 trainer battles use their matching Stadium arena. |
 | PARK TIME OF DAY (BETA) | Morning, day and night lighting for Free Battle Park. |
 | MOVE EFFECTS (BETA) | Stadium 2's own move effects, decoded from your ROM. |
+
+Stadium 2's battle UI (status panels with live portraits, message box,
+command bar, move diamond, switch cards, PACK, YES/NO) is the
+[Stadium 2 UI](https://github.com/Deftones565/Stadium-2-UI) mod, with its own
+options (STADIUM UI, MENU CONTROLS, UI DETAIL, CONTROLLER ICONS).
 
 The painted scenes, weather, visitors, Extra Effects, the Poke Ball toggle
 and the in-battle evolution are mod additions, not part of Stadium 2. In the Stadium UI, PACK, the
@@ -103,11 +105,7 @@ Thank you to the maintainers and contributors of both projects.
 
 ## For developers
 
-The Stadium UI is the Stadium-2-UI repository, a git submodule at `ui/`
-(one codebase with the standalone Stadium 2 UI mod). Clone with
-`git clone --recursive`, or run `git submodule update --init` in an
-existing clone. Build a release ZIP with `sh tools/build_release.sh`
-(it includes `ui/`, which `git archive` leaves out).
+Build a release ZIP with `sh tools/build_release.sh`.
 
 The integration API, UI-mod compatibility, rendering notes, tests and tools
 are in [docs/INTEGRATION.md](docs/INTEGRATION.md). Release notes are in

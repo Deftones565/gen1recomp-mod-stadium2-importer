@@ -1,7 +1,7 @@
 {
   "id": "STADIUM2_IMPORTER",
   "name": "Pokemon Stadium 2 Importer",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "api": 2,
   "games": [
     "gen1",
@@ -16,7 +16,12 @@
   ],
   "game_version": ">=0.1.86 <1.0.0",
   "priority": 105,
-  "dependencies": [],
+  "dependencies": [
+    "STADIUM2_UI@>=1.1.0 <2.0.0"
+  ],
+  "dependency_sources": {
+    "STADIUM2_UI": "Deftones565/Stadium-2-UI"
+  },
   "optional_dependencies": [],
   "conflicts": [],
   "github": "Deftones565/gen1recomp-mod-stadium2-importer",

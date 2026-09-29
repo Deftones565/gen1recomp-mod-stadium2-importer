@@ -27,8 +27,9 @@ package.loaded["mods.STADIUM2_IMPORTER.lib.renderer"]={
 package.loaded["mods.STADIUM2_IMPORTER.lib.battle_camera"]={project=function() return 0,0,true end}
 local uiAvailable=true
 local drawn
-package.loaded["mods.STADIUM2_IMPORTER.ui.lib.stadium_ui"]={available=function() return uiAvailable end,
-  toLatin1=function(s) return s end,tryDrawMessage=function(_,lines) drawn=lines return true end}
+-- the Stadium 2 UI mod's exports (STADIUM2_UI, a dependency)
+local uiExports={messageAvailable=function() return uiAvailable end,
+  toLatin1=function(s) return s end,drawMessage=function(_,lines) drawn=lines return true end}
 package.loaded["mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence"]={SEND_OUT_ENTRY=0x122}
 
 local ES,TB,EA={}, {}, {}
@@ -38,6 +39,7 @@ package.loaded["src.ui.gen2.EvolutionAnim"]=EA
 package.loaded["src.core.RomText"]=function(_,_,default,name) return (default:format(name)) end
 
 local Evolution=require("mods.STADIUM2_IMPORTER.lib.battle_evolution")
+Evolution.bindUi(function() return uiExports end)
 
 -- Gen 1's flash schedule (the host's evoShowsNew) --------------------------
 ok(Evolution.gen1ShowsNew(0)==false and Evolution.gen1ShowsNew(16)==true,"round 1: hold the old pic 16, then swap")
@@ -191,7 +193,9 @@ end
 
 -- install: the battle's own text box and HUD stay off while presenting
 local hooks={}
-local mod={hooks={wrap=function(_,name,fn) hooks[name]=fn end},exports={}}
+local found
+local mod={hooks={wrap=function(_,name,fn) hooks[name]=fn end},exports={},
+  find=function(_,id) found=id return id=="STADIUM2_UI" and {exports=uiExports} or nil end}
 local current=scene2
 Evolution.install(mod,function() return current end)
 anim.phase="evolving"; game2.stack.states={screen,anim}
@@ -202,5 +206,10 @@ ok(hooks["battle.bottom_ui_visible"](nextVisible,screen)==false,"the battle's te
 ok(hooks["battle.status_hud_visible"](nextVisible,screen)==false,"and its status boxes")
 ok(hooks["battle.bottom_ui_visible"](nextVisible,{})==true and nextCalled,"other screens untouched")
 ok(mod.exports.evolutionPresented()==true,"presented, for other UI mods")
+drawn=nil
+ok(Evolution.drawHud(scene2,{width=1920,height=1080}) and found=="STADIUM2_UI" and drawn,
+  "the Stadium box comes from the STADIUM2_UI mod's exports")
+mod.find=function() return nil end
+ok(Evolution.drawHud(scene2,{width=1920,height=1080})==false,"without the UI mod: no box, no error")
 
 print(checks.." checks passed (in-battle evolution)")

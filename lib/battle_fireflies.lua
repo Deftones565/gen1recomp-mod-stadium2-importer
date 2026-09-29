@@ -51,7 +51,10 @@ end
 function F.bindLighting(s)
  if not s:hasUniform('fireflyEnabled') then return end
  s:send('fireflyEnabled',enabled and 1 or 0)
- if enabled then for i=1,4 do s:send('firefly'..i,F.lights[i]) end end
+ -- each checked: a driver may drop the ones its shader does not use
+ if enabled then for i=1,4 do
+  if s:hasUniform('firefly'..i) then s:send('firefly'..i,F.lights[i]) end
+ end end
 end
 function F.draw(g,frame)
  -- Prepare even during daytime so dusk does not allocate mid-battle.

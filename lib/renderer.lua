@@ -2557,7 +2557,9 @@ function Renderer:drawScene(pass, model, options)
       self.smoothArenaTextures and 1 or 0)
     pcall(self.shader.send,self.shader,"fireflyEnabled",0)
     pcall(self.shader.send,self.shader,"localTorchEnabled",0)
-    if options.bindTorchLighting then options.bindTorchLighting(self.shader) end
+    -- Scene lighting is extra: a failure in it must not cost the model its
+    -- draw (drawScene's failure hides the battler).
+    if options.bindTorchLighting then pcall(options.bindTorchLighting, self.shader) end
     pcall(self.shader.send, self.shader, "sunVP", "row", options.sunVP or identity())
     pcall(self.shader.send, self.shader, "sunEnabled",
       options.sunMap and self.receiveModelSunShadows and 1 or 0)

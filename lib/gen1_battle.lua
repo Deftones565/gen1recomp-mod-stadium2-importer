@@ -676,7 +676,7 @@ function Scene:composeWorld()
     local enemyPanelX,enemyPanelY=panels.enemyX,panels.enemyY
     local playerPanelX,playerPanelY=panels.playerX,panels.playerY
 
-    -- STADIUM UI is the embedded Stadium-2-UI (ui/ submodule): it hides the
+    -- STADIUM UI is the Stadium 2 UI mod (STADIUM2_UI): it hides the
     -- host's status and bottom UI through the visibility hooks, so the
     -- glass below stands aside for it as for any other UI mod.
     if enemyLive or enemyBalls then

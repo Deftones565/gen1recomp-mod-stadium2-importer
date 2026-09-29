@@ -4,7 +4,7 @@
 -- previous version's modules back from require. Evict them when the build
 -- changed; within one build the cached modules (and their caches) are kept.
 -- MOD_BUILD must match manifest.json's version (stadium2_independence_test).
-local MOD_BUILD = "0.19.1"
+local MOD_BUILD = "0.20.0"
 do
   local PREFIX = "mods.STADIUM2_IMPORTER."
   local STAMP = PREFIX .. "__build"
@@ -140,25 +140,6 @@ return function(mod)
     { key="stadium2_battle_hud", label="BATTLE HUD", type="toggle",
       default=true,
       help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
-    { key="stadium2_stadium_ui", label="STADIUM UI", type="toggle", default=false,
-      help="Pokemon Stadium 2's battle UI (status panels, message box, command bar, move diamond, switch cards, PACK, YES/NO) in place of the glass HUD, with live 3D portraits. The same UI as the Stadium 2 UI mod, included here." },
-    { key="stadium2_menu_controls", label="MENU CONTROLS", type="choice", default="cursor",
-      visible_if={key="stadium2_stadium_ui", equals=true},
-      choices={{"CURSOR","cursor"},{"STADIUM","stadium"}},
-      help="With a controller the menus always use Stadium 2's controls: no cursor, A BATTLE, B POKeMON, START RUN, R PACK, C buttons (right stick) pick, hold the D-pad for a move's info, L (LB) cancels. On keyboard, CURSOR keeps the moving cursor (hold R for info); STADIUM uses the controller scheme (C = I/J/K/L). PACK is not in Stadium 2." },
-    { key="stadium2_ui_detail", label="UI DETAIL", type="choice", default="hd",
-      visible_if={key="stadium2_stadium_ui", equals=true},
-      choices={{"HD","hd"},{"N64 PIXELS","native"}},
-      help="HD smooths the UI's art and font for big screens. N64 PIXELS shows them as crisp pixels, like the N64." },
-    { key="stadium2_controller_icons", label="CONTROLLER ICONS", type="choice", default="auto",
-      visible_if={key="stadium2_stadium_ui", equals=true},
-      choices={{"AUTO","auto"},{"XBOX","xbox"},{"PLAYSTATION","playstation"},
-        {"AYN THOR","ayn_thor"},{"STEAM DECK","steamdeck"},{"NATIVE N64","native"}},
-      help="AUTO follows the last controller used. Choose a family if a driver or Steam Input hides its identity. Changes prompts only; your control bindings stay in effect." },
-    { key="stadium2_thor_input_mode", label="THOR INPUT MODE", type="choice", default="thor",
-      visible_if={key="stadium2_controller_icons", equals="ayn_thor"},
-      choices={{"THOR","thor"},{"XBOX","xbox"}},
-      help="Match the Controller Style on your AYN Thor. XBOX swaps the printed A/B and X/Y prompts. Select AYN THOR under CONTROLLER ICONS to override an unidentified handheld." },
     { key="stadium2_graphics", label="GRAPHICS", type="choice", default=false,
       choices={{"HIDE",false},{"SHOW",true}},
       help="Show or hide the graphics settings: shader style, 3D resolution, battle AA, extra effects, Poke Ball and scene weather." },
@@ -318,23 +299,12 @@ return function(mod)
   mod.exports.models = Models
   mod.exports.modelCapabilities = Models.capabilities()
 
-  -- STADIUM UI: the Stadium 2 UI (the Stadium-2-UI repository, a git
-  -- submodule at ui/, shared with the standalone STADIUM2_UI mod) installs
-  -- its visibility hooks, window-space draw and menu input here. It hides
+  -- STADIUM UI is the Stadium 2 UI mod (STADIUM2_UI, a dependency). It hides
   -- the host's status HUD and bottom box itself, so the glass HUD stands
   -- aside for it as for any other UI mod.
-  -- Stadium's portrait camera records from the ROM, for the UI's live 3D
-  -- portraits (the UI finds this module in package.loaded).
+  -- Stadium's portrait camera records from the ROM, for its live 3D portraits
+  -- (the UI finds this module in package.loaded).
   require("mods.STADIUM2_IMPORTER.lib.stadium_portrait_data")
-  require("mods.STADIUM2_IMPORTER.ui.lib.embed").install(mod, {
-    embedded = true, assetBase = "ui/",
-    enabled = function() return Importer.stadiumUiEnabled() end,
-    menuControls = function() return Importer.menuControls() end,
-    detail = function() return Importer.uiDetail() end,
-    controllerIcons = function() return Importer.controllerIcons() end,
-    thorMode = function() return Importer.thorInputMode() end,
-    warn = function(message) if mod.log and mod.log.warn then pcall(mod.log.warn, mod.log, "%s", message) end end,
-  })
   -- In-battle evolution (user-requested extension; lib/battle_evolution.lua).
   require("mods.STADIUM2_IMPORTER.lib.battle_evolution").install(mod,
     function() return type(Battle.currentScene) == "function" and Battle.currentScene() or nil end,

@@ -22,9 +22,14 @@ local scene = read(root .. "lib/battle_scene.lua")
 local presentation = read(root .. "lib/battle_presentation.lua")
 local uiOwnership = read(root .. "lib/battle_ui_ownership.lua")
 
-ok(manifest:find('"dependencies": %[%]', 1) ~= nil, "importer has no required mod dependency")
-ok(manifest:find('"version": "0.19.1"', 1, true) ~= nil,
-  "public API release is pinned to 0.19.1")
+-- the one required mod is the Stadium 2 UI (its STADIUM UI), with the repo
+-- the game's dependency resolver installs it from
+local deps = manifest:match('"dependencies": (%b[])')
+ok(deps and deps:gsub("%s", "") == '["STADIUM2_UI@>=1.1.0<2.0.0"]'
+  and manifest:find('"STADIUM2_UI": "Deftones565/Stadium-2-UI"', 1, true) ~= nil,
+  "the only required mod is STADIUM2_UI, with its GitHub source")
+ok(manifest:find('"version": "0.20.0"', 1, true) ~= nil,
+  "public API release is pinned to 0.20.0")
 ok(main:find('local MOD_BUILD = "' .. manifest:match('"version": "([^"]+)"') .. '"', 1, true) ~= nil,
   "main.lua's module-cache build stamp matches the manifest version")
 ok(main:find('require("mods.STADIUM2_IMPORTER.lib.battle_router")', 1, true) ~= nil,

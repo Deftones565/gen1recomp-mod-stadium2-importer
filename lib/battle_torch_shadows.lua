@@ -165,13 +165,18 @@ function S.send(shader)
  shader:send('torchShadows',#maps==2 and not S.error and switch.enabled and 1 or 0)
  for i=1,2 do if maps[i] then shader:send('torchMap'..i,maps[i].map) end end
 end
+-- Every uniform is checked: a driver drops the ones its shader does not use,
+-- and which it keeps differs between GPUs (LOVE's send throws for a dropped one).
+local function sendIf(shader,name,value)
+ if shader:hasUniform(name) then shader:send(name,value) end
+end
 function S.bindModel(shader)
  if not shader:hasUniform('localTorchEnabled') then return end
- shader:send('localTorchShadows',#maps==2 and not S.error and switch.enabled and 1 or 0)
- shader:send('localTorchEnabled',1);shader:send('localTorchPower',S.power or 0)
+ sendIf(shader,'localTorchShadows',#maps==2 and not S.error and switch.enabled and 1 or 0)
+ shader:send('localTorchEnabled',1);sendIf(shader,'localTorchPower',S.power or 0)
  for i,p in ipairs(positions) do
-  shader:send('localTorch'..i,lightVector(i,p))
-  if maps[i] then shader:send('localTorchMap'..i,maps[i].map) end
+  sendIf(shader,'localTorch'..i,lightVector(i,p))
+  if maps[i] then sendIf(shader,'localTorchMap'..i,maps[i].map) end
  end
 end
 function S.resetDynamic()

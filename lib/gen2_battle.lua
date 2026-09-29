@@ -985,7 +985,7 @@ local function installScreenHooks()
     if not layerOk then error(layer,0) end
     if not hudLayerOk then error(hudLayer,0) end
     if not modalLayerOk then error(modalLayer,0) end
-    -- STADIUM UI is the embedded Stadium-2-UI (ui/ submodule), drawn in
+    -- STADIUM UI is the Stadium 2 UI mod (STADIUM2_UI), drawn in
     -- window space over this picture; the glass stands aside for it.
     local composed=Hud.composite(scene,self,layer,hudLayer,modalLayer,
       {decorate=UIOwnership.hudEnabled()})

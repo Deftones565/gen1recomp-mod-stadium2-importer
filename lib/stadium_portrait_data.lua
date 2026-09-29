@@ -1,9 +1,10 @@
 -- Stadium 2 portrait camera records, decoded from the player's own ROM.
 --
--- The Stadium battle UI itself is the Stadium-2-UI repository (ui/ submodule,
--- painted in Lua). Its live 3D portraits need Stadium's per-species portrait
--- camera: that data is only in the ROM, so the importer provides it here
--- (ui/lib/stadium_ui_assets.lua reads this module through package.loaded).
+-- The Stadium battle UI itself is the Stadium 2 UI mod (STADIUM2_UI, a
+-- dependency, painted in Lua). Its live 3D portraits need Stadium's
+-- per-species portrait camera: that data is only in the ROM, so the importer
+-- provides it here (the UI's lib/stadium_ui_assets.lua reads this module
+-- through package.loaded).
 --
 -- Portrait camera records (func_84113014 DMA from D_49B780 + D_5730):
 -- 32 bytes per species at 0x4A0EB0, alternate records after them, up to

@@ -24,12 +24,19 @@
 local Actor = require("mods.STADIUM2_IMPORTER.lib.battle_actor")
 local Renderer = require("mods.STADIUM2_IMPORTER.lib.renderer")
 local Camera = require("mods.STADIUM2_IMPORTER.lib.battle_camera")
--- the Stadium message box from the embedded Stadium-2-UI (ui/ submodule)
-local StadiumUI = require("mods.STADIUM2_IMPORTER.ui.lib.stadium_ui")
 local Sequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
 
 local Evolution = {}
 Evolution.__index = Evolution
+
+-- The Stadium message box comes from the Stadium 2 UI mod (STADIUM2_UI, a
+-- dependency), through its exports; install() binds the lookup.
+local uiExports = function() return nil end
+function Evolution.bindUi(fn) uiExports = type(fn) == "function" and fn or function() return nil end end
+local function ui()
+  local ok, exports = pcall(uiExports)
+  return ok and type(exports) == "table" and exports or nil
+end
 
 Evolution.CAMERA_TIME = .9   -- seconds for the camera to close in / return
 Evolution.WHITE_TIME = 1.1   -- seconds to turn fully white
@@ -255,7 +262,10 @@ end
 function Evolution:ready()
   if self.failed or not (self.oldActor and self.oldActor.renderer) then return false end
   if self.toDex and not (self.newActor and self.newActor.renderer) then return false end
-  return StadiumUI.available() == true
+  local api = ui()
+  if not (api and type(api.messageAvailable) == "function") then return false end
+  local ok, available = pcall(api.messageAvailable)
+  return ok and available == true
 end
 
 function Evolution:observe(info)
@@ -630,18 +640,26 @@ end
 function Evolution.drawHud(scene, viewport, warn)
   local current = Evolution.presenting(scene)
   if not (current and viewport) then return false end
+  local api = ui()
+  if not (api and type(api.drawMessage) == "function") then return false end
   local lines = {}
   for i, line in ipairs(current.lines or {}) do
-    lines[i] = StadiumUI.toLatin1 and StadiumUI.toLatin1(tostring(line)) or tostring(line)
+    lines[i] = type(api.toLatin1) == "function" and api.toLatin1(tostring(line)) or tostring(line)
   end
   if #lines == 0 then return false end
-  return StadiumUI.tryDrawMessage(areaFor(viewport), lines, "player", warn)
+  return api.drawMessage(areaFor(viewport), lines, "player", warn)
 end
 
 -- main.lua: the render.hud and screen.render_visible seams, and the export
 -- other UI mods read to stand aside while an evolution is presented.
 function Evolution.install(mod, currentScene, warn)
   if not (mod and mod.hooks and type(mod.hooks.wrap) == "function") then return false end
+  Evolution.bindUi(function()
+    local find = mod.find
+    if type(find) ~= "function" then return nil end
+    local handle = find(mod, "STADIUM2_UI")
+    return handle and handle.exports or nil
+  end)
   mod.hooks:wrap("render.hud", function(next, game, viewport, ...)
     local result = next(game, viewport, ...)
     local scene = currentScene()
