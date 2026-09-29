@@ -10,6 +10,12 @@ plus concurrent UI edits: **passed**. The failure recorded below is the
 initial baseline. Absorb still needs user visual retest; Hydro Pump drawing
 has a user confirmation recorded in the bug log.
 
+**Update 2026-09-29:** family 29 is implemented (see
+`luna/research/lifecycle-ribbon-implemented.md`); entry 261 now builds ribbon
+geometry with no `unsupported-lifecycle-callback` / `lifecycle-model-unresolved`
+(ROM test). The sweep was not regenerated. The paragraph below is the
+earlier finding.
+
 **Additional event-only probe:** entry 261 (`0x105`, family 29), used by
 Bind/Wrap residual damage, produces `unsupported-lifecycle-callback` and
 `lifecycle-model-unresolved` for both primary-bank owners with the real pose
@@ -106,7 +112,7 @@ Still missing. "Blocked" names what is needed to implement it from evidence.
 |---:|---|---|---|---|
 | 1 | 84119630's entries are weather (0x106/0x107/0x113 ongoing, 0x11F/0x120/0x121 ended, 0x125 sandstorm hit; wired in Gen 2 2026-09-25) and full paralysis (0x10C; not wired, the host message has no side). Other status visuals (sleep, poison, burn, freeze, confusion) are among the unnamed 84118DD4 codes | status visuals | asm (read) | name the remaining codes |
 | 2 | Host triggers for non-move entries 252-301. Code -> entry tables decoded (research note); wired 2026-09-25: weather, residual damage, stat changes, drain/berry heals, send-out, faint, charge turns, recall (0x126), trap ticks. Blocked on host event detail: Leftovers, Spikes, full paralysis, Attract, Gen 1 stat changes, Gen 2 player recall. Not named: held-item codes 0x49/0x4D-0x4F/0x57, Destiny Bond 0x123 unpaired | stat changes, faint, switch, etc. | callers in C: 841176E0 (0xFD at hit frame when result&0x10), 84118138/841182E0 (0xFE at state counter 8), 8411862C/8411A3D4 (0x100), BattleAnim_Dispatch_143 (0x104), 8411ABAC (0x126), BattleAnim_Dispatch_177 (0x12C), BattleAnim_Dispatch_184 (0x112); selectors 84118DD4/841189EC asm | which battle event selects each actor state; result-byte bit meanings |
-| 3 | Host battle inputs. Done 2026-09-25: the result byte for damaging hits (decoded from fragment79_393CA0, fed by `battle.damage_dealt`). Still missing: status-move results, `sourceStatus`, `ownerStatusPattern` | opcode-16 moves 168, 173, 217 and contexts 274/290/292/298/299 | asm (readable now) | decode the remaining effect handlers |
+| 3 | Host battle inputs. Done 2026-09-25: the result byte for damaging hits (decoded from fragment79_393CA0, fed by `battle.damage_dealt`). Done 2026-09-29 (Gen 2, `docs/luna/research/move-record-inputs-2026-09-29.md`): result flags 0x20 Thief / 0x40 Present / 0x80 Ghost Curse (handlers 8412DC20/8412EC70/8412DE98), the user's status byte (Snore), and `ownerStatusPattern`, which is the owner's DV word (8006456C shiny test). Still missing: low bits of non-damaging results (about 20 handlers), Ghost Curse record low bits, Gen 1 DVs/status | status moves; Gen 1 contexts 274/290/292/298/299 | asm (read) | emulator capture of a Ghost Curse; remaining handlers |
 | 4 | ~~Two-turn variant route~~ charge turns wired 2026-09-25 (contexts 255-260 plus the variant FX) | 13, 19, 76, 91, 130, 143 | asm (read) | visual retest |
 | 5 | ~~Exact hit timing~~ attack-state timeline implemented 2026-09-25 (Sequence.attackTiming: route at the rebased hit frame, defender release rules, impact at the defender row's byte 7, clip from byte 6, negative-hit pre-roll). Open: release latency, 0xFC at +0x620, other defender handlers | every move with an impact bank | asm (read) | visual retest |
 | 6 | Status-shape release variants 84108AF8/84108CE8/84108E00/84108F88/84109118 | shapes 0x12/0xD3/0x13D; entry 0x11F | asm (behaviour summarised in bug log) | US asm for exact conditions |

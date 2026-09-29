@@ -213,6 +213,17 @@ Sequence.SOUND_ONLY_SPECIES = {
   [205] = {[76] = true, [232] = true, [241] = true},            -- D_84183A04
 }
 Sequence.CURSE = 0xAE              -- route only when result bit 0x80 is set
+-- Result byte flags ORed in by the Gen 2 engine's move-effect handlers
+-- (fragment79_393CA0 US asm; read by 841083B0 and 84114BF4):
+--   0x20  8412DC20 (Thief): the user held nothing and took the target's
+--         non-mail item (84134EC8(0x20) after moving it).
+--   0x40  8412EC70 (Present): the roll took the heal branch
+--         (84134E00(0x40), also when the target was already at full HP).
+--   0x80  8412DE98 (Curse): a Ghost-type user (84126390(user, 8)) cursed
+--         the target (84134EC8(0x80)); the non-Ghost stat branch sets none.
+Sequence.RESULT_THIEF_STOLE = 0x20
+Sequence.RESULT_PRESENT_HEAL = 0x40
+Sequence.RESULT_CURSE_GHOST = 0x80
 Sequence.FORESIGHT = 0xC1          -- 84117744: defender hit frame forced to 0
 -- 84114C5C..84114C74: these start their behaviour routine at counter 0.
 Sequence.COUNTER_ZERO_SPECIALS = {[185] = true, [187] = true}

@@ -105,27 +105,40 @@ local exactEquality = Motion.step(Motion.init({
 }), 1)
 ok(exactEquality.age == 0 and exactEquality.alive,
   "native endpoint uses exact byte equality rather than age >= 0xff")
-local specialEndpoint=Motion.step(Motion.init({
+-- 8410009C: age 255 completes unless object flag 1 (descriptor 0x10) is set;
+-- object flag 0x20000 (descriptor bit 28) adds a separate final-Y <= 0 rule.
+local exempt=Motion.step(Motion.init({
+  nativeAgeEndpoint=true,age=0xfe,event={flags=0x10},
+}),1)
+ok(exempt.age==0xff and exempt.alive and exempt.nativeAgeExempt,
+  "descriptor 0x10 (object flag 1) survives age 255")
+exempt=Motion.step(exempt,1)
+ok(exempt.age==0 and exempt.alive,"an exempt particle wraps its native age byte after 0xff")
+local yOnly=Motion.step(Motion.init({
   nativeAgeEndpoint=true,age=0xfe,event={flags=0x10000000},
 }),1)
-ok(specialEndpoint.age==0xff and specialEndpoint.alive
-    and specialEndpoint.nativeYTermination.active,
-  "descriptor bit 28 suppresses ordinary expiry while final-Y termination is unresolved")
-ok(hasDiagnostic(specialEndpoint,"unsupported-native-y-termination"),
-  "special final-Y rule retains an explicit diagnostic")
-specialEndpoint=Motion.step(specialEndpoint,1)
-ok(specialEndpoint.age==0 and specialEndpoint.alive,
-  "flag-0x20000 particles wrap the native age byte after 0xff")
-local aboveGround=Motion.init({event={flags=0x10000000},age=0xfe},
+ok(yOnly.age==0xff and not yOnly.alive and yOnly.nativeYTermination.active,
+  "descriptor bit 28 alone does not exempt age 255 (it is a separate Y rule)")
+ok(hasDiagnostic(yOnly,"unsupported-native-y-termination"),
+  "an unresolved final-Y rule retains an explicit diagnostic")
+local aboveY=Motion.step(Motion.init({
+  nativeAgeEndpoint=true,age=0xfe,event={flags=0x10000000},
+},{resolveNativeFinalY=function() return 1 end}),1)
+ok(aboveY.nativeFinalY==1 and not aboveY.alive,
+  "bit 28 without 0x10: a positive final Y does not keep it past age 255")
+local aboveGround=Motion.init({event={flags=0x10000010},age=0xfe},
   {resolveNativeFinalY=function() return 1 end})
 local aboveTick=Motion.step(aboveGround,1)
 ok(aboveTick.alive and aboveTick.nativeFinalY==1
     and aboveTick.nativeYTermination.status=="resolved",
-  "special particles survive age 255 while their final Y is positive")
+  "descriptor 0x10000010 survives age 255 while its final Y is positive")
 local groundTick=Motion.step(aboveTick,1,
   {resolveNativeFinalY=function() return 0 end})
 ok(not groundTick.alive and groundTick.age==0,
-  "special particles release when the post-update final Y reaches ground")
+  "and completes when the post-update final Y reaches ground")
+local groundEarly=Motion.step(Motion.init({event={flags=0x10000000},age=10},
+  {resolveNativeFinalY=function() return 0 end}),1)
+ok(not groundEarly.alive,"the final-Y rule completes a particle at any age")
 local controllerAge = Motion.step(Motion.init({
   nativeAgeEndpoint = true, event = {programId = 259}, age = 0,
 }), 1, {integrate = function(state)

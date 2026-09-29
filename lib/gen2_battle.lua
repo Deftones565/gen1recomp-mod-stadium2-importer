@@ -90,6 +90,32 @@ local function unownPack(mon,dex,variant)
   return variant=="shiny" and (name.."_shiny") or name
 end
 
+-- Stadium 2's battle record (84134A6C) carries each battler's DV word
+-- (+0x14, from battle mon +0x16) and status byte (+0x10, battle mon +0x24),
+-- read by the FX dispatcher 841083B0: contexts 274/290/292/298/299 test the
+-- DVs with 8006456C (CheckShininess: (DVs & 0x2FFF) == 0x2AAA) and Snore
+-- tests the sleep counter (status & 7). Both in the Gen 2 layout.
+local function dvWord(mon)
+  local d = mon and mon.dvs
+  if type(d) ~= "table" then return nil end
+  local a, b, c, e = tonumber(d.attack), tonumber(d.defense),
+    tonumber(d.speed), tonumber(d.special)
+  if not (a and b and c and e) then return nil end
+  return a * 4096 + b * 256 + c * 16 + e
+end
+
+-- pokecrystal constants/battle_constants.asm: SLP_MASK %111, PSN 3, BRN 4,
+-- FRZ 5, PAR 6. The host keeps the sleep counter in statusTurns on the
+-- cart's own scale (Battle:canAct).
+local STATUS_BITS = {poison = 0x08, toxic = 0x08, burn = 0x10,
+  freeze = 0x20, paralyze = 0x40}
+local function statusByte(mon)
+  if not mon then return nil end
+  if mon.status == nil then return 0 end
+  if mon.status == "sleep" then return math.floor(tonumber(mon.statusTurns) or 0) % 8 end
+  return STATUS_BITS[mon.status]
+end
+
 local Scene = setmetatable({}, {__index=Presentation})
 Scene.__index = Scene
 
@@ -208,6 +234,7 @@ function Scene:sync()
     -- Do not follow an in-place Transform until its queue event is presented;
     -- Gold resolves a whole turn before showing its first message.
     if actor.mon ~= mon then actor:load(data, mon) end
+    actor.nativeStatusPattern = dvWord(mon)
   end
 end
 
@@ -414,7 +441,8 @@ function Scene:recordEvent(event)
     local hp=tonumber(volatile.substitute) or 0
     local previous=self.recordedSubstitute[side] or 0
     snapshot[side]={substitute=hp>0,substituteHit=previous>hp and previous>0,
-      vanished=volatile.vanished,chargeMove=volatile.chargeMove}
+      vanished=volatile.vanished,chargeMove=volatile.chargeMove,
+      statusByte=statusByte(mon)}
     self.recordedSubstitute[side]=hp
   end
   self.eventVisuals[event]=snapshot
@@ -459,9 +487,18 @@ function Scene:handleEvent(event)
         ok,err=pcall(self.battleFx.playCharge,self.battleFx,moveId,side,
           self.actors and self.actors[side])
       elseif event.alternate~=true and self.battleFx.playMoveAndImpact then
+        -- The move's own record (841083B0, 84114BF4). Gold's Curse sets
+        -- animParam 1 only on the non-Ghost stat branch
+        -- (move_effects/curse.asm:39), so a presented Curse without it is
+        -- the Ghost curse landing (8412DE98's 0x80). Gold never steals an
+        -- item with Thief nor heals with Present, so 0x20/0x40 stay clear.
+        local facts={sourceStatus=snapshot and snapshot[side] and snapshot[side].statusByte}
+        if moveId==FxSequence.CURSE and event.animParam~=1 then
+          facts.resultBits=FxSequence.RESULT_CURSE_GHOST
+        end
         ok,err=pcall(self.battleFx.playMoveAndImpact,self.battleFx,moveId,side,
           self.actors and self.actors[side],nil,
-          self.actors and self.actors[side=="player" and "enemy" or "player"])
+          self.actors and self.actors[side=="player" and "enemy" or "player"],facts)
       else
         ok,err=pcall(self.battleFx.trigger,self.battleFx,moveId,side,
           event.alternate==true)

@@ -1,9 +1,12 @@
 -- US fragment79: 8415BBA0 / 8415BD48 / 8415C2E0.
 -- Persistent authored ribbon geometry, independent of rendering and battle RNG.
 local f=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
-local Ribbon={families={[23]=true,[26]=true,[27]=true}}
+local Ribbon={families={[23]=true,[26]=true,[27]=true,[29]=true}}
 local colors={
   [23]={{100,200,255,200},{0,100,200,0}},
+  -- 8415703C passes 8415BBA0 the same colour arguments as 84156F50 (23):
+  -- 100,200,255 / 0,100,200. Family 29 is entry 261 (Bind/Wrap residual).
+  [29]={{100,200,255,200},{0,100,200,0}},
   [26]={{255,255,255,200},{100,150,150,0}},
   [27]={{255,255,100,200},{150,150,0,0}},
 }

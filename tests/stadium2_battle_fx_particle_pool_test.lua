@@ -97,11 +97,12 @@ ok(reused[1] == 0 and reused[2] == 1, "expired slots are reused from the wrapped
 lifetime = 1000
 
 -- 8410668C: first live 0x400000 particle in slot order with the same
--- secondary flag; not-yet-updated particles contribute (0,0,0).
+-- secondary flag; not-yet-updated particles contribute (0,0,0). A move
+-- route's zero-time births are created after the tick's particle pass
+-- (841029DC), so they stay un-updated until the next tick.
 runtime = newRuntime()
-plan = {[1] = {{count = 1, flags = 0}, {count = 1, flags = 0x400000}}}
+plan = {[0] = {{count = 1, flags = 0}, {count = 1, flags = 0x400000}}}
 assert(runtime:trigger({moveId = 1}))
-runtime:step(1)
 local target = {event = {flags = 0x800000, mode = 1}}
 local origin, source = runtime:nativePoolOrigin(target)
 ok(source and source.nativeSlot == 1 and origin[1] == 0 and origin[2] == 0,

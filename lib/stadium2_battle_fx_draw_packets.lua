@@ -130,7 +130,10 @@ function Packets.build(snapshot,options)
     end
   end
   for _,particle in ipairs(not options.skipParticles and snapshot.particles or{})do
-    if not particle.nativeHidden and not (groups and groups[liteKey(particle)]>LITE_GROUP
+    -- 841029DC builds the draw from the update it just ran: a particle that
+    -- has had no update yet (created after this tick's pass) is not drawn.
+    if not particle.nativeHidden and particle.nativePending~=true
+        and not (groups and groups[liteKey(particle)]>LITE_GROUP
         and not liteKeep(particle)) then
     if particle.event and particle.event.mode==7 then
       local material=particle.material or {}
@@ -192,7 +195,8 @@ function Packets.build(snapshot,options)
       local material=own.material or{};local shape=material.selectedShapeId or material.primaryShapeId or material.shapeId or particle.shapeId
       if tonumber(shape)and tonumber(shape)>0 then
         local ps=vec(particle.scale,1);local as=tonumber(resolved.scale)and{resolved.scale,resolved.scale,resolved.scale}or vec(resolved.scale,1);local scale=mul(ps,as);local position=vec(resolved.position,0)
-        out.packets[#out.packets+1]={kind="common-particle",particleId=particle.id,effectId=particle.effectId,programId=particle.event and particle.event.programId,shapeId=shape,age=particle.age,frame=particle.frame,materialFrame=particle.age,position=position,scale=scale,rotation=own.rotation,matrix=matrix(position,scale,particle.rotation),material=material,attachment=copy(resolved),
+        out.packets[#out.packets+1]={kind="common-particle",particleId=particle.id,effectId=particle.effectId,programId=particle.event and particle.event.programId,
+          descriptorFlags=particle.event and particle.event.flags,descriptorMode=particle.event and particle.event.mode,shapeId=shape,age=particle.age,frame=particle.frame,materialFrame=particle.age,position=position,scale=scale,rotation=own.rotation,matrix=matrix(position,scale,particle.rotation),material=material,attachment=copy(resolved),
           -- Direct shapes are transformed by 84102B3C at draw time, once the
           -- loaded shape's geometry mode is known (Packets.shapeMatrix).
           nativeTransform={position=copy(position),nativeScale=ps[1],worldScale=copy(as),rotation=vec(particle.rotation,0)}}

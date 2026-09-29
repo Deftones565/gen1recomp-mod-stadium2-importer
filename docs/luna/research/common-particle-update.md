@@ -59,6 +59,16 @@ calls `0x8410009C` and, if it returns nonzero, calls
 
 ## Age expiry and inclusivity
 
+**Correction (2026-09-29, verified in the pret `c0e10f23` US assembly; see
+timing audit T03).** The pseudocode below is wrong in the age branch: at age
+`0xff` the helper `0x84100074` is called with mask **1**, not `0x20000`.
+`a1 = 1` is set at `0x841000AC`; the `lui a1, 0x2` at `0x841000C8` is in the
+delay slot of `bnel` and runs only when the age is *not* `0xff`. So object
+flag 1 (descriptor `0x10`, `0x841071B0..C0`) exempts the age-255 endpoint,
+and flag `0x20000` (descriptor bit 28) is only the separate final-Y rule.
+The runtime was corrected the same day (`nativeAgeExempt` in
+`stadium2_battle_fx_motion.lua`). The original text follows.
+
 `0x8410009C..0x84100130` is the common termination predicate.  The helper
 functions at `0x84100054` and `0x84100074` test a particle's flag word
 (`+0x14`) for a mask present and absent, respectively.  The predicate is

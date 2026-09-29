@@ -233,11 +233,11 @@ ok(#effectFor(otherOwner).particles > 0, "the other owner's held particles survi
 local attacker = {renderer = {model = {fxDispatch = bytes}}}
 adapter:playMoveAndImpact(2, "player", attacker)
 local startFrame = runtime.frame
-local pendingBefore = #runtime.effectOrder
+local pendingBefore = (runtime.nextEffectId - 1)
 adapter:update(13 / 30)
-ok(#runtime.effectOrder == pendingBefore, "route and impact wait for the hit frame")
+ok((runtime.nextEffectId - 1) == pendingBefore, "route and impact wait for the hit frame")
 adapter:update(1 / 30)
-ok(runtime.frame - startFrame == 14 and #runtime.effectOrder == pendingBefore + 2,
+ok(runtime.frame - startFrame == 14 and (runtime.nextEffectId - 1) == pendingBefore + 2,
   "without a defender row, route and impact start at the attacker's hit frame")
 local warned = false
 for _, message in ipairs(warnings) do
@@ -249,11 +249,11 @@ local timed = assert(Sequence.attackTiming(bytes, 2, {defenderDispatch = bytes})
 ok(timed.route == 14 and timed.impact ~= nil, "a defender row yields its own impact frame")
 adapter:update(4)
 adapter:playMoveAndImpact(2, "player", attacker, nil, attacker)
-startFrame, pendingBefore = runtime.frame, #runtime.effectOrder
+startFrame, pendingBefore = runtime.frame, (runtime.nextEffectId - 1)
 local seen = {}
 for _ = 1, math.max(timed.route, timed.impact) + 1 do
   adapter:update(1 / 30)
-  seen[runtime.frame - startFrame] = #runtime.effectOrder - pendingBefore
+  seen[runtime.frame - startFrame] = (runtime.nextEffectId - 1) - pendingBefore
 end
 -- Each bank starts on the update that reaches its tick (tick 0: the first).
 local function started(tick)

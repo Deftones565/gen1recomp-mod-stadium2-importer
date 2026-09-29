@@ -373,7 +373,7 @@ function Adapter.beamInputs(context,sceneContext)
   local usedMarkers,profiles=0,0
   local swiftTarget,modelScale,sourceSpecies,sourceCenter
   local ribbonAnchor,ribbonTargetScale
-  local ribbonOwnerAnchor,ribbonUpdateAnchor,ribbonOwnerScale
+  local ribbonOwnerAnchor,ribbonUpdateAnchor,ribbonOwnerScale,ribbonOwnerContextScale
   -- 8410874C selects the target as +194 for the hit/alternate context;
   -- +198 remains the attacker and +19C remains the target.
   local owner=context.nativeOwnerSide or (context.alternate and target or source)
@@ -396,6 +396,12 @@ function Adapter.beamInputs(context,sceneContext)
       -- 8411AF6C copies dispatch +0F to owner+661; 84109544 multiplies by .01f.
       local f32=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
       modelScale=f32(bytes:byte(moveRow*20+16)*f32(.01))
+    end
+    -- 841095DC (family 29 setup): the owner's 8411E358 context scale for this
+    -- context (entry 261 -> context byte 0x21) times D_84188E2C (.01).
+    if pair[1]==owner then
+      ribbonOwnerContextScale=Dispatch.contextScale(context.nativeContextId or context.moveId,
+        model and model.fxContextScales,bytes)
     end
     local isTarget=pair[1]==target
     -- Target marker always comes from context 254, but its offset comes from
@@ -516,6 +522,7 @@ function Adapter.beamInputs(context,sceneContext)
   return {origin=a,direction=direction,swiftDirection=swiftDirection,terrainCamera=terrainCamera,
     ribbonAnchor=ribbonAnchor,ribbonTargetScale=ribbonTargetScale,
     ribbonOwnerAnchor=ribbonOwnerAnchor,ribbonOwnerScale=ribbonOwnerScale,ribbonUpdateAnchor=ribbonUpdateAnchor,
+    ribbonOwnerContextScale=ribbonOwnerContextScale,
     swiftOrigin={a[1]+origin[1],a[2]+origin[2],a[3]+origin[3]},swiftFrameOrigin=origin,
     modelScale=modelScale,sourceSpecies=sourceSpecies,sourceCenter=sourceCenter,endpointA=a,endpointB=b,cameraEye=camera,
     approximate=profiles<2,attachmentCount=usedMarkers}
@@ -549,10 +556,20 @@ function Adapter.new(importer, options)
     battleStateForContext = Adapter.battleState,
     contextNeedsSnapshot = false,
     resolvePlacement = Adapter.resolvePlacement,
+    -- FREE CAMERA ADDITION (user-requested, non-native): camera-placed
+    -- particles leave at the hit, where Stadium cuts the camera away
+    -- (stadium2_battle_fx_camera_follow.lua).
+    cameraFollowExtension = true,
     warn = function(value) self:_warn(value) end,
   })
   if not player then return nil, err end
   self.player = player
+  -- Delayed work is serviced after every FX tick (Runtime.afterTick), not
+  -- once per presentation update, so batched ticks keep its timing/order.
+  if type(player.runtime) == "table" and type(player.runtime.step) == "function" then
+    player.runtime.afterTick = function() self:_serviceQueues() end
+    self.tickServiced = true
+  end
   if type(importer.logBattleFxSettings) == "function" then pcall(importer.logBattleFxSettings) end
   return self
 end
@@ -568,6 +585,7 @@ local function sides(source)
   source = source == "enemy" and "enemy" or "player"
   return source, source == "player" and "enemy" or "player"
 end
+local function other(side) return side == "player" and "enemy" or "player" end
 
 -- Injected players may predate the optional sequencing hooks.
 function Adapter:_routeSignal(value)
@@ -586,11 +604,20 @@ function Adapter:trigger(moveId, source, alternate, variant)
     moveId = tonumber(moveId), sourceSide = source,
     targetSide = target,
     alternate = alternate == true, variant = variant == true or nil, condition = 0,
+    nativeBattleState = self:_moveState(moveId, source),
   })
   if not effect and err then self:_warn(err) end
   if effect then
     self:finish()
     self.activeEffect=effect
+    -- FREE CAMERA ADDITION: the move bank's effects, hidden at the impact.
+    if alternate ~= true then
+      self.cameraCutEffects = self.cameraCutEffects or {}
+      local list = self.cameraCutEffects[source] or {}
+      -- Runtime:trigger returns the effect id
+      list[#list + 1] = type(effect) == "table" and effect.id or effect
+      self.cameraCutEffects[source] = list
+    end
     -- 841086F0/84108728/841088CC route state consulted by 84108974.
     self.routeMove, self.routeMode = tonumber(moveId), variant == true and 1
       or (alternate == true and 2 or 0)
@@ -625,8 +652,10 @@ function Adapter:playCharge(moveId, source, actor)
     return nil, "charge row unavailable"
   end
   self.pendingVariants = self.pendingVariants or {}
+  local s = sides(source)
   self.pendingVariants[#self.pendingVariants + 1] = {moveId = moveId, source = source,
-    frame = (self.player and self.player.runtime and self.player.runtime.frame or 0) + frame}
+    frame = (self.player and self.player.runtime and self.player.runtime.frame or 0) + frame,
+    sourceSide = s, sourceGen = self:_modelGeneration(s)}
   return true
 end
 
@@ -636,14 +665,32 @@ function Adapter:_firePendingVariants()
   local frame = self.player and self.player.runtime and self.player.runtime.frame or 0
   local kept = {}
   for _, item in ipairs(pending) do
-    if frame >= item.frame then self:playVariant(item.moveId, item.source)
+    if self:_stale(item, item.sourceSide, item.sourceGen) then
+      -- dropped: the charging Pokemon's model was replaced
+    elseif frame >= item.frame then self:playVariant(item.moveId, item.source)
     else kept[#kept + 1] = item end
   end
   self.pendingVariants = kept
 end
 
+-- Whether queued `item` belongs to an older move or to a replaced model.
+function Adapter:_stale(item, side, generation)
+  if item.moveGen ~= nil and item.moveGen ~= self:_moveGeneration() then return true end
+  if side ~= nil and generation ~= nil and generation ~= self:_modelGeneration(side) then return true end
+  return false
+end
+
 -- A side's Pokemon model was replaced (switch or send-out of another mon).
 function Adapter:modelChanged(side)
+  local s = side == "player" and "player" or side == "enemy" and "enemy" or nil
+  if s then
+    self.modelGen = self.modelGen or {}
+    self.modelGen[s] = (self.modelGen[s] or 0) + 1
+    -- a pending route whose attacker was replaced is stale too
+    if self.pendingRoute and sides(self.pendingRoute.source) == s then
+      self.pendingRoute, self.pendingFinish = nil, nil
+    end
+  end
   if not (self.player and type(self.player.resetModel) == "function") then return false end
   return self.player:resetModel(side)
 end
@@ -680,11 +727,19 @@ function Adapter:impact(moveId, source, nativeResult)
     local target
     source, target = sides(source)
     effect, err = self.player:trigger({moveId = tonumber(moveId),
-      sourceSide = source, targetSide = target, alternate = true, condition = 0})
+      sourceSide = source, targetSide = target, alternate = true, condition = 0,
+      nativeBattleState = self:_moveState(moveId, source)})
     if not effect and err then self:_warn(err) end
     self.routeMove, self.routeMode = tonumber(moveId), 2
     self:_routeSignal(1)
     self:_defenderReaction(target, source, moveId)
+    -- FREE CAMERA ADDITION: Stadium cuts to the defender here, taking the
+    -- attacker's camera-placed particles off screen.
+    local cut = self.cameraCutEffects and self.cameraCutEffects[source]
+    if cut and type(self.player.hideCameraPlaced) == "function" then
+      for _, id in ipairs(cut) do self.player:hideCameraPlaced(id) end
+      self.cameraCutEffects[source] = nil
+    end
   elseif action == "owner" then
     -- 8410878C only selects mode 2 and the owner; nothing new is dispatched.
     self.routeMode = 2
@@ -756,8 +811,11 @@ function Adapter:scheduleImpact(moveId, source, ticks, nativeResult, native)
       "impact bank is timed from the move start by the dispatch hit frame; attack-state approach phases are not emulated"})
   end
   self.pendingImpacts = self.pendingImpacts or {}
+  local s = sides(source)
   self.pendingImpacts[#self.pendingImpacts + 1] = {moveId = moveId, source = source,
-    result = nativeResult, frame = (self.player.runtime and self.player.runtime.frame or 0) + math.floor(ticks)}
+    result = nativeResult, frame = (self.player.runtime and self.player.runtime.frame or 0) + math.floor(ticks),
+    moveGen = self:_moveGeneration(), targetGen = self:_modelGeneration(other(s)), target = other(s),
+    sourceGen = self:_modelGeneration(s)}
   return true
 end
 
@@ -827,8 +885,40 @@ end
 -- `target` is the defending actor; its own species row times the impact
 -- (Sequence.attackTiming). Without it the impact falls back to the
 -- attacker's hit frame and says so.
-function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult, target)
+-- Identity for queued work (T02). Stadium's attack state machine runs one
+-- move event at a time, so a newer move makes every queued part of an older
+-- one stale; a replaced model makes work aimed at (or owned by) the old one
+-- stale. Work already started (running particles) is not touched.
+function Adapter:_moveGeneration() return self.moveGen or 0 end
+function Adapter:_modelGeneration(side) return self.modelGen and self.modelGen[side] or 0 end
+
+-- The move's D_84193DD0 record as 841083B0 reads it, for this move's route
+-- and impact only (a newer move replaces it, like its queued work).
+function Adapter:_moveState(moveId, source)
+  local m = self.moveBattleState
+  if m and m.gen == self:_moveGeneration() and m.moveId == tonumber(moveId)
+      and m.source == sides(source) then
+    return m.state
+  end
+end
+
+-- `facts` (optional), from the host's outcome of this move:
+--   resultBits    Sequence.RESULT_* flags its effect set (Thief's steal,
+--                 Present's heal, a Ghost-type Curse); ORed into the byte.
+--   sourceStatus  the user's Gen 2 status byte when the move was used
+--                 (record +0x10, 84134A6C from battle mon +0x24).
+function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult, target, facts)
+  self.moveGen = self:_moveGeneration() + 1
   if nativeResult == nil then nativeResult = Adapter.takeHitResult(source, moveId) end
+  facts = type(facts) == "table" and facts or {}
+  local bits = tonumber(facts.resultBits) or 0
+  if bits ~= 0 then
+    -- Without a recorded hit the low three bits stay unknown (as before).
+    nativeResult = require("bit").bor(tonumber(nativeResult) or 0, bits)
+  end
+  self.moveBattleState = {gen = self.moveGen, moveId = tonumber(moveId),
+    source = sides(source), state = {resultFlags = nativeResult,
+      sourceStatus = tonumber(facts.sourceStatus)}}
   local model = actor and actor.renderer and actor.renderer.model
   local targetModel = target and target.renderer and target.renderer.model
   local timing = Sequence.attackTiming(model and model.fxDispatch, moveId,
@@ -848,7 +938,7 @@ function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult, target)
   local ticks = timing.route or 0
   if routed then self:scheduleRoute(moveId, source, ticks) end
   -- 841153DC (Rest): at the hit frame, entry 0x100 on the user.
-  if moveId == Sequence.REST then self:scheduleSignal(Sequence.REST_ENTRY, source, ticks) end
+  if moveId == Sequence.REST then self:scheduleSignal(Sequence.REST_ENTRY, source, ticks, true) end
   if timing.impact then
     self:scheduleImpact(moveId, source, timing.impact, nativeResult, true)
   else
@@ -883,11 +973,15 @@ function Adapter:_firePendingRoute()
 end
 
 -- Queue 8410890C(entry) for `owner`, `ticks` 30 Hz ticks from now.
-function Adapter:scheduleSignal(entry, owner, ticks)
+-- `moveWork`: part of the current move (Rest's 0x100), dropped when a newer
+-- move starts; other events (faint) only follow their owner's model.
+function Adapter:scheduleSignal(entry, owner, ticks, moveWork)
   if not self.player then return nil, "battle FX player is unavailable" end
   self.pendingSignals = self.pendingSignals or {}
+  local s = sides(owner)
   self.pendingSignals[#self.pendingSignals + 1] = {entry = entry, owner = owner,
-    frame = (self.player.runtime and self.player.runtime.frame or 0) + math.max(0, math.floor(tonumber(ticks) or 0))}
+    frame = (self.player.runtime and self.player.runtime.frame or 0) + math.max(0, math.floor(tonumber(ticks) or 0)),
+    moveGen = moveWork and self:_moveGeneration() or nil, ownerSide = s, ownerGen = self:_modelGeneration(s)}
   return true
 end
 
@@ -913,7 +1007,9 @@ function Adapter:_firePendingSignals()
   local frame = self.player and self.player.runtime and self.player.runtime.frame or 0
   local kept = {}
   for _, item in ipairs(pending) do
-    if frame >= item.frame then self:signalEffect(item.entry, item.owner)
+    if self:_stale(item, item.ownerSide, item.ownerGen) then
+      -- dropped: a newer move, or its owner's model was replaced
+    elseif frame >= item.frame then self:signalEffect(item.entry, item.owner)
     else kept[#kept + 1] = item end
   end
   self.pendingSignals = kept
@@ -925,7 +1021,9 @@ function Adapter:_firePendingImpacts()
   local frame = self.player and self.player.runtime and self.player.runtime.frame or 0
   local kept = {}
   for _, item in ipairs(pending) do
-    if frame >= item.frame then self:impact(item.moveId, item.source, item.result)
+    if self:_stale(item, item.target, item.targetGen) then
+      -- dropped: a newer move, or the target's model was replaced
+    elseif frame >= item.frame then self:impact(item.moveId, item.source, item.result)
     else kept[#kept + 1] = item end
   end
   self.pendingImpacts = kept
@@ -948,18 +1046,24 @@ function Adapter:signalContext(id)
   return self.player and self.player:signalContext(id) or false
 end
 
+function Adapter:_serviceQueues()
+  if not self.player then return end
+  self:_firePendingRoute()
+  local now = self.player.runtime and self.player.runtime.frame or 0
+  if self.pendingFinish and now >= self.pendingFinish.frame then
+    self.pendingFinish = nil
+    self:finish()
+  end
+  self:_firePendingImpacts()
+  self:_firePendingSignals()
+  self:_firePendingVariants()
+end
+
 function Adapter:update(dt)
   if self.player then
     local frame = self.player:update(dt)
-    self:_firePendingRoute()
-    local now = self.player.runtime and self.player.runtime.frame or 0
-    if self.pendingFinish and now >= self.pendingFinish.frame then
-      self.pendingFinish = nil
-      self:finish()
-    end
-    self:_firePendingImpacts()
-    self:_firePendingSignals()
-    self:_firePendingVariants()
+    -- players without the per-tick hook: service once per update
+    if not self.tickServiced then self:_serviceQueues() end
     return frame
   end
 end

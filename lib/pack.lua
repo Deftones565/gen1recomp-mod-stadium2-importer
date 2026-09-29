@@ -21,6 +21,9 @@ Pack.CONTEXTS = {
 Pack.N_MOVES = 251
 Pack.LEGACY_N_MOVES = 165
 Pack.NONE = 0xFFFF
+-- Stadium 2 advances a battle clip one source frame per battle logic tick
+-- (8003E6DC speed 0x10000 in a retail save state); logic runs at 30 Hz while
+-- the game renders at 60 fps (docs/luna/research/fx-clock-rate-2026-09-29.md).
 Pack.FPS = 30
 
 local byte = string.byte

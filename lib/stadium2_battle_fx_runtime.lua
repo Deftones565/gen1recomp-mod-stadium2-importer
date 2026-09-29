@@ -123,6 +123,8 @@ end
 
 function Runtime.new(options)
   options = type(options) == "table" and options or {}
+  -- One FX tick per 30 Hz battle logic tick (8413D37C -> 8410A608 once per
+  -- loop; docs/luna/research/fx-clock-rate-2026-09-29.md).
   local clockHz = tonumber(options.clockHz) or 30
   if clockHz <= 0 then error("battle FX clockHz must be positive", 2) end
   local catchUpLimit = options.catchUpLimit
@@ -600,6 +602,9 @@ function Runtime:_spawn(effect, previousFrame, frame)
     self.nativePool.slots[slot] = reserve
     local state = self:_particle(effect, source)
     state.nativeSlot = slot
+    -- not drawn until its first 841029DC update (see _stepEffect; a move
+    -- route's own zero-time births wait for the next tick's pass)
+    state.nativePending = true
     self.nativePool.slots[slot] = state
     effect.particles[#effect.particles + 1] = state
     return true
@@ -649,14 +654,21 @@ function Runtime:_spawn(effect, previousFrame, frame)
   end
 end
 
-function Runtime:_stepEffect(effect, previousFrame, frame)
-  for _, particle in ipairs(effect.particles) do
-    if particle.active then
+-- One 841029DC update of a live particle. birth: the scheduler created it
+-- this tick, after 841054D4's age pass, so it is updated at its birth age.
+function Runtime:_updateParticle(effect, particle, frame, birth)
       -- advance is step without the per-tick state copy (same result).
       local step = self.motion and (self.motion.advance or self.motion.step)
       if type(step) == "function" and particle._motionState then
-        local ok, value = pcall(step, particle._motionState, 1,
-          self.motionOptions)
+        local options = self.motionOptions
+        if birth then
+          options = copy(self.motionOptions or {})
+          options.nativeBirth = true
+        end
+        local ok, value = pcall(step, particle._motionState, 1, options)
+        if ok and type(value) == "table" and type(value._options) == "table" then
+          value._options.nativeBirth = nil
+        end
       if ok and type(value) == "table" then
           particle._motionState = value
           copyMotionFields(particle, value)
@@ -699,9 +711,25 @@ function Runtime:_stepEffect(effect, previousFrame, frame)
             message=tostring(ok and err or value or err),kind='particle'})
         end
       end
-    end
+      -- drawn from now on (841029DC builds the draw from this update); a
+      -- model's animation counter (8003E6DC) advances once per draw from here
+      if particle.nativePending then particle.nativeDrawAge = particle.age end
+      particle.nativePending = nil
+end
+
+function Runtime:_stepEffect(effect, previousFrame, frame)
+  for _, particle in ipairs(effect.particles) do
+    if particle.active then self:_updateParticle(effect, particle, frame, false) end
   end
+  -- 841055D8: the scheduler (84107B68) runs before the particle pass
+  -- (841029DC), so what it creates this tick is updated this tick, at age 0,
+  -- before it is ever drawn.
+  local first = #effect.particles + 1
   self:_spawn(effect, previousFrame, frame)
+  for index = first, #effect.particles do
+    local particle = effect.particles[index]
+    if particle.active then self:_updateParticle(effect, particle, frame, true) end
+  end
 end
 
 local function program(catalog, id)
@@ -920,6 +948,86 @@ function Runtime:releaseHeld(ownerSide)
   return count
 end
 
+-- Last local frame on which an execution can still create a particle
+-- (the Native.births schedule); math.huge when it repeats until cancelled
+-- (repeats 0xFF with an interval). Native-object commands belong to their
+-- manager's slots and are checked there. An execution without a schedule
+-- (an injected scheduler) is never treated as finished.
+local function lastBirth(execution)
+  if type(execution.scheduled) ~= "table" then return math.huge end
+  if execution._lastBirth == nil then
+    local last = -1
+    for _, event in ipairs(execution.scheduled or {}) do
+      if event.descriptorKind ~= "native-object" then
+        local repeats, interval = event.repeats or 1, event.interval or 0
+        if repeats == 0xFF and interval > 0 then last = math.huge; break end
+        if repeats == 0xFF then repeats = 1 end
+        last = math.max(last, (event.start or 0) + interval * math.max(0, repeats - 1))
+      end
+    end
+    execution._lastBirth = last
+  end
+  return execution._lastBirth
+end
+
+-- Timing audit T04: an effect whose particles have all ended (84100094 freed
+-- their slots), whose schedulers have no births left, and whose lifecycle
+-- instances and native-object slots are all gone can never draw again. The
+-- game keeps no per-move record past that point, so retire it; finished
+-- particle rows of a still-running effect are dropped as well. Keeps
+-- per-tick work and snapshots bounded by what is alive.
+function Runtime:_effectFinished(effect)
+  local live = {}
+  for _, particle in ipairs(effect.particles) do
+    if particle.active then live[#live + 1] = particle end
+  end
+  if #live ~= #effect.particles then effect.particles = live end
+  if #live > 0 then return false end
+  if not effect.emissionCancelled then
+    local localFrame = self.frame - effect.originFrame
+    for _, execution in ipairs(effect.executions) do
+      if lastBirth(execution) > localFrame then return false end
+    end
+  end
+  local instances = self.lifecycle and self.lifecycle.instances
+  for _, id in ipairs(effect.lifecycleInstances or {}) do
+    local instance = instances and instances[id]
+    if instance and instance.active then return false end
+  end
+  local slots = self.nativeObjects and self.nativeObjects.slots
+  for _, event in ipairs(effect.nativeObjectEvents or {}) do
+    local slot = slots and event.schedulerIndex ~= nil and slots[event.schedulerIndex]
+    if slot and slot.active and slot.event and slot.event.effectId == effect.id then
+      return false
+    end
+  end
+  return true
+end
+
+function Runtime:_retireFinished()
+  local kept, retired = {}, false
+  for _, id in ipairs(self.effectOrder) do
+    local effect = self.effects[id]
+    if effect and self:_effectFinished(effect) then
+      retired = true
+      self.effects[id] = nil
+      if self.lifecycle then
+        for _, instanceId in ipairs(effect.lifecycleInstances or {}) do
+          if type(self.lifecycle.release) == "function" then
+            pcall(self.lifecycle.release, self.lifecycle, instanceId)
+          end
+        end
+        if type(self.lifecycle.finishedEffects) == "table" then
+          self.lifecycle.finishedEffects[id] = nil
+        end
+      end
+    elseif effect then
+      kept[#kept + 1] = id
+    end
+  end
+  if retired then self.effectOrder = kept end
+end
+
 function Runtime:step(count)
   self:touch()
   if self.released then return self.frame end
@@ -934,6 +1042,12 @@ function Runtime:step(count)
     -- Native-object scheduling and lifecycle updates are separate engines.
     -- Their order is part of the runtime contract and each receives one tick.
     self:_stepManagers()
+    self:_retireFinished()
+    -- 8413D37C runs the battle actors (which start routes and impacts) after
+    -- each FX update: a host's delayed work is serviced here, once per tick,
+    -- so it fires on its own tick in order however many ticks one update
+    -- advances.
+    if self.afterTick then self.afterTick(self.frame) end
   end
   return self.frame
 end

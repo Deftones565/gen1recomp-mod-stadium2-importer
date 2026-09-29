@@ -9,7 +9,10 @@ function Animation.packet(particle,tick)
   if event.mode~=0 or not id or id<=0 then return nil end
   return {id=id,reverse=flag(event.flags,0x4000),
     startAtEnd=flag(event.flags,0x8000),
-    ticks=math.max(0,(tick or particle.age or 0)-(tick and particle.born or 0))}
+    -- the native counter (8003E6DC) steps once per draw of the model, from
+    -- the first draw: nativeDrawAge is the particle age of that draw
+    ticks=math.max(0,(tick or particle.age or 0)-(tick and particle.born or 0)
+      -(tonumber(particle.nativeDrawAge) or 0))}
 end
 function Animation.frame(anim,state)
   local last=math.max(0,anim.frames-1)

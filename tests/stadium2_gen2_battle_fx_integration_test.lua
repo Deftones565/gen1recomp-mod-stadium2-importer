@@ -192,6 +192,43 @@ ok(not scene:restCondition("player").underground,"not while the departing animat
 scene.vanish.player={active=false}
 battle.volatile=function() return {} end
 
+-- The move's battle record (841083B0 / 84114BF4): the user's status byte
+-- sampled when the event is emitted, and Curse's Ghost flag from Gold's
+-- branch (animParam 1 is the non-Ghost stat branch).
+do
+  local played={}
+  scene.battleFx.playMoveAndImpact=function(_,moveId,side,_,_,_,facts)
+    played[#played+1]={moveId=moveId,side=side,facts=facts} return true
+  end
+  battle.data.moves[173]={index=173,name="SNORE"}
+  battle.data.moves[174]={index=174,name="CURSE"}
+  battle.player.status,battle.player.statusTurns="sleep",3
+  local snore={kind="move",side="player",move=173}
+  scene:recordEvent(snore)
+  battle.player.status,battle.player.statusTurns=nil,nil -- woke before it is shown
+  scene:handleEvent(snore)
+  ok(played[1] and played[1].moveId==173 and played[1].facts.sourceStatus==3,
+    "Snore carries the user's sleep counter from when the move was used")
+  ok(played[1].facts.resultBits==nil,"Snore sets no result flag")
+  battle.enemy.status="paralyze"
+  local ghost={kind="move",side="enemy",move=174}
+  scene:recordEvent(ghost);scene:handleEvent(ghost)
+  ok(played[2].facts.resultBits==0x80 and played[2].facts.sourceStatus==0x40,
+    "a Ghost Curse (no animParam) sets 0x80; paralysis is status bit 0x40")
+  local stat={kind="move",side="enemy",move=174,animParam=1}
+  scene:recordEvent(stat);scene:handleEvent(stat)
+  ok(played[3].facts.resultBits==nil,"the non-Ghost stat Curse sets no flag")
+  battle.enemy.status=nil
+  scene.battleFx.playMoveAndImpact=nil
+  -- the owner's DV word (8006456C's shiny test) follows the shown Pokemon
+  battle.player.dvs={attack=10,defense=10,speed=10,special=10}
+  scene:sync()
+  ok(scene.actors.player.nativeStatusPattern==0xAAAA,"the actor carries its DV word")
+  battle.player.dvs=nil
+  scene:sync()
+  ok(scene.actors.player.nativeStatusPattern==nil,"no DVs, no word")
+end
+
 -- This file does not release the adapter: Presentation owns shared scene
 -- teardown, which is deliberately tested by the common scene integration.
 Importer.betaBattleFxEnabled=oldEnabled

@@ -582,13 +582,23 @@ function Manager:_phase(instance, phase, address)
         if self.resolveBeam then
           local ok,inputs=pcall(self.resolveBeam,copy(context),instance)
           if ok and inputs then
+            -- 29 (8415703C): anchor 84109B1C at the owner's context marker,
+            -- scale 841095DC from the owner's context table.
+            local ownerSetup=instance.familyId==23 or instance.familyId==29
             if context.lifecycleAnchor==nil then
-              if instance.familyId==23 then context.lifecycleAnchor=inputs.ribbonOwnerAnchor
+              if ownerSetup then context.lifecycleAnchor=inputs.ribbonOwnerAnchor
               else context.lifecycleAnchor=inputs.ribbonAnchor end
             end
             if context.lifecycleScale==nil then
-              if instance.familyId==23 then context.lifecycleScale=inputs.ribbonOwnerScale
+              if instance.familyId==29 then context.lifecycleScale=inputs.ribbonOwnerContextScale
+              elseif ownerSetup then context.lifecycleScale=inputs.ribbonOwnerScale
               else context.lifecycleScale=inputs.ribbonTargetScale end
+            end
+            if instance.familyId==29 then
+              -- 8411E244's context marker selection is not ported; the owner's
+              -- move-row marker stands in (as for 23's 8410971C joint).
+              self:_emit(diagnostic("approximate-ribbon-context-marker",nil,address,
+                "family 29 anchors on the owner's move-row marker; 8411E244 context marker selection is not ported"),instance)
             end
           elseif not ok then
             self:_emit(diagnostic("lifecycle-anchor-error",nil,address,tostring(inputs),"error"),instance)
@@ -858,6 +868,10 @@ function Manager:release(id)
   if id and self.instances[id] then
     self.instances[id].active = false
     self.instances[id] = nil
+    -- Keep the update order bounded by the instances that remain.
+    for index = #self.order, 1, -1 do
+      if self.order[index] == id then table.remove(self.order, index) break end
+    end
     return true
   end
   return false

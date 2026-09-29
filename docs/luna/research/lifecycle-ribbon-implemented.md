@@ -1,5 +1,21 @@
 # Shared ribbon lifecycle
 
+**Update 2026-09-29: family 29 implemented** (entry 261, Bind/Wrap residual
+damage). US assembly, pret `c0e10f23`: wrapper `8415703C` passes `8415BBA0`
+the same colour arguments as 23's `84156F50` (100,200,255 / 0,100,200); its
+setup anchor is `841569C0` → `84109B1C` (the owner's context marker:
+`8411E244` then `8003C9B8`, then `8411DCCC`) and its scale `841569A0` →
+`841095DC` (`8411E358` context table × `D_84188E2C` = .01). Update
+`841570B4` calls `8415BD48(1)`: `a0` only selects the per-tick anchor
+re-sample, `84109B1C` for 1 and the joint sampler `8410971C` for 0; the
+rest of the kernel is shared. The port uses the owner's anchor, and
+`Dispatch.contextScale(261, owner context bytes)` for the scale (byte 0x21;
+0.4–2.55 over all species, none zero). Approximation, reported as
+`approximate-ribbon-context-marker`: `8411E244`'s marker choice is not
+ported, so the owner's move-row marker stands in (as for 23's joint).
+ROM test: `stadium2_battle_fx_ribbon_rom_test.lua` (entry 261).
+
+
 Implemented retail families 23, 26 and 27 through the persistent lifecycle
 manager, renderer-neutral packets and the battle/viewer player. US ROM source:
 initialization 8415BBA0, update 8415BD48, draw 8415C2E0; wrappers

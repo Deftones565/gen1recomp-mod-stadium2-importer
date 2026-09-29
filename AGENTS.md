@@ -71,7 +71,9 @@ That is allowed when the user explicitly asks for it:
   rather than inferred.
 - Keep ROM decoding, runtime simulation, rendering, and battle integration as
   separate layers (see `docs/luna/README.md`).
-- Preserve deterministic 30 Hz stepping. Runtime code must accept injected RNG;
+- Preserve deterministic 30 Hz stepping (battle logic, FX and clip frames;
+  the game renders at 60 fps, see
+  `docs/luna/research/fx-clock-rate-2026-09-29.md`). Runtime code must accept injected RNG;
   it must not consume or perturb the host game's battle RNG.
 - A renderer consumes persistent runtime snapshots. It must not rebuild all
   particles from frame zero during every draw.

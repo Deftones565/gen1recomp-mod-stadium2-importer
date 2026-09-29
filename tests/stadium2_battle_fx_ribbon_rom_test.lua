@@ -62,4 +62,23 @@ for _,id in ipairs({20,35,50,81,132}) do
   end
   p:release()
 end
-print("ROM ribbon: texture, five move routes, persistent renderer and expiry passed")
+-- Entry 261 (0x105): Bind/Wrap residual damage, lifecycle family 29
+-- (8415703C / 841570B4 / 841570D4): the same ribbon kernel as 23/26/27.
+do
+  local p=Player.new({catalog=catalog})
+  assert(p:playEntry(261,{sourceSide="enemy",targetSide="player"}),"entry 261 plays")
+  p.runtime:step(1)
+  local packets=p:packets(scene)
+  assert(#packets.lifecyclePackets==1,"entry 261 dispatches a ribbon")
+  local packet=packets.lifecyclePackets[1]
+  assert(packet.familyId==29,"entry 261 is lifecycle family 29")
+  local colors=packet.geometry and packet.geometry.colors
+  assert(colors and colors[1][1]==100 and colors[1][2]==200 and colors[1][3]==255
+    and colors[2][2]==100 and colors[2][3]==200,"family 29 takes 8415703C's colours (as 23)")
+  for _,d in ipairs(packets.diagnostics) do
+    assert(d.code~="unsupported-lifecycle-callback" and d.code~="lifecycle-model-unresolved",
+      "entry 261 has geometry now ("..tostring(d.code)..")")
+  end
+  p:release()
+end
+print("ROM ribbon: texture, five move routes, entry 261 (family 29), persistent renderer and expiry passed")

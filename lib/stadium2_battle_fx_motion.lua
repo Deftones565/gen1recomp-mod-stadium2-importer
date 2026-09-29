@@ -377,8 +377,17 @@ local function nativeYTermination(particle)
   local event=type(particle.event)=="table" and particle.event or {}
   local descriptorFlags=tonumber(event.flags) or 0
   -- 0x84107240..0x84107254 maps descriptor bit 28 to object flag
-  -- 0x20000, whose termination path replaces the ordinary age endpoint.
+  -- 0x20000: 8410009C then also completes the particle when its final Y is
+  -- nonpositive. This is independent of the age-255 endpoint.
   return math.floor(descriptorFlags/0x10000000)%2==1
+end
+
+-- 841071B0..841071C0 maps descriptor bit 0x10 to object flag 1, which is
+-- what exempts a particle from 8410009C's age-255 completion (84100074).
+local function nativeAgeExempt(particle)
+  local event=type(particle.event)=="table" and particle.event or {}
+  local descriptorFlags=tonumber(event.flags) or 0
+  return math.floor(descriptorFlags/0x10)%2==1
 end
 
 -- Create a detached state snapshot.  `particle` may be a Native.particles()
@@ -400,6 +409,7 @@ function Motion.init(particle, options)
     diagnostics = {},
     _options = copy(options),
     nativeAgeEndpoint = nativeAgeEndpoint(particle),
+    nativeAgeExempt = nativeAgeExempt(particle),
     -- The ROM's flag-0x20000 branch additionally checks the final Y field
     -- (+0x24).  The runtime does not yet expose that resolved native field,
     -- so keep the boundary explicit and do not invent the Y termination.
@@ -669,7 +679,11 @@ local function tick(state, delta, options, inPlace)
   -- observe the post-increment age.  Native age is an unsigned byte; the
   -- runtime advances in whole 30 Hz ticks, while synthetic states retain
   -- their ordinary numeric age semantics.
-  if out.nativeHold then
+  -- options.nativeBirth: a particle the scheduler (84107B68) created this
+  -- tick missed the age pass; 841029DC still updates it, at age 0.
+  if options.nativeBirth then
+    -- no age increment or hold countdown on the birth tick
+  elseif out.nativeHold then
     if out.nativeHoldCountdown>0 then
       out.nativeHoldCountdown=out.nativeHoldCountdown-1
     end
@@ -1048,12 +1062,11 @@ local function tick(state, delta, options, inPlace)
   if out.nativeHideAge and out.age==out.nativeHideAge then out.nativeHidden=true end
 
   -- 0x8410009C observes age == 0xff after the category update.  It is an
-  -- exact byte equality, not a >= comparison.  The unresolved
-  -- flag-0x20000/Y branch remains represented by nativeYTermination above.
+  -- exact byte equality, not a >= comparison, and object flag 1 (descriptor
+  -- 0x10) exempts it. The flag-0x20000/Y completion above is a separate rule.
   if out.lifetime ~= nil then
     if out.age >= out.lifetime then out.alive = false end
-  elseif out.nativeAgeEndpoint and out.age == 0xff
-      and not (out.nativeYTermination and out.nativeYTermination.active) then
+  elseif out.nativeAgeEndpoint and out.age == 0xff and not out.nativeAgeExempt then
     out.alive = false
   end
   return out

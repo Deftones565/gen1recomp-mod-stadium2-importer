@@ -1,5 +1,225 @@
 Move bug list
 
+Runtime follow-up (2026-09-29, the white square on hits, local session):
+- The hit of Pound (1) and 99 other move/context entries showed a white
+  square. Their hit sparks (shape 109: a flat 32-unit white quad, scaled by
+  its scale curve to about 0.8 units and spun 45 degrees a tick) were drawn
+  for one tick at full size when each spark was born, before their first
+  update. Stadium updates a particle before it is ever drawn (841055D8: the
+  scheduler 84107B68 runs before the particle pass 841029DC).
+- Fixed for every move: particles the scheduler creates in a tick get their
+  first update in that tick at age 0; a move route's zero-time births (made
+  after the tick's pass) are not drawn until the next tick's update. Model
+  animations (e.g. Swords Dance) still start on frame 0 at their first draw.
+- Entries using the sparks: 1 2 3 4 6 7 8 9 10 11 12 15 16 17 19 21 23 24 26
+  27 29 30 31 32 33 34 36 37 38 39 44 49 52 58 63 64 65 66 67 68 69 70 88 91
+  98 99 117 119 121 125 128 130 136 140 143 152 154 155 157 158 162 163 164
+  165 167 168 172 173 174 175 179 181 183 185 196 198 200 206 210 211 214 216
+  217 218 220 221 223 224 228 229 231 232 233 238 242 243 245 246 249 251.
+- Checked: new test `tests/stadium2_battle_fx_birth_update_test.lua`, the
+  strict-ROM worker checks (the ROM oracles for Sonic Boom, Needle and the
+  radial families still match). Needs your retest: Pound and any other hit.
+
+Runtime follow-up (2026-09-29, move results for Thief, Present, Curse, Snore
+and shiny Pokemon, Gen 2, local session):
+- These moves pick between versions of their effect from the battle result.
+  That result was never passed in, so they could not choose. Now, from the
+  Stadium 2 ROM's battle engine:
+  - Curse (174): a Ghost-type Curse plays its move effect; the stat-raising
+    Curse plays only its hit effect, as in Stadium.
+  - Snore (173): plays its "asleep" version.
+  - Thief (168) and Present (217): play the version for no item stolen and
+    no heal, because Gen1Recomp's engine never steals or heals with them.
+  - Shiny Pokemon: the send-out effect (and four related effects) now take
+    their shiny branch. Stadium tests the same DVs as the Game Boy games.
+    Gen 2 only.
+- Checked: ROM assembly for all four (notes in
+  `docs/luna/research/move-record-inputs-2026-09-29.md`), new tests, the
+  full suite and the strict-ROM worker checks. Not seen in game yet.
+- Open: the exact result value Stadium gives a Ghost Curse's hit effect
+  (needs an emulator capture).
+- Needs your retest: a Ghost Curse (Gengar/Haunter), a stat Curse, Snore
+  while asleep, Thief, Present, and sending out a shiny Pokemon in a Gen 2
+  battle.
+
+Runtime follow-up (2026-09-29, timing audit T01/T02/T04, local session):
+- T01: delayed work (impacts, routes, event effects) now fires on its own
+  30 Hz tick, in order, even when one screen update covers several ticks
+  (a slow frame). Before, it all fired together on the last tick, out of
+  order.
+- T02: a newer move drops the older move's queued hit, and a Pokemon that is
+  switched out or replaced drops queued effects aimed at it or owned by it.
+- T04: finished effects are removed instead of being kept and walked every
+  frame for the whole battle (lag in long battles). A synthetic benchmark
+  cut late-battle FX work per frame from 0.189 ms to 0.005 ms; not measured
+  in game.
+- Checked: new tests (queue timing, effect retirement), the full suite, the
+  strict-ROM worker checks and `tools/audit_battle_fx_timing.lua`. Needs
+  your retest: a long battle, with switches during moves, should show no
+  stray late hits and no growing lag.
+
+Runtime follow-up (2026-09-29, Bind/Wrap end-of-turn damage, local session):
+- Bind (20) and Wrap (35)'s end-of-turn damage (entry 261) drew nothing: its
+  ribbon family (29) was not implemented. It now plays the ribbon that wraps
+  the trapped Pokemon, the same effect family as other ribbons, sized per
+  species from Stadium's own table (from 0.4 to 2.55, e.g. Onix 2.4).
+- From the ROM assembly: same colours and motion as family 23; it follows
+  the trapped Pokemon's marker each tick. The exact marker Stadium picks is
+  not decoded yet, so the Pokemon's move-row marker stands in (reported).
+- Checked: ribbon and lifecycle tests, a new ROM test for entry 261, the full
+  suite and the strict-ROM worker checks. Needs your retest: a Gen 2 battle
+  where Bind or Wrap traps the opponent (the effect plays at end of turn).
+
+Free-camera addition (2026-09-29, user-requested, NOT Stadium 2 behaviour,
+local session):
+- Effects placed on the camera's view ray (descriptor bit 0x1; the jaws of
+  Vice Grip 11, Guillotine 12, Bite 44, and any other effect placed the same
+  way) now turn with the free camera, so they stay square to the view, and
+  stop drawing when the move's impact starts. That is where Stadium cuts the
+  camera to the defender and takes them off screen. Their native lifetime and
+  motion are unchanged; a failed move (no impact) keeps them for their full
+  lifetime. Battles only; the viewer stays native.
+- Code: `lib/stadium2_battle_fx_camera_follow.lua` (the addition),
+  hooks in `stadium2_battle_fx_player.lua` (draw), `..._battle_adapter.lua`
+  (enable, and hide at impact), packet fields in `..._draw_packets.lua`.
+  Test: `tests/stadium2_battle_fx_camera_follow_test.lua`.
+- To be replaced by Stadium's own camera shots once those are implemented.
+- Follow-up after the user's retest (Vice Grip "not attached to the camera"):
+  the native ray distance (80 source units for the jaws) is converted with
+  the attacker's model scale in classic/Kenney scenes, which put them out
+  among the battlers. They are now drawn 4 world units in front of the eye
+  (80 units at Stadium's .05 field scale, as arena scenes already have) on
+  the same ray, scaled by the same factor, so their on-screen size is the
+  native one and nothing covers them.
+- The family (descriptor bit 0x1, 37 moves, all in the move's own bank):
+  11 12 13 16 18 19 43 44 46 59 71 72 93 94 96 99 101 116 117 128 137 138
+  141 149 158 162 170 184 193 197 202 212 234 235 236 241 242.
+- Needs your retest: Vice Grip, Guillotine, Bite and a few others from the
+  list (e.g. Leer, Psychic, Crunch), including while orbiting.
+- User retest (2026-09-29): the camera attachment (turning with the free
+  camera and drawing in front of the eye) is removed at the user's request;
+  these effects are placed natively again. Kept: they stop drawing when the
+  move's impact starts (the user confirmed that part was good).
+
+Research follow-up (2026-09-29, jaw moves stay on screen, local session):
+- A 60 Hz clock change made earlier today was reverted after the user's
+  retest (everything ran at double speed). Battle logic, effects and clips
+  run at 30 Hz in Stadium 2, as the port already did; only the rendering is
+  60 fps. [FX clock note](docs/luna/research/fx-clock-rate-2026-09-29.md)
+- From the user's Guillotine save state replayed in mupen64plus: the jaws are
+  3D objects placed just in front of the attack camera, so they look fixed
+  to the screen. They are still visible at video frame 10 and gone from
+  frame 13, when Stadium cuts the camera to the defender; the jaw itself
+  lives on to age 35 in both games.
+- So the jaws (Vice Grip, Guillotine, Bite, and likely other camera-placed
+  effects) stay on screen in the port because the port has no Stadium camera
+  cuts, not because of their lifetime. Fix: Stadium's per-move camera shots
+  (item 9 of the parity audit), at least the cut to the defender at impact.
+
+Runtime follow-up (2026-09-29, T03 fixed, local session):
+- Particles now leave at age 255 by the ROM's own rule: only those whose
+  descriptor has flag `0x10` stay past it (object flag 1 in `84107170`,
+  tested by `8410009C` through `84100074` with mask 1). Before, the port used
+  the unrelated "falls to the ground" flag for this, so those particles
+  lived on while the `0x10` ones died early.
+- Moves whose effects carry one of these flags include Mist (54), the
+  powders (77–79), Haze (114), Powder Snow (181), Icy Wind (196), Rapid
+  Spin (229), Rain Dance (240) and many impact effects. Most particles end
+  earlier by other rules, so a visible change is only expected where a
+  particle reached age 255 (~8.5 s).
+- Checked: motion test (all four flag combinations), full importer suite,
+  strict-ROM worker checks. Needs your retest of long-lasting effects
+  (Mist, Haze, Rain Dance, the powders).
+
+User report (2026-09-29): slashing effects stay on screen after they play.
+Research follow-up (2026-09-29, local session; research only, no fix yet):
+- **S01 — The move-bank slash lives ~8.5 s.** Scratch (10), Cut (15),
+  Fury Swipes (154) and Slash (163) each spawn one mode-7 screen particle
+  (shape 82; program 206 records 7/10 for Scratch) that stretches to 6.2×
+  in ~6 ticks and then stays at full alpha until the age-255 cutoff
+  (~tick 285). Their orange screen flash and the impact bank's slash end
+  within 16–18 ticks, as they should.
+- The decoded ROM data gives that particle no earlier end: material end age
+  0, no alpha ramp (the impact slash has one), no colour tracks, not held,
+  shape 82 does not fade itself, and Stadium does not clear the particle
+  pool between moves (`84100134` only runs at battle setup). All retirement
+  paths of `8410009C` were checked in the assembly.
+- So the port matches the decoded data, but not what the user sees in
+  Stadium 2. Open question: is Stadium's stretched slash placed off-screen
+  (our mode-7 screen transform, changed 09-27, may differ), cleared by a
+  path not yet found, or on a faster clock? Next step is a real-game
+  capture of Scratch (emulator or reference video) to compare with the
+  viewer. No fade or timeout will be invented meanwhile.
+- Evidence, addresses and reproduction:
+  [slash persistence](docs/luna/research/slash-persistence-2026-09-29.md).
+  Needs no retest yet (nothing changed).
+
+Timing/lifetime audit (2026-09-28–29; research only, findings added as verified):
+
+- **T01 — Batched updates fire delayed FX late and can reverse their order.**
+  `Adapter:update` advances all runtime ticks before servicing the route,
+  impact, event and charge queues. A controlled route-at-2 / impact-at-1
+  probe produces impact at 1 then route at 2 with single ticks, but route
+  then impact at 3 with one three-tick update. The final route-finish signal
+  also differs (0 versus 1). Both battle adapters permit three ticks per
+  update. This is a demonstrated scheduler defect; the fixture is not a
+  claim that Water Gun's retail row has those frame values.
+- **T02 — Superseded moves and replaced models retain scheduled work.** A
+  newer move replaces `pendingRoute`, but does not clear the prior move's
+  queued impact/charge/event callbacks. `modelChanged` only resets model
+  color state. Controlled probes show the old impact firing at tick 10
+  after a new move starts, and at tick 8 after its target model changes.
+  Queued callbacks identify a side, not a particular actor incarnation.
+  Exact live-battle frequency still needs captures; this is separate from
+  the concurrent fix for already-running recall color controllers.
+- **T03 — Common-particle age-255 survival tests the wrong flag.** Executing
+  supported-ROM `8410009C` proves object bit 1 exempts the age-255 cutoff;
+  descriptor bit `0x10` sets it in `84107170`. Lua instead exempts the
+  independent Y-termination bit (`descriptor 0x10000000`). At age 255 and
+  positive Y, descriptor `0x10` incorrectly dies; `0x10000000` incorrectly
+  survives. Mist/powders/Haze and other catalog entries use the first bit;
+  many impact entries use the second. Other termination gates may end them
+  earlier, so this does **not** mark every such move visibly broken. The
+  older common-particle note and motion test encode the same wrong rule.
+- **T04 — Finished-effect history is retained for the whole battle.** After
+  1,000 real-ROM empty Pound primary routes and 360 ticks, the runtime still
+  snapshots 1,000 effects with zero live particles. `effects`, `effectOrder`
+  and ordinary expired particle records are not retired until full release.
+  The 300-slot live pool therefore does not bound all per-tick/snapshot work.
+  This is a storage/work lifetime issue; no FPS impact is claimed here.
+- **T05 — ThunderShock (84) loses a repeating impact emitter.** Its real
+  program 167 descriptor `84177B4C` has repeat byte zero. Six executions of
+  native scheduler `84107B68` emit on passes 0,1,2,3,4,5; `Native.births`
+  emits only on 0. Signed nonpositive counts remain active in the native
+  scheduler until release; zero is not a one-shot count.
+- **T06 — Native age freeze is being treated as invisibility.** At its
+  material endpoint, descriptor bit 2 sets object flag `0x80` (`84102320`),
+  which stops byte-age advancement in `841054D4/841055A0`. Lua sets
+  `nativeHidden`, removes the draw packet, and continues aging. A ROM
+  prepass holds age 3 while Lua reaches age 4 and is hidden. Catalog exposure
+  includes Baton Pass (226) and event entries 254/256/275/285/286/288/301;
+  exact visible lifetimes need per-entry captures.
+- **T07 — Gen 2 Magnitude (222) starts FX on the deferred announcement.**
+  The host sets `deferAnim` on the move row, then later starts the animation
+  through a message row with `moveAnim`. `Scene:handleEvent` schedules FX
+  on the first row and ignores the actual animation row; the model clip
+  correctly waits for `animForMove`. The early row can also be marked
+  finished because it has no animation runner. Reproduced through the live
+  scene adapter using the host's event shapes.
+- **T08 — Negative-hit-frame pre-roll advances the new clip by too much.**
+  `Actor:stepPendingClip` changes from idle to the move clip at the pre-roll
+  boundary, then `Actor:update` gives the new clip the entire update delta.
+  With a two-tick pre-roll and three elapsed ticks, three single updates
+  leave the clip at frame 2; one three-tick update leaves it at frame 3.
+  The pose and FX timeline therefore depend on display/update partitioning.
+  This is an isolated actor-clock probe, not a claim about Pound's real row.
+
+Evidence, scope, reproducer and remaining checks:
+[timing audit](docs/luna/research/timing-lifetimes-2026-09-28.md).
+Primary decomp consulted: merged michiiik/pokestadiumgs
+`026460f8a239c720fa38ac8c5a702b51a5bdfc2e`. These are diagnosed gaps,
+not fixes or user-confirmed visual results. Earlier observations stay below.
+
 Research completion (2026-09-27; incorporates the newer local follow-ups):
 - **New confirmed no-draw path: Bind/Wrap residual damage (20/35), entry
   261 / `0x105`, lifecycle family 29.** The Gen 2 event hook exists, but the

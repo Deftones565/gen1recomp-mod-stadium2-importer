@@ -187,6 +187,17 @@ not be treated as a current performance result.
    `84107B68` before `841029DC`, including whether a newly allocated particle
    receives its first update on the birth tick. The answer must be verified
    against the route/particle caller, not inferred from the Lua test order.
+   **Answered 2026-09-29 (local session, US frame driver `841055D8` in
+   michiiik `15201a6`):** `841054D4` (age pass) runs first, the scheduler
+   `84107B68` creates particles, then `841029DC` updates and draws every
+   live slot. A particle the scheduler creates is updated in its birth tick
+   at age 0 before it is drawn; a route's zero-time births (the actor update
+   `8413D37C` runs after the FX frame) are first updated, at age 1, in the
+   next tick. The runtime now does both (`Runtime:_updateParticle(...,
+   birth)`, `nativePending`); the model-animation counter `8003E6DC` counts
+   from the first draw (`nativeDrawAge`). Before this, every particle was
+   drawn once un-updated: shape 109's sparks at scale 1 (a 32-unit white
+   square on 100 entries).
 3. Implement the separately proven family-29 setup/update contract and
    verify entry 261 in actual Bind/Wrap residual-damage sequences.
 4. Model or explicitly document the eight-slot lifecycle callback table and

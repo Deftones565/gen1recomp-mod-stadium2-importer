@@ -11,6 +11,8 @@ local Beam=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_beam")
 local CommonAnchor=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_common_anchor")
 local BattleState=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_state")
 local ModelAnimation=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_model_animation")
+-- FREE CAMERA ADDITION (non-native; see the module): enabled by the battle adapter.
+local CameraFollow=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_camera_follow")
 local Batch=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_batch")
 local Player={};Player.__index=Player
 local NativeObjects=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_native_objects")
@@ -196,7 +198,8 @@ function Player.new(options)
     end
     runtime=Runtime.new(ro)
   end
-  player=setmetatable({runtime=runtime,loadRenderer=options.loadRenderer,releaseRenderer=options.releaseRenderer,contextForParticle=options.contextForParticle,resolvePlacement=options.resolvePlacement,
+  player=setmetatable({cameraFollow=options.cameraFollowExtension==true and CameraFollow.new() or nil,
+    runtime=runtime,loadRenderer=options.loadRenderer,releaseRenderer=options.releaseRenderer,contextForParticle=options.contextForParticle,resolvePlacement=options.resolvePlacement,
     resolveNativePlacement=options.resolveNativePlacement or options.resolveNativeObjectPlacement or options.nativePlacementResolver,
     resolveNativeGeometry=options.resolveNativeGeometry or options.resolveNativeObjectGeometry or options.nativeGeometryResolver,
     resolveNativeRenderer=options.resolveNativeRenderer or options.nativeObjectRendererResolver,
@@ -618,6 +621,12 @@ function Player:_renderer(moveId,shapeId,animationId)
   local ok,renderer,owned=pcall(self.loadRenderer,moveId,shapeId,animationId);if not ok then return nil,tostring(renderer)end;if not renderer then return nil,tostring(owned or"battle FX shape renderer unavailable")end
   self.renderers[key]={renderer=renderer,owned=owned};return renderer
 end
+-- FREE CAMERA ADDITION: stop drawing an effect's camera-placed particles
+-- (see stadium2_battle_fx_camera_follow.lua).
+function Player:hideCameraPlaced(effectId)
+  if self.cameraFollow then self.cameraFollow:hideEffect(effectId) return true end
+  return false
+end
 function Player:draw(sceneContext)
   self.beamScene.value=sceneContext
   if self.released then return nil,"battle FX player released"end
@@ -641,7 +650,11 @@ function Player:draw(sceneContext)
   end
   local drawn=0
   local batch=self.batchDraws~=false and love and love.graphics and love.graphics.newMesh and self:_batch() or nil
+  local follow=self.cameraFollow
   for _,packet in ipairs(built.packets)do
+    local followed=follow and CameraFollow.placed(packet)
+    if followed and follow:isHidden(packet) then goto nextPacket end
+    do
     local renderer,err=self:_renderer(moveByEffect[packet.effectId],packet.shapeId,
       packet.modelAnimation and packet.modelAnimation.id)
     if not renderer or type(renderer.drawScene)~="function" then built.diagnostics[#built.diagnostics+1]={code="draw-renderer",severity="warning",effectId=packet.effectId,programId=packet.programId,address=nil,kind="draw",message=renderer and "renderer has no drawScene method" or tostring(err)}
@@ -687,6 +700,8 @@ function Player:draw(sceneContext)
       end
       if success then drawn=drawn+1 end
     end
+    end
+    ::nextPacket::
   end
   if batch then batch:finish() end
   -- Native-object and lifecycle packets are renderer-neutral, but proven
