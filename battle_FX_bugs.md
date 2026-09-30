@@ -1,5 +1,26 @@
 Move bug list
 
+FX fix (2026-10-01, slashes staying on screen, local session):
+- Cause: Stadium 2 clears leftover move effects from the battle side when
+  the battle returns to the command menu after a turn (and at send-outs),
+  a routine the effect code itself never calls. The mod did not do that,
+  so the Scratch / Cut / Fury Swipes / Slash mark stayed for about 8
+  seconds.
+- Fix: the same clear now runs when the command menu comes back after a
+  turn, and at every send-out after the first turn. It works with every
+  camera setting. Held effects (such as ones a Pokemon keeps) survive it,
+  as in Stadium.
+- The same lingering screen mark exists in 13 strike moves: Scratch, Cut,
+  Wing Attack, Vine Whip, Fury Swipes, Slash, False Swipe, Fury Cutter,
+  Steel Wing, Rapid Spin, Iron Tail, Metal Claw and Cross Chop; all are
+  covered by the same clear (a sweep of all 251 moves found 34 move banks
+  with a lingering screen particle, the rest being clouds and overlays such
+  as Mist, the powders, Smokescreen and Sandstorm, which Stadium also keeps
+  until that clear).
+- Checked with the real ROM data in a test (all 13 strike marks are gone
+  after the clear). Needs your retest: use Scratch, Vine Whip or Slash and
+  wait for the menu.
+
 Camera trigger fixes (2026-10-01, local session):
 - Roar / Whirlwind in Gen 2: the camera always used Stadium's "dragged-out
   Pokemon is asleep" variant. It now picks by the Pokemon's real status,

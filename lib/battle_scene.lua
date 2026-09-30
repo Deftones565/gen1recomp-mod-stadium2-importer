@@ -160,6 +160,20 @@ function Scene:updateBattleFx(dt)
   if not evoOk and self.warn then pcall(self.warn,"evolution: "..tostring(evoErr)) end
   local battleFx=self.battleFx
   if not battleFx or type(battleFx.update)~="function" then return nil end
+  -- 84113D7C: the first idle record after a turn clears the effects (the
+  -- idle records run while the battle waits for a command; with the STADIUM
+  -- camera, once its idle cycle has started, since it also waits for the
+  -- event timer). D_841911FA is `stadiumIdleCleared`, reset at turn start.
+  if not self.stadiumIdleCleared then
+    local cam=self.stadiumCameraActive and self.stadiumCamera
+    local idle
+    if cam then idle=cam.idle~=nil
+    else idle=type(self.stadiumAwaitingCommand)=="function" and self:stadiumAwaitingCommand() end
+    if idle then
+      self.stadiumIdleCleared=true
+      self:battleFxClear()
+    end
+  end
   local ok,result=pcall(battleFx.update,battleFx,dt)
   if not ok and self.warn then pcall(self.warn,tostring(result)) end
   return ok and result or nil
@@ -383,8 +397,19 @@ function Scene:stadiumCameraAttack(side,moveId)
   end
 end
 
+-- 841089D8(1) through the battle FX adapter (Adapter:clearAll).
+function Scene:battleFxClear()
+  local fx=self.battleFx
+  if fx and type(fx.clearAll)=="function" then
+    local ok,err=pcall(fx.clearAll,fx)
+    if not ok and self.warn then pcall(self.warn,"battle FX clear: "..tostring(err)) end
+  end
+end
+
 -- A turn begins (both sides have chosen): Stadium's turn-start orbit.
 function Scene:stadiumCameraTurn()
+  self.stadiumIdleCleared=false -- 8411FF1C's 0x5A case clears D_841911FA
+  self.stadiumTurnSeen=true
   self.stadiumFirstActor=false -- Gen 1 records the turn's first action here
   if self.stadiumCameraActive and self.stadiumCamera then
     pcall(self.stadiumCamera.turnStart,self.stadiumCamera,self)
@@ -464,8 +489,12 @@ function Scene:stadiumCameraDodge(side,moveId)
   end
 end
 
--- A Pokemon is sent out: Stadium's send-out camera on it.
+-- A Pokemon is sent out: 8411BB04 first clears the effects (84111C1C),
+-- then Stadium's send-out camera on it.
 function Scene:stadiumCameraSendOut(side)
+  -- the battle's first send-outs are the opening's (8411C418 clears at its
+  -- wipe instead, see StadiumCamera:update)
+  if self.stadiumTurnSeen then self:battleFxClear() end
   if self.stadiumCameraActive and self.stadiumCamera then
     pcall(self.stadiumCamera.sendOut,self.stadiumCamera,self,side)
   end

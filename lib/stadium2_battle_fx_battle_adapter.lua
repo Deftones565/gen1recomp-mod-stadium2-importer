@@ -621,6 +621,7 @@ function Adapter:trigger(moveId, source, alternate, variant)
     -- 841086F0/84108728/841088CC route state consulted by 84108974.
     self.routeMove, self.routeMode = tonumber(moveId), variant == true and 1
       or (alternate == true and 2 or 0)
+    self.routeSource = source -- the route owner 84108974 signals for
     -- 841086F0 clears D_841901B8; 8410874C sets it again for the impact.
     self:_routeSignal(alternate == true and 1 or 0)
   end
@@ -747,14 +748,25 @@ function Adapter:impact(moveId, source, nativeResult)
     self.routeMode = 2
     self:_routeSignal(1)
   elseif action == "fail" then
-    if type(self.player.abortAll) == "function" then self.player:abortAll() end
-    -- 84108974(1): Dig still in route mode 1 signals entry 0x12D.
-    if self.digVariantArmed and self.routeMode == 1 and self.routeMove == Sequence.DIG then
-      self.digVariantArmed = false
-      effect, err = self:signalEffect(Sequence.DIG_FAILURE_ENTRY, source)
-    end
+    effect, err = self:clearAll(source)
   end
   return action, effect, err
+end
+
+-- 841089D8(1) (fork C), the battle's effect clear: 84105E3C (the pending
+-- scheduler), 841003AC(1) (every particle but the held ones, flag 0x10000;
+-- both battlers' colours reset), 84109460(1) (the lifecycle slots), then
+-- 84108974(1): Dig still in route mode 1 signals entry 0x12D. Stadium runs
+-- it through 84111C1C / 84111C44 from the failed-move path (841087B8), the
+-- first idle record after a turn (84113D7C while D_841911FA is 0), every
+-- send-out (8411BB04), status and residual events (84118C08) and others;
+-- the hosts call it at the moments they can see (Scene:battleFxClear).
+function Adapter:clearAll(source)
+  if type(self.player.abortAll) == "function" then self.player:abortAll() end
+  if self.digVariantArmed and self.routeMode == 1 and self.routeMove == Sequence.DIG then
+    self.digVariantArmed = false
+    return self:signalEffect(Sequence.DIG_FAILURE_ENTRY, source or self.routeSource)
+  end
 end
 
 -- The hit-frame states 84116EB4/841170A0/84117948/84118138/841182E0 run on

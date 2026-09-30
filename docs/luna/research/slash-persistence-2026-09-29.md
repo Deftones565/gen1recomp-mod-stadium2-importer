@@ -1,5 +1,9 @@
 # Slash marks staying on screen (Scratch / Slash / Cut / Fury Swipes)
 
+**Resolved 2026-10-01** (section at the end): Stadium clears the effect pool
+from the battle side (841089D8(1) through 84111C1C), which this note's
+search had not reached; the first idle record after a turn does it. Ported.
+
 Date: 2026-09-29. Research only; no runtime change. Status: **cause in the
 port identified, native end of the effect not yet found**.
 
@@ -163,3 +167,53 @@ tick 120, and every 30 ticks read `preview.player:snapshot()`:
 `particles` (count, and each particle's `age`, `scale`, `material.nativeAlpha`,
 `event.mode`, `shapeId`) and `nativeObjects.screenInstances` (`active`,
 `age`, `rgba[4]`).
+
+## Resolution (2026-10-01)
+
+Sources: US asm (pret `c0e10f2`) for 841003AC, 841054D4, 841092B8,
+8410922C, 84113D7C, 84113E7C, 8411FF1C, 84118C08, 84119630, 84118DD4,
+8411BB04, 8411C418; fork `1b6dc17` C for 841089D8, 84111C1C / 84111C44 /
+84111C6C, Dispatch_218.
+
+- 841003AC(arg) walks the 300 slots and frees every active particle
+  (84100350, after 84104818 for a linked renderer) except those with
+  object flag 0x10000 (held) and, when `arg` is 0, those with flag 1; for
+  moves 0x27 / 0x2B / 0x86 / 0xB8 (record +8) it is always forced and it
+  also resets the background and both battlers' colours. 841089D8(arg)
+  runs 84105E3C, 841003AC, 84109460 and 84108974 with that argument;
+  84111C1C and 84111C44 call it with 1, 84111C6C with 0. The port already
+  had 841089D8(1) as `Runtime:abortAll`, used only for the failed-move path.
+- Callers of 84111C1C: the dispatcher 8411FF1C for codes 0x29-0x2B and
+  0x38-0x3A (after clearing D_841911FA), 84113D7C (the idle camera's first
+  state: when D_841911FA is 0), 8411BB04 (every send-out, first thing),
+  84118C08 (status and residual events, at their start), 84119630 (event
+  0x36, full paralysis), 84118DD4 (its frame 0x47), 8411C418 (the opening,
+  substate 1's end, 8411C4C8), 8411CD38 and Dispatch_218.
+- D_841911FA: set to 1 by the idle camera state 84113E7C; cleared by the
+  dispatcher's turn start (0x5A, with 84112DB8 / 8411F94C) and by the
+  send-out codes above. So the first idle record after each turn (the
+  battle back at its command menu) clears every non-held particle: that is
+  where the P206 slash ends in Stadium 2.
+- Ported: `Adapter:clearAll` (841089D8(1): `abortAll`, then Dig's
+  84108974(1) signal, which the failed-move path now also uses); the scene
+  runs it once when the battle first waits for a command after a turn
+  (`Scene:updateBattleFx`, with the STADIUM camera once its idle cycle has
+  started; `stadiumIdleCleared` stands for D_841911FA and resets at the
+  turn start), at every send-out after the first turn (the opening's
+  send-outs clear at the opening's wipe instead, from the STADIUM camera's
+  substate 1 -> 2), independent of the camera mode except where noted.
+- Not wired yet: the clears at status / residual events (84118C08), full
+  paralysis (84119630), 84118DD4's frame 0x47 and the send-out codes in the
+  dispatcher, and 84111C6C's non-forced variant.
+- Test: `tests/stadium2_battle_fx_idle_clear_rom_test.lua` (real ROM
+  catalog: the four slashes are alive at tick 150 and gone after the clear;
+  the adapter's Dig signal; the scene's once-per-turn and send-out rules).
+  Matches the decomp; the user's in-game retest is still needed.
+
+Sweep (2026-10-01): with the real catalog, 30 ticks after `finish` (tick
+150), 115 of the 502 banks still hold particles and 34 hold a mode-7 screen
+particle: the strike marks of 10, 15, 17, 22, 154, 163, 206, 210, 211 (both
+banks), 229, 231 (both banks), 232 and 238, and screen overlays of 54, 77,
+78, 79, 108, 114, 123, 139, 147, 171, 174 (impact), 180, 181, 196, 201 (both
+banks), 239, 241 and 250. All of them end at the idle clear; the ROM test
+covers the 13 strike-mark moves.

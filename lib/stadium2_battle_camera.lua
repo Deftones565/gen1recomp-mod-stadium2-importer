@@ -1054,6 +1054,10 @@ function StadiumCamera:update(scene, dt)
       local before = opening.substate
       opening.substate = self.cam:openingFrame(opening.substate,
         entranceEnded(scene, "player"), entranceEnded(scene, "enemy"))
+      -- 8411C418 substate 1's end (8411C4C8): 84111C1C clears the effects
+      if before == 1 and opening.substate == 2 and scene and type(scene.battleFxClear) == "function" then
+        pcall(scene.battleFxClear, scene)
+      end
       -- 8411C418 substate 4 at frame 0x28: 84112158(foe, 0xFC), the foe's
       -- entrance animation (substate 5 then waits for it to end)
       if before == 4 and opening.substate == 5 then
