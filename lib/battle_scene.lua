@@ -377,6 +377,7 @@ end
 
 -- A move starts (the attack state): Stadium's attack shot on the attacker.
 function Scene:stadiumCameraAttack(side,moveId)
+  self.stadiumLastMove={side=side,move=tonumber(moveId)}
   if self.stadiumCameraActive and self.stadiumCamera then
     pcall(self.stadiumCamera.attack,self.stadiumCamera,self,side,moveId)
   end
@@ -384,6 +385,7 @@ end
 
 -- A turn begins (both sides have chosen): Stadium's turn-start orbit.
 function Scene:stadiumCameraTurn()
+  self.stadiumFirstActor=false -- Gen 1 records the turn's first action here
   if self.stadiumCameraActive and self.stadiumCamera then
     pcall(self.stadiumCamera.turnStart,self.stadiumCamera,self)
   end
@@ -398,9 +400,9 @@ function Scene:stadiumCameraEntry(entry,side,trapMove)
 end
 
 -- A Pokemon is recalled: Stadium's recall camera on it.
-function Scene:stadiumCameraRecall(side)
+function Scene:stadiumCameraRecall(side,condition)
   if self.stadiumCameraActive and self.stadiumCamera then
-    local condition=self.restCondition and self:restCondition(side) or nil
+    condition=condition or (self.restCondition and self:restCondition(side)) or nil
     pcall(self.stadiumCamera.recall,self.stadiumCamera,self,side,condition)
   end
 end
@@ -483,6 +485,49 @@ function Scene:stadiumCameraHit(side,moveId)
     local condition=self.restCondition and self:restCondition(side) or nil
     pcall(self.stadiumCamera.hit,self.stadiumCamera,self,side,moveId,condition)
   end
+end
+
+-- The result byte (Stadium record +9) of the move `side` was hit by: the
+-- battle FX adapter's record for the move it is presenting (from the host's
+-- battle.damage_dealt facts), or nil when it is unknown.
+function Scene:stadiumHitResult(side,moveId)
+  local fx=self.battleFx
+  local source=side=="player" and "enemy" or side=="enemy" and "player" or nil
+  if not source then return nil end
+  if fx then
+    if type(fx._moveState)~="function" then return nil end
+    local ok,state=pcall(fx._moveState,fx,moveId,source)
+    return ok and type(state)=="table" and tonumber(state.resultFlags) or nil
+  end
+  -- MOVE EFFECTS off: the hit facts main.lua records from battle.damage_dealt
+  -- are nobody else's, so the camera takes them (Sequence.resultByte)
+  local okA,Adapter=pcall(require,"mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_battle_adapter")
+  if not okA or type(Adapter.takeHitResult)~="function" then return nil end
+  local okT,result=pcall(Adapter.takeHitResult,source,moveId)
+  return okT and tonumber(result) or nil
+end
+
+-- The host's own impact while MOVE EFFECTS is off (with it on, the FX
+-- adapter's onImpact reports the Stadium impact instead): the hit camera on
+-- `side` for the move last presented by the other side.
+function Scene:stadiumHostImpact(side)
+  if self.battleFx then return end
+  local last=self.stadiumLastMove
+  if not (last and last.move and last.side~=side) then return end
+  self:stadiumCameraHit(side,last.move)
+end
+
+-- The length in frames of an actor's model animation for a context (e.g.
+-- "hit", context 254), as the model's animation header gives it; nil when
+-- the actor has no such clip.
+function Scene:stadiumClipFrames(side,context)
+  local actor=self.actors and self.actors[side]
+  local model=actor and actor.renderer and actor.renderer.model
+  if not model then return nil end
+  local okP,Pack=pcall(require,"mods.STADIUM2_IMPORTER.lib.pack")
+  local index=okP and Pack.contextIndex(model,context)
+  local anim=index and model.anims and model.anims[index]
+  return anim and tonumber(anim.frames) or nil
 end
 
 -- Where Stadium units sit in this scene: {scale, theta, origin}. The arena

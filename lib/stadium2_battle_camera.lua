@@ -82,8 +82,10 @@ local RECORD = 0x85003000
 StadiumCamera.TICK = 1 / 30
 StadiumCamera.CAMERA_RECORDS = 0x49B780 + 0x22E0 -- ROM, 0x30 per species
 -- 84113014: the species offset row +0x678 points at (D_84193DF8 + side *
--- 0x20), 0x20 bytes per species; program 7 (woke up) reads it.
-StadiumCamera.OFFSET_RECORDS = 0x49B780 + 0x5730
+-- 0x20), DMA'd from the archive's first table (0x49B780 + 0), 0x20 bytes per
+-- species; program 7 (woke up) reads it. (The + 0x5730 rows go to
+-- D_84193E98, +0x668; the + 0x22E0 rows to D_84193E38, +0x664.)
+StadiumCamera.OFFSET_RECORDS = 0x49B780
 local OFFSET_ROW = { player = 0x84193DF8, enemy = 0x84193E18 }
 -- Each actor's motion record (+0x2D4, 0x1530 bytes; 84113014's copy of the
 -- species' animation-dispatch record)
@@ -125,6 +127,18 @@ function StadiumCamera.new(opts)
     introPaths = introPaths, speciesShots = speciesShots,
     warn = opts.warn,
     markerPosition = function(actor) return self:markerPosition(actor) end,
+    -- D_8418C958 (program 25): the battle FX player's dynamic anchors, which
+    -- its port of 84102750 fills (nil while MOVE EFFECTS is off)
+    attachmentPoint = function(index)
+      local fx = self.scene and self.scene.battleFx
+      local player = fx and fx.player
+      if not (player and type(player.dynamicAnchor) == "function") then return nil end
+      local ok, point = pcall(player.dynamicAnchor, player, index)
+      if ok and type(point) == "table" and tonumber(point[1]) and tonumber(point[2]) and tonumber(point[3]) then
+        return { point[1], point[2], point[3] }
+      end
+      return nil
+    end,
     random = function() return self:random() end,
   })
   if not cam then return nil, err end
@@ -595,7 +609,8 @@ end
 -- 0x1B Dig family 7 (84115A64, then 84115B34's shot 0x10 / program 2 on
 -- the 26th tick: frame 0x19 moves it to substate 1). Fly's second shot
 -- (841157D8: shot 8, program 15) waits until the model is 200 above its home
--- height (841156D0), which the host does not report; it is not wired.
+-- height (841156D0); the host's Fly departure having finished stands in for
+-- that height (flownUp).
 function StadiumCamera:chargeTurn(scene, side, code)
   local address = ACTOR[side]
   if not address then return end
@@ -739,6 +754,13 @@ function StadiumCamera:wokeUp(scene, side)
   self:newFamily(address)
   self.cam.mem:setU16(RECORD + 4, 0x1D)
   self.cam:wakeState(address)
+  -- 84119AB4, the tail: the wake animation's end is the host's clip having
+  -- ended (the actor back to idle); it ends the timer and resets the kind
+  local substate = self.cam.mem:u8(address + 0x7F6)
+  self.runs[address] = { step = function(sc, s)
+    substate = self.cam:wakeFrame(address, substate, clipEnded(sc, s))
+    return substate == 3 or substate == 5
+  end }
 end
 
 -- Confused (event 0x26, family 20): Dispatch_142's camera part, taken as
@@ -779,7 +801,47 @@ function StadiumCamera:dodge(scene, side, moveId, condition)
   self:newFamily(address)
   m:setU16(RECORD + 4, condition.asleep and 0x13 or condition.frozen and 0x12 or 0x11)
   m:setU8(address + 0x618, moveId)
-  self.cam:hitState(address)
+  -- a dodge's state starts with the host's miss (its length is 0x3C); a miss
+  -- keeps result 1 (841246AC, 84128298 / 84130E04)
+  self:startHit(scene, side, address, moveId, false, 1)
+end
+
+-- 841170A0 then 841187E4 each tick. The host reports a hit at its impact,
+-- which is the defender's frame +0x619 (84117CAC plays the hit there), so
+-- the frame counter starts there (one frame early, see below); a dodge
+-- starts at the state's frame 0.
+-- Record +9 is the move's result byte from the battle FX adapter (the same
+-- value its effects use); without it the jolt is skipped (reported once).
+-- The hit animation's length is the defender's hit clip (context 254, as
+-- 84116EB4's 84112158(0xFE) selects), and the HP bar is the host's.
+-- The hosts present one impact per move, so the record's hit index and
+-- count (+0xB / +0xA) are equal.
+function StadiumCamera:startHit(scene, side, address, moveId, atImpact, result)
+  local m = self.cam.mem
+  if result == nil then
+    result = scene and type(scene.stadiumHitResult) == "function" and scene:stadiumHitResult(side, moveId)
+  end
+  m:setU8(RECORD + 9, tonumber(result) and result % 0x100 or 0)
+  -- record +8 the move (80062D20's argument); +0xB / +0xA the hit and the
+  -- count: a hit the host says is followed by another of the same move
+  -- counts as not the last
+  m:setU8(RECORD + 8, moveId % 0x100)
+  local more = scene and type(scene.stadiumMoreHits) == "function" and scene:stadiumMoreHits(side)
+  m:setU8(RECORD + 0xA, more and 2 or 1); m:setU8(RECORD + 0xB, 1)
+  local frames = scene and type(scene.stadiumClipFrames) == "function" and scene:stadiumClipFrames(side, "hit")
+  if not self.cam:hitStart(address, tonumber(frames)) then
+    self:report("hit length", "battle camera: the defender's hit clip length is unknown; the hit state's end (841170A0) is not scheduled")
+    return
+  end
+  -- one frame before the hit frame, so that program 1's setup (84120BB4
+  -- ends any jolt) runs on the next tick before the jolt, as in the ROM
+  if atImpact then m:setU16(address + 0x7E8, (m:s8(address + 0x619) - 1) % 0x10000) end
+  local known = tonumber(result) ~= nil
+  if not known then self:report("hit result", "battle camera: the move's result byte is unknown; the hit jolt (84117880) is skipped") end
+  self.runs[address] = { step = function(sc, s)
+    local settled = sc and type(sc.stadiumHpSettled) == "function" and sc:stadiumHpSettled(s)
+    return self.cam:hitFollowFrame(address, settled == true, known)
+  end }
 end
 
 function StadiumCamera:hit(scene, side, moveId, condition)
@@ -792,7 +854,7 @@ function StadiumCamera:hit(scene, side, moveId, condition)
   self:newFamily(address)
   m:setU16(RECORD + 4, condition.asleep and 0x0B or condition.frozen and 0x0D or 0x0A)
   m:setU8(address + 0x618, moveId)
-  self.cam:hitState(address)
+  self:startHit(scene, side, address, moveId, true)
 end
 
 -- A turn begins: 8411F94C's camera part (event 0x5A, side 0).
@@ -802,11 +864,24 @@ function StadiumCamera:turnStart(scene)
   self.cam.mem:setU16(RECORD + 4, 0x5A)
   self.cam:setTimer(0x64) -- 8411F94C: 8411FEE8(0x64)
   self.cam:turnStart(ACTOR.player)
+  -- 841347A0 runs the turn body (841343FC) right after queuing 0x5A, which
+  -- queues 0x5B on the first mover; the record plays once 0x5A's timer is
+  -- 0 (84135778 reads the current record D_84199D80's +2 and +6).
+  self.firstMoverPending = true
   -- The idle records during command selection (8411F90C's 8410B104) close
   -- a split before this point in Stadium; the host can reach its turn start
   -- first (the opening still running), so the split is closed here too. This
   -- is a host-timing fallback, not a ROM path.
   self.cam:endSplit()
+end
+
+-- Event 0x5B on the side acting first (8411FF1C -> 8411F9D8): both actors
+-- family 27, the side's actor program 18 (the Pokemon about to act).
+function StadiumCamera:firstMover(scene, side)
+  self:sync(scene)
+  self:newFamily(nil)
+  self.cam.mem:setU16(RECORD + 4, 0x5B)
+  self.cam:firstMoverState(ACTOR[side])
 end
 
 -- 8413543C's idle cycle (fork C): the step (D_8419A006) picks the battler and
@@ -868,6 +943,7 @@ end
 -- family; newFamily is that entry for every controller event.
 function StadiumCamera:newFamily(address)
   self.cam:setJolt(0)
+  self.firstMoverPending = nil -- a newer event replaces a waiting 0x5B
   if not self.idleDispatch then self.idle, self.idleFamily1 = nil, nil end
   self.victory = nil
   if address == ACTOR.player or address == nil then self:cutIntro() end
@@ -947,6 +1023,14 @@ function StadiumCamera:update(scene, dt)
     -- the battle waits for a command (the host's command menus)
     local waiting = scene and type(scene.stadiumAwaitingCommand) == "function"
       and scene:stadiumAwaitingCommand()
+    if self.firstMoverPending then
+      if waiting then
+        self.firstMoverPending = nil -- the turn is already over on the host
+      elseif m:u16(RECORD + 6) == 0 then
+        local side = scene and type(scene.stadiumFirstMover) == "function" and scene:stadiumFirstMover()
+        if ACTOR[side] then self:firstMover(scene, side) end
+      end
+    end
     if waiting and not self.opening and not self.intro and m:u16(RECORD + 6) == 0 then
       self.idle = self.idle or {}
       self:nextIdle(scene)

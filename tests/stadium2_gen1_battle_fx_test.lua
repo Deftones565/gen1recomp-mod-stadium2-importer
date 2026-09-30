@@ -168,4 +168,21 @@ ok(#adapterTrigger==before+1 and adapterTrigger[#adapterTrigger][1]==33
   "a hooked move start triggers battle FX for the attacking side")
 battle.animPlaying=false;scene:syncPresentationState()
 
+-- the trainer AI's switch line (_AIBattleWithdrawText) is the foe's recall,
+-- with the outgoing mon's status kept at the switch
+do
+  local S=Gen1.Scene
+  local recalled
+  local fake=setmetatable({stadiumCameraRecall=function(_,side,condition) recalled={side,condition} end,
+    stadiumCameraSelfHit=function() end,stadiumCameraTurnCheck=function() end},{__index=S})
+  local battle={trainer={name="BUG CATCHER"},
+    romText=function(_,label,fmt,...) return string.format(fmt,...) end}
+  fake.stadiumWithdrawn={asleep=true,frozen=false}
+  S.stadiumCameraTurnText(fake,battle,{text="BUG CATCHER with-\ndrew WEEDLE!"})
+  ok(recalled and recalled[1]=="enemy" and recalled[2].asleep==true,"the AI's withdraw line recalls the foe with its own status")
+  recalled=nil
+  S.stadiumCameraTurnText(fake,battle,{text="BUG CATCHER sent\nout KAKUNA!"})
+  ok(recalled==nil,"other trainer lines do not")
+end
+
 print(("%d checks passed (Stadium 2 Gen 1 battle FX integration)"):format(checks))

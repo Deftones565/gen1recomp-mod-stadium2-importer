@@ -15,7 +15,6 @@
 local f32 = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
 local U = require("mods.STADIUM2_IMPORTER.lib.stadium2_libultra")
 local CameraNative = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_camera_native")
-local ffi = require("ffi")
 local bit = require("bit")
 
 local W = {}
@@ -29,10 +28,10 @@ W.ROWS, W.COLS = 16, 16
 W.GRID, W.VERTEX = 0x1010, 0x14 -- state + 0x1010: 16x16 vertices of 0x14
 W.ATAN_TABLE = 0x8008CE50
 
-local cell = ffi.new("union { double d; uint32_t u[2]; }")
+-- A big-endian double in plain Lua (the mod sandbox refuses ffi at run time).
+local wordsToDouble = require("mods.STADIUM2_IMPORTER.lib.stadium2_native_memory").wordsToDouble
 local function double(mem, address)
-  cell.u[1], cell.u[0] = mem:u32(address), mem:u32(address + 4)
-  return tonumber(cell.d)
+  return wordsToDouble(mem:u32(address), mem:u32(address + 4))
 end
 local function short(v) return U.toInt(v) % 0x10000 end
 

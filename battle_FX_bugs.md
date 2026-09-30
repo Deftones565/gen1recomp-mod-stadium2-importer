@@ -1,5 +1,56 @@
 Move bug list
 
+Camera trigger fixes (2026-10-01, local session):
+- Roar / Whirlwind in Gen 2: the camera always used Stadium's "dragged-out
+  Pokemon is asleep" variant. It now picks by the Pokemon's real status,
+  as Stadium 2 does.
+- Gen 1 trainer switches ("... withdrew ...!"): the foe's recall camera now
+  plays, as Stadium 2 does before the next send-out.
+- Not possible yet: the player's own switch in Gen 2 has no withdraw step
+  in the game, so there is no recall camera for it.
+
+Camera addition (2026-10-01, STADIUM camera, local session):
+- Waking up: the camera now holds on the Pokemon until its wake animation
+  ends, then 30 frames more, as Stadium 2 does, before moving on.
+- Lock-On: the camera now aims at the Lock-On effect, as in Stadium 2, when
+  MOVE EFFECTS is on (with it off there is no effect to aim at, so the
+  camera holds).
+- Multi-hit moves (Fury Attack, Twineedle, Triple Kick, Beat Up and the
+  like): the hold after each hit but the last is shorter, as in Stadium 2.
+  Gen 2 with MOVE EFFECTS off only; Gen 1 and MOVE EFFECTS on show one
+  impact per move, so this does not change there.
+- Fixed: the wake-up close-up aimed far off the arena for many Pokemon (for
+  example Blastoise, Gengar, Lugia). The camera read the wrong ROM table
+  for that shot.
+- Matches the ROM in the VM tests; not seen in game yet.
+
+Robustness fix (2026-10-01, local session):
+- The move-effect code for Surf, Ice Beam / Hyper Beam, Tri Attack and the
+  leaf / petal moves, and the camera's memory, no longer need LuaJIT's ffi
+  library, which the game refuses to mods once it is running (the cause of
+  the earlier idle-camera flicker). They worked because they loaded at the
+  mod's start; now they cannot fail that way. Their ROM tests all pass.
+
+Camera addition (2026-10-01, STADIUM camera, the hit, local session):
+- New: after a hit the camera shakes one frame after the impact, harder
+  for stronger results (not very effective 10, normal 15, super effective
+  20, critical 25), as in Stadium 2. The camera then holds on the hit
+  Pokemon until its hit animation ends, or 50 frames after the HP bar stops
+  (whichever is sooner), before the idle camera can start. Foresight
+  re-aims every 12 frames; Lock-On cuts to its own shot (its final aim
+  point needs the effect's position, which is not wired yet, so that part
+  is skipped and logged). Matches the ROM in the VM test; not seen in game.
+- The hit camera (the cut to the hit Pokemon, the shake and the hold) now
+  also works with MOVE EFFECTS (BETA) off, which is the default. Before,
+  it only ran with MOVE EFFECTS on. The shake's strength comes from the
+  battle's own hit result either way.
+
+Camera addition (2026-10-01, STADIUM camera, local session):
+- New: after the turn-start orbit, the camera now turns to the Pokemon
+  that acts first, as Stadium 2 does before that Pokemon's move (event
+  0x5B, program 18). A newer camera moment, such as the attack itself,
+  replaces it. Matches the ROM in the VM test; not seen in game yet.
+
 Camera fix (2026-09-30, "Pokemon no longer do their entrance animation", local session):
 - Cause: the opening send-out now waits for the split-screen arena intro
   (the Gen 2 fix), but the game still started each entrance at its own

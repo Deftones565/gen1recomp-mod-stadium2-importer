@@ -99,7 +99,7 @@ local function scenario()
     set(a+0x7F4,2,rnd(4)==0 and rnd(64) or 0)
     set(a+0x2D4,4,0x85004000) -- dispatch rows (animation bytes; not compared)
     setF(a+0x28,rf(60))
-    -- +0x678: the species' offset row (archive 0x49B780 + 0x5730), as
+    -- +0x678: the species' offset row (archive 0x49B780 + 0), as
     -- 84113014 loads it into D_84193DF8 + side * 0x20
     local row=(a==A0 and 0x84193DF8 or 0x84193E18)
     set(a+0x678,4,row)
@@ -136,13 +136,15 @@ local function setup(hooks)
   local timers=0
   cam=assert(Native.load(rom,fragment,{
     markerPosition=function(actor) return marker(function(a) return cam.mem:f32(a) end,actor) end,
+    -- the ROM reads D_8418C958 (particle attachment points) from memory
+    attachmentPoint=function(i) return cam.mem:vec(0x8418C958+i*0xC) end,
     onEventTimer=function() timers=timers+1 end,
     random=function() seed=Native.nextRandom(seed) return seed end}))
   local speciesOf={}
   for _,e in ipairs(w) do if e[2]==2 and (e[1]==A0+0x1A or e[1]==A1+0x1A) then speciesOf[e[1]-0x1A]=e[3] end end
   for _,e in ipairs(w) do
     if e[2]=="species-offset" then
-      local base=0x49B780+0x5730+(speciesOf[e[3]]-1)*0x20
+      local base=0x49B780+(speciesOf[e[3]]-1)*0x20
       for i=0,0x1F do local b=rom:byte(base+i+1);vm:write(e[1]+i,b,1);cam.mem:write(e[1]+i,b,1) end
     elseif e[2]=="f" then vm:putFloat(e[1],e[3]);cam.mem:setF32(e[1],e[3])
     else vm:write(e[1],e[3],e[2]);cam.mem:write(e[1],e[3],e[2]) end
@@ -219,6 +221,30 @@ for round=1,200 do
   compare(vm,cam,seed,("8411F94C round %d"):format(round))
 end
 ok(true,"8411F94C's camera part matches the ROM (shot, program 10, seed) in 200 cases")
+
+-- 8411F9D8 (the first mover, event 0x5B) and program 18 (8410F1A8 /
+-- 8410F3E8) through the runner until the program ends the event timer
+local firstHooks={[0x8411FEE8]=function(v) v.timer=(v.timer or 0)+1; v:write(REC+6,v.r[4]%65536,2) end,
+  [0x841125F4]=stub}
+local firstEnded,firstHigh=0,0
+for round=1,120 do
+  local vm,cam,seed=setup(firstHooks)
+  local actor=rnd(2)==0 and A0 or A1
+  if rnd(3)==0 then for _,m in ipairs({vm,cam.mem}) do m:write(REC+(actor==A0 and 0 or 16)+0x12,2,2) end firstHigh=firstHigh+1 end
+  vm:call(0x8411F9D8,{actor==A0 and 0 or 1,0x5B});cam:firstMoverState(actor)
+  vm:call(0x841112C8,{});cam:clearProgram1()
+  compare(vm,cam,seed,("8411F9D8 round %d"):format(round))
+  if vm:read(REC+1,1)~=cam.mem:u8(REC+1) or vm:read(REC+6,2)~=cam.mem:u16(REC+6) then error(("FAIL 8411F9D8 round %d record"):format(round),0) end
+  for tick=1,200 do
+    vm:call(0x84111774,{GC0,GC1});cam:tick(GC0,GC1)
+    compare(vm,cam,seed,("program 18 round %d tick %d"):format(round,tick))
+    if vm:read(REC+6,2)~=cam.mem:u16(REC+6) then error(("FAIL program 18 round %d tick %d timer"):format(round,tick),0) end
+    if cam.mem:u16(REC+6)==0 then firstEnded=firstEnded+1 break end
+  end
+  ok(cam.missing==nil,"program 18 runs only ported handlers")
+end
+ok(firstEnded>60,"program 18 reached its end in "..firstEnded.." of 120 rounds")
+ok(firstHigh>10,"the side flag's bit 1 (the marker height, D_84188F8C) was exercised")
 
 -- 8411A544 (the faint state) on either actor
 local faintHooks={[0x84113430]=yes,[0x841126C8]=stub,[0x84112290]=stub,[0x84108A10]=stub,
@@ -303,6 +329,39 @@ for round=1,240 do
 end
 for _,b in ipairs({"program 0","program 7","shot 24","shot 0"}) do ok(wakeBranches[b],"84119908 / Dispatch_142 branch "..b.." exercised") end
 ok(true,"84119908, Dispatch_142 and 841206D0's camera parts match the ROM in 240 cases")
+
+-- 84119908 then 84119AB4 (the wake-up's tail) frame by frame; 8003EC34 /
+-- 84111FA4 (the wake animation has finished) answer from a ready frame
+local wakeEnds={[3]=0,[5]=0}
+for round=1,160 do
+  local ready,frame=rnd(80),0
+  local hooks={}
+  for k,fn in pairs(wakeHooks) do hooks[k]=fn end
+  local pick=rnd(2)
+  hooks[0x84111C8C]=function(v) v.r[2]=pick end
+  hooks[0x8003EC34]=function(v) v.r[2]=frame>=ready and 1 or 0 end
+  hooks[0x84111FA4]=function(v) v.r[2]=frame>=ready and 1 or 0 end
+  hooks[0x84111D64]=stub;hooks[0x84111DB4]=stub;hooks[0x84111E80]=stub
+  hooks[0x84112564]=nil;hooks[0x84112580]=nil -- the record flags are compared
+  hooks[0x8411FEE8]=function(v) v:write(REC+6,v.r[4]%65536,2) end
+  local vm,cam,seed=setup(hooks)
+  local actor=rnd(2)==0 and A0 or A1
+  vm:call(0x84119908,{actor});cam:wakeState(actor)
+  compare(vm,cam,seed,("wake setup round %d"):format(round))
+  local substate=cam.mem:u8(actor+0x7F6)
+  for f=1,0x100 do
+    frame=f
+    for _,m in ipairs({vm,cam.mem}) do m:write(actor+0x7E8,(m:read(actor+0x7E8,2)+1)%65536,2) end
+    vm:call(0x84119AB4,{actor});substate=cam:wakeFrame(actor,substate,frame>=ready)
+    compare(vm,cam,seed,("wake round %d frame %d substate %d"):format(round,f,substate))
+    for _,off in ipairs({0x7E8,0x7E9,0x7F4,0x7F5,0x7F6}) do
+      if vm:byte(actor+off)~=cam.mem:u8(actor+off) then error(("FAIL wake round %d frame %d byte +%X ROM %02X Lua %02X"):format(round,f,off,vm:byte(actor+off),cam.mem:u8(actor+off)),0) end
+    end
+    if vm:read(REC+6,2)~=cam.mem:u16(REC+6) or vm:read(REC+1,1)~=cam.mem:u8(REC+1) then error(("FAIL wake round %d frame %d record"):format(round,f),0) end
+    if substate==3 or substate==5 then wakeEnds[substate]=wakeEnds[substate]+1 break end
+  end
+end
+ok(wakeEnds[3]>40 and wakeEnds[5]>20,("the wake-up's tail ended in %d / %d rounds (awake / underground)"):format(wakeEnds[3],wakeEnds[5]))
 
 -- 84115E28 (Dig), Dispatch_079 / 8411B3B8 substate 2 (Substitute)
 local moveHooks={[0x84113430]=yes,[0x841126C8]=stub,[0x84111E50]=stub,[0x84111D64]=stub,
@@ -663,6 +722,100 @@ for round=1,160 do
   ok(cam.missing==nil,"the follow-ups run only ported handlers")
 end
 ok(followEnded.charge>20 and followEnded.fly>20,("the charge (%d) and Fly (%d) follow-ups reached their next step"):format(followEnded.charge,followEnded.fly))
+
+-- the hit (family 4): 841170A0 (84116BC0's row copy from the real motion
+-- record, the length by code, 84116B40), then 841187E4 frame by frame with
+-- the camera runner: 84117744 (per-move lengths, Foresight's re-shots), the
+-- jolt 84117880, Lock-On 84117A24, 84117648 / 841175D4 (the HP bar from
+-- D_8419521C) and the flagged 0x0A ends (84117CEC / 84117DC4). Non-camera
+-- calls are stubbed; 841133EC (busy) is clear.
+local hitCodes={0x0A,0x0A,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,0x10,0x11,0x12,0x13,0x14,0x15,0x3B,0x4B,0x50}
+local hitMoves={0xC7,0xC1,0xCD,0x12,0x2E,0xB4}
+local hitSeen={ended=0,jolt=0,lockOn=0,foresight=0,settled=0,unknown=0}
+for round=1,420 do
+  local settleAt=rnd(4)==0 and 10000 or rnd(90)
+  local frame=0
+  local hooks={[0x84113430]=yes,[0x84112E40]=stub,[0x84112158]=stub,[0x841139D0]=stub,[0x84116EB4]=false,
+    [0x841120AC]=stub,[0x841087B8]=stub,[0x800231A0]=stub,[0x84112464]=stub,[0x84112324]=stub,
+    [0x841126C8]=stub,[0x80030420]=stub,[0x84113920]=stub,[0x841133EC]=stub,
+    [0x84117AA0]=stub,[0x80023A3C]=stub,[0x84123F60]=stub,[0x84112580]=stub,[0x8410890C]=stub,
+    [0x84108E00]=stub,[0x84124104]=stub,[0x84112218]=stub,[0x84111D64]=stub,[0x8003EC34]=stub,
+    [0x8003EF70]=stub,[0x84108A10]=stub,[0x84112418]=stub,[0x84111C8C]=stub,[0x8411200C]=stub,
+    [0x84111DB4]=stub,[0x84111E50]=stub,[0x84111E80]=stub,[0x84112564]=stub,
+    [0x8411FEE8]=function(v) v:write(REC+6,v.r[4]%65536,2) end}
+  local vm,cam,seed=setup(hooks)
+  loadRecords(vm,cam)
+  local actor=rnd(2)==0 and A0 or A1
+  local side=actor==A0 and 0 or 1
+  local code=hitCodes[rnd(#hitCodes)+1]
+  local move=rnd(3)==0 and hitMoves[rnd(#hitMoves)+1] or 1+rnd(251)
+  local frames=rnd(3)==0 and rnd(0x50) or 0x40+rnd(0x100)
+  local result=({0,2,3,4,5,6,0x10,0x12,0x13,0x14})[rnd(10)+1]
+  -- record +8 (80062D20's move: Fury Attack 0x1F / Twineedle 0x29 effects
+  -- 0x1D / 0x4D, Triple Kick 0xA7, Beat Up 0xFB, Double Kick 0x18 not listed)
+  local multiMove=rnd(2)==0 and ({0x1F,0x29,0xA7,0xFB,0x18,0x03})[rnd(6)+1] or nil
+  local hitCount=1+rnd(3)
+  local hitIndex=1+rnd(hitCount)
+  if multiMove and hitIndex~=hitCount then hitSeen.multi=(hitSeen.multi or 0)+1 end
+  local row620
+  if round>400 then
+    -- the boundaries: an end exactly 40 frames past +0x620 (84116B40) and
+    -- the 0xF length that keeps +0x7F4 (84117648)
+    if round<=410 then code,result,row620=0x0B,0x10,0x3C-40+(round%3)-1
+    else code,frames,move=0x0C,0xE+(round%2),1+rnd(0xB0);settleAt=10000 end
+  end
+  for _,m in ipairs({vm,cam.mem}) do
+    m:write(actor+0x7EC,0,2);m:write(REC+4,code,2);m:write(actor+0x618,move,1)
+    m:write(REC+9,result,1)
+    m:write(REC+8,multiMove or move,1);m:write(REC+0xA,hitCount,1);m:write(REC+0xB,hitIndex,1)
+    m:write(0x85006300+0xA,frames,2)
+  end
+  if row620 then
+    for _,m in ipairs({vm,cam.mem}) do m:write(m:read(actor+0x2D4,4)+(move-1)*0x14+8,row620,1);m:write(actor+0x7F4,3,2) end
+  end
+  if round>410 then for _,m in ipairs({vm,cam.mem}) do m:write(actor+0x7F4,3,2) end end
+  vm:putFloat(0x8419521C+side*24,settleAt==0 and 0 or 1)
+  vm:call(0x841112C8,{});cam:clearProgram1()
+  vm:call(0x841170A0,{actor})
+  local known=cam:hitStart(actor,frames)
+  ok(known,"the length is set when the hit animation's length is known")
+  compare(vm,cam,seed,("hit setup round %d code %X move %X"):format(round,code,move))
+  for _,off in ipairs({0x619,0x61A,0x620,0x61C,0x61D,0x628,0x62A,0x62C,0x661,0x7E8,0x7E9,0x7F6}) do
+    if vm:byte(actor+off)~=cam.mem:u8(actor+off) then error(("FAIL hit setup round %d code %X byte +%X ROM %02X Lua %02X"):format(round,code,off,vm:byte(actor+off),cam.mem:u8(actor+off)),0) end
+  end
+  if vm:read(REC+6,2)~=cam.mem:u16(REC+6) then error(("FAIL hit setup round %d timer"):format(round),0) end
+  local jolted,ended=false,false
+  for f=1,0x140 do
+    frame=f
+    if f==settleAt then vm:putFloat(0x8419521C+side*24,0);hitSeen.settled=hitSeen.settled+1 end
+    local settled=vm:float(0x8419521C+side*24)==0
+    for _,m in ipairs({vm,cam.mem}) do m:write(actor+0x7E8,(m:read(actor+0x7E8,2)+1)%65536,2) end
+    vm:call(0x841187E4,{actor});cam:hitFollowFrame(actor,settled)
+    if cam.mem:f32(C0+0x8C)~=0 and not jolted then jolted=true end
+    vm:call(0x84111774,{GC0,GC1});cam:tick(GC0,GC1)
+    compare(vm,cam,seed,("hit round %d code %X move %X frame %d"):format(round,code,move,f))
+    if vm:read(actor+0x7F4,2)%4~=cam.mem:u16(actor+0x7F4)%4 then error(("FAIL hit round %d frame %d +0x7F4 bits 0-1"):format(round,f),0) end
+    for _,off in ipairs({0x61A,0x619,0x7E8,0x7E9,0x7F6}) do
+      if vm:byte(actor+off)~=cam.mem:u8(actor+off) then error(("FAIL hit round %d code %X move %X frame %d byte +%X ROM %02X Lua %02X"):format(round,code,move,f,off,vm:byte(actor+off),cam.mem:u8(actor+off)),0) end
+    end
+    if vm:read(REC+6,2)~=cam.mem:u16(REC+6) then error(("FAIL hit round %d code %X frame %d timer ROM %d Lua %d"):format(round,code,f,vm:read(REC+6,2),cam.mem:u16(REC+6)),0) end
+    if cam.mem:u8(actor+0x7F6)~=0 or (cam.mem:u16(REC+6)==0 and f>1) then ended=true break end
+  end
+  if ended then hitSeen.ended=hitSeen.ended+1 end
+  if jolted then hitSeen.jolt=hitSeen.jolt+1 end
+  if move==0xC7 then hitSeen.lockOn=hitSeen.lockOn+1 end
+  if move==0xC1 then hitSeen.foresight=hitSeen.foresight+1 end
+end
+ok(hitSeen.ended>250,"the hit state reached its end in "..hitSeen.ended.." of 420 rounds")
+ok(hitSeen.jolt>60,"the hit jolt fired in "..hitSeen.jolt.." rounds")
+ok(hitSeen.lockOn>5 and hitSeen.foresight>5,"Lock-On and Foresight were exercised")
+ok(hitSeen.settled>100,"the HP bar settled mid-state in "..hitSeen.settled.." rounds")
+ok((hitSeen.multi or 0)>40,"non-final multi-hit hits were exercised in "..tostring(hitSeen.multi).." rounds")
+do
+  local vm,cam=setup()
+  for _,m in ipairs({vm,cam.mem}) do m:write(REC+4,0x0A,2);m:write(REC+0x12,0,2);m:write(REC+0x22,0,2) end
+  ok(cam:hitStart(A0,nil)==false,"an unknown hit animation length leaves the 0x0A length unset")
+end
 
 -- Transform's substates (8411B1F4) with the real motion records; 800427B8
 -- (the new model is loaded) answers from a ready frame

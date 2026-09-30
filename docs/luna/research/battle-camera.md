@@ -449,16 +449,16 @@ confused!" precedes 0x26; 0x5D "confused no more!" queues no event.
   by the actor's yaw (x/z mirrored by 8411E1D4's side sign), eye from the
   row's distance (+0xC), pitch (+0x10) and signed yaw (+0x12) via 800371B4.
   +0x678 points at D_84193DF8 + side * 0x20, which 84113014 fills from
-  archive 0x49B780 + 0x5730 (0x20 bytes per species, plain DMA 80003F74).
-- **Open question.** 8410E8E4 reads the row's first word as a float
-  (`lwc1 0x0`), but that word looks like arbitrary bits for every species:
-  tiny (about 1e-36) for most, beyond +-1000 for 88 species (for example
-  9, 94, 249). Executed as the ROM does, program 7 would put the target far
-  outside the arena for those 88. The port reproduces it exactly (oracle
-  tests use species 9 and 94). The controller keeps the last drawable pose
-  and reports once when a pose leaves the far plane; that guard is the
-  port's, not the game's. Watching a woken Pokemon of one of those species
-  in the emulator would settle what the game shows.
+  archive 0x49B780 + 0 (0x20 bytes per species, plain DMA 80003F74).
+- Resolved 2026-10-01 (US asm 84113014): the row +0x678 points at is
+  DMA'd from the archive's first table, 0x49B780 + 0 + (species - 1) *
+  0x20, not + 0x5730 (that table goes to D_84193E98 / +0x668, and + 0x22E0
+  to D_84193E38 / +0x664; + 0x8970, 0x50 per species, to D_84193ED8 /
+  +0x67C). The earlier note misread the relocations. From table 0 the row
+  is clean (x 0, height, z, distance, pitch, yaw: species 1 has 0 / 15 / 0
+  / 61 / 1200 / 12640), so the "88 species far outside the arena" came
+  from the wrong table. The loader and the oracle scenario now use it; a
+  controller test checks species 9, 94, 249 and 25 aim at the Pokemon.
 - Dispatch_142 (family 20), once 84113430 allows it (busy flag
   D_84193DDC & 0xC0, assumed clear): shot 0x24 when the side's flags have
   bit 1, else 0, and program 0. Dispatch_143 resets the kind (841206D0,
@@ -520,8 +520,9 @@ no move event that turn.
   3), then unless the shot is 0x21, shot 0 and program 3. Dispatch_045's
   841156D0 waits until the model is 200 above its home height (+0x28 -
   +0x650), resets the kind and moves on; 841157D8 then takes shot 8 and
-  program 15 at its frame 1. **Not wired**: the host does not report the
-  model's height. flyHighShot and program 15 are ported and ROM-checked.
+  program 15 at its frame 1. Wired later: the host's Fly departure having
+  finished (restCondition `flying`) stands in for the height check.
+  flyHighShot and program 15 are ported and ROM-checked.
 - Dig's first turn (0x1B, family 7): 84115A64 runs 84115940 (unless bit 0:
   shot 0x10, kind 5), then unless the shot is 0x21, shot 0 and program 0.
   84115B34 moves to substate 1 at frame 0x19, then takes shot 0x10 and
@@ -576,9 +577,15 @@ Decomp: fork `15201a6` (C for Dispatch_113/114/148/149/163/164/177,
   0x2E bit 1). Gen 2 emits "was dragged out!" as a send event; the host now
   routes it here instead of the send-out camera. 0x2D / 0x2E's moments
   are not identified.
-- Destiny Bond's 0x28 (family 23): its only camera effect is Dispatch_164's
-  kind reset at frame 4 after the model is ready; 0x28 is also queued at
-  84128664 and 8412A454 without text, so it is left until those are known.
+- 0x28 (family 23): its only camera effect is Dispatch_164's kind reset at
+  frame 4 after the model is ready. Correction (2026-10-01, US asm for
+  84128664 / 8412A454, fork C for 84128B4C): it is Beat Up's end, not
+  Destiny Bond's. All three sites queue it only when the move (D_841951BF)
+  is 0xFB: 84128664 after a miss, 8412A454 when the multi-hit counter
+  (+0x12, substatus +0xF bit 2) reaches 0, and 84128B4C when the target
+  faints (after, and independent of, its Destiny Bond text 0x83). The kind
+  reset has no visible effect (the next event's state sets the kind), so it
+  is not wired.
 
 Checked against the ROM in the VM: Dispatch_114 in 120 cases (the seed
 compared), Dispatch_149 / 8411B5A8 / 8411B898 in 240. Mutation checks fail
@@ -836,9 +843,10 @@ runner. Mutation checks fail the test. Not yet seen in the game.
   (8410C304) and both actors hidden; 8411C9DC (fork C) runs 8411C7B8 on both
   every frame and, from frame 0x3C, grows controller 0's viewport height 4
   lines a frame to 240 while controller 1's shrinks: a horizontal split
-  screen, ended by 8410B224 / 8410B104 (frame 0xA0). Not ported: needs the
-  second view (see the send-out intro above).
-- 0x5B is queued by 841343FC (end of each turn loop); 0x66 goes to family
+  screen, ended by 8410B224 / 8410B104 (frame 0xA0). Ported later with the
+  two-view renderer (see the opening send-out section).
+- 0x5B is queued by 841343FC before the first mover's action (corrected
+  2026-10-01, see "The first mover"); 0x66 goes to family
   29 and 0x67 to family 30; 8413D2E4 queues 0x67 when either side still has
   HP, else 0x69; 8413C820 queues 0x68; 0x64, 0x68 and 0x69 go to 8411FF74
   (like 0x5C-0x63). Not identified further yet.
@@ -861,7 +869,7 @@ targets are from jtbl_84189A80.
 | 0x1A | 8412C47C | 0x69 "flew up high!" | 8411FAD4 |
 | 0x1B | 8412C47C | 0x24 "dug a hole!" | 8411FB00 |
 | 0x27 | 84124A14 | 0x7B "SUBSTITUTE faded!" | 8411FE28 |
-| 0x28 | 84128664, 84128B4C, 8412A454 | 0x83 "took ... down with it!" (84128B4C) | 8411FC3C |
+| 0x28 | 84128664, 84128B4C, 8412A454 | none of its own: Beat Up (0xFB) ended (see above) | 8411FC3C |
 | 0x2D-0x2F | 8412A300 | 0x45 "was dragged out!" (0x2F) | 8411FD20 |
 | 0x21, 0x23, 0x24, 0x29-0x2B, 0x38-0x3A | 84124CC4 | none | 8411FCF4 (0x29-0x2B, 0x38-0x3A via 84111C1C) |
 | 0x22 | 84133714 | none | 8411FC94 |
@@ -873,3 +881,277 @@ Remaining camera states by family (event codes from 8411FF1C):
 | 23 | 0x28 | 8411A964, 8411AA3C, 8411AAE0 |
 | 24 / 34 | 0x22 (battle opening, split screen) | 8411C310, 8411C418 / 8411CC2C, 8411CD38 |
 | 3, 14, 26, 30, 31, 33 | 0x25, and others | various |
+
+### The first mover: event 0x5B and program 18 (2026-10-01)
+
+Decomp: michiiik/pokestadiumgs `1b6dc17` (origin/master; C for 8411F9D8,
+84112564, Dispatch_190 / Dispatch_002, 841136E8, 841137F8, 841139D0,
+84135778, 84135700, 8413573C); US asm (pret `c0e10f2`) for 841343FC,
+841347A0, 841320E8, 841358B0, 8410F1A8, 8410F3E8.
+
+- Correction: 0x5B is not the end of the turn. 841347A0 queues 0x5A, calls
+  84136CA8, then the turn body 841343FC, then 84133440. 841343FC switches
+  on 841320E8 (the turn order: a switch or item first, then Quick Claw
+  (item 0x4A), priority and speed; cases 1-5) and queues 0x5B on the side
+  acting first, before that side's action (84133F10(side)).
+- Records play in order: 841358B0 copies the next queued record (0x280
+  bytes) into D_84199D80 (= D_84195280 + 0x4B00), and 84135778 plays the
+  next only while D_84195280 + 0x4B06 (the current record's +6 timer) and
+  + 0x4B02 are 0. So 0x5B plays once 0x5A's orbit has released its timer.
+- 8411F9D8 (family 27 on both actors): timer 0x12C, record +1 bit 0
+  (84112564), controller 0's shot 0, program 18 on the side's actor.
+  Family 27's states only play the idle animation and hide a Pokemon
+  underground or without HP (841139D0): not the camera.
+- Program 18 (row 8410F1A8, 8410F3E8, then empty): the setup picks shot
+  0x26 when the side's record +0x10 is 0x20, else 0x24; the look point
+  and target at the actor's turned +0x634 offset plus its position, at
+  +0x638 height (the marker height while the side's flags have bit 1;
+  30 when bit 2 or +0x7F4 & 0x10); FOV goal 80. The tick eases the FOV
+  (0.02), the fraction +0x44, the target toward the look point and the eye
+  toward the shot row's secondary pose (8410B884; distance x D_84188F8C and
+  yaw 0x1555 on the facing's side while flag bit 1); within 1.75 it waits
+  20 frames, then ends the timer and its slot.
+- Checked against the ROM in the VM: 8411F9D8 and program 18 through the
+  runner until the timer ends, 120 rounds, every controller / GeoCamera
+  byte and the record's timer compared; four mutations (the yaw 0x1555, the
+  height 30, the 20-frame wait, the 0x26 shot) each fail it.
+- Host signal: the controller runs 0x5B once the event timer is 0 after the
+  turn start, on `Scene:stadiumFirstMover()`; a newer camera event drops it,
+  and so does the host reaching its command menu first. Gen 2's engine sets
+  `battle.firstMover` right after `battle.turn_started`; Gen 1 keeps the
+  order only in its queued actions, so the first `BattleState:executeAction`
+  after the turn start names the side (a restorable patch in
+  `gen1_battle.lua`). `battle.turn_ended` is not used: both engines emit it
+  when the turn is computed, before it is shown.
+
+### The hit's follow-up: family 4's third state (2026-10-01)
+
+Decomp: michiiik/pokestadiumgs `1b6dc17` (C for 84116B40, 84116EB4,
+841175D4, 84117648, 84117880, 84117A24, 84117C18, 84117CAC, 84118138,
+841182E0, 8411845C, 8411854C, 8411862C, 84118704 / 84118754 / 84118794,
+84111BEC, 8413D358, 84108940, BattleAnim_ModelDispatch_176); US asm (pret
+`c0e10f2`) for 841170A0 (jtbl_84189054), 84116BC0, 841187E4
+(jtbl_84189084), 84117744, 84117CEC, 84117DC4, 84117E94, 84117AA0.
+
+- 84116BC0 first copies the defender's own motion row for the received
+  move: +0x2D4 + (move - 1) * 0x14, bytes +7 (+0x619, the hit frame), +0xA
+  (+0x61A, the state's length), +8 (+0x620), +0x10..+0x13 (+0x628 / +0x62A /
+  +0x62C / +0x661), and the record's +0x13DA / +0x13DB (+0x61C / +0x61D).
+- 841170A0 zeroes the frame counter and substate, then sets the length
+  through 84116B40 by event code: 0x0A: 0x3C while the side's flags have
+  bit 1 or 2, else 84116EB4: the hit animation's length (0xFE; model +0x44
+  -> +0xA), at least 0x50, or 0x3C for results 2 and 5; 0x0C and 0x0E: the
+  hit animation's length; 0x0B, 0x0D, 0x0F, 0x11-0x13, 0x15 and 0x3B: 0x3C;
+  all other codes: 0x46. 84116B40 stores it as a byte, adds up to 40
+  frames past +0x620 when the result has bit 0x10, starts the counter at
+  +0x619 - 1 when +0x619 <= 0, sets the timer 0x258 and clears D_841911F8.
+  A hit that is not the last of a multi-hit move (effects 0x1D / 0x4D by
+  80062D20, or moves 0xFB / 0xA7, with record +0xB ~= +0xA) ends at 0x28.
+  Then program 1 unless the shot is 0x21.
+- 841187E4 runs while the substate is 0 and 841133EC is clear, by code:
+  0x0A with side flag 4 or 2 (84117CEC / 84117DC4), 0x0C (8411862C), 0x0D
+  (8411845C), 0x0E (84118138), 0x0F / 0x15 (8411854C), 0x11-0x13
+  (84118704 / 84118754 / 84118794), 0x3B (841182E0), else 84117E94. Their
+  camera parts: 84117744 (per-move lengths: Lock-On 0x78, Rollout 0x5A,
+  Whirlwind / Roar 0x32, Spite 0x78; Foresight 0x50 with +0x619 = 0 and
+  shot D_84183C6C[frame / 12] with program 1 every 12 frames below 0x25),
+  84117880 (at +0x619 + 1 the jolt by result & 7: 2 -> 10, 0 -> 15,
+  3 -> 20, 4 -> 25), 84117A24 (Lock-On at +0x619 + 2: 84120BB4, 8410C934,
+  program 25) and 84117648 (841175D4: once the side's HP bar has nothing
+  left to drain, D_8419521C[side * 24] == 0, the end moves to 0x32 frames
+  later if sooner; at +0x61A: +0x7F4 bits 0-1 cleared unless the length is
+  0xF, 84111BEC: counter 0, timer 0, kind reset; counter 0x12C, substate
+  1). 84117CEC / 84117DC4 end at +0x61A with only the kind reset and the
+  timer 0. 84117AA0 is sound only.
+- Program 25 (8411100C, its slot never empties) sets the target to
+  D_8418C958 row 0 (84108940). That table is written while particles are
+  placed (8003C9B8 via 84102750 / 84104A00: a model attachment point), so
+  the port asks `options.attachmentPoint(0)`; the game's controller does
+  not supply it yet, so the step is reported once and skipped.
+- Checked against the ROM in the VM: 841170A0 and 841187E4 frame by frame
+  with the camera runner, 420 rounds over every code, the special moves,
+  results with bit 0x10, the HP bar settling at a random frame and fixed
+  boundary rounds; every controller / GeoCamera byte, the row bytes, the
+  counter, substate, +0x7F4 bits 0-1 and the timer compared. Eight
+  mutations: six fail it, and `over < 41` is equivalent (it adds 0).
+- Host signals (controller `startHit`): the hosts call the hit camera at
+  the FX impact, which is the defender's frame +0x619 (84117CAC plays the
+  hit FX 841087B8 there). The counter starts one frame before it so program
+  1's setup (84120BB4 ends any jolt) runs first, as in the ROM, where it
+  runs at the state's first tick. A dodge starts at frame 0. Record +9 is
+  the FX adapter's result byte for the move (`Scene:stadiumHitResult`);
+  unknown, the jolt is skipped and reported. The hit animation's length is
+  the defender's "hit" clip (`Scene:stadiumClipFrames`); unknown, the end
+  is not scheduled and reported. The HP bar (`Scene:stadiumHpSettled`):
+  Gen 1's battler `shownHP` equal to its HP with no drain running; Gen 2's
+  screen `shownHp[side]` equal to the battler's HP and no `hpAnim` on that
+  side (Gen 2 resolves the whole turn first, so a later drain in the same
+  turn keeps it unsettled and the row's end stands). The hosts present one
+  impact per move, so the multi-hit index is not supplied (+0xA = +0xB).
+
+Host trigger without MOVE EFFECTS (2026-10-01): the hit camera was reached
+only through the FX adapter's `onImpact`, so with MOVE EFFECTS (BETA) off
+(the default) no hit state ran at all. `Scene:stadiumHostImpact(side)` now
+starts it at the host's own impact while there is no FX adapter: Gen 1's
+`applyHitFx` blink and Gen 2's direct "damage" event (where the defender's
+hit clip already plays then), for the move the other side last presented.
+The result byte then comes from the static `Adapter.takeHitResult` (the
+facts `main.lua` records from `battle.damage_dealt`, which nothing else
+takes while FX is off). A dodge sets result 1 itself (a miss keeps 1:
+841246AC, 84128298 / 84130E04). Seen in a headless Gen 1 trainer battle in
+an arena (arena 0, CAMERA STADIUM, MOVE EFFECTS off): events 0x65, 0x22,
+0x5A, 0x5B, 0 and 0x0A in order, the jolt of 15 on the tick after each
+impact, the hit state ending with the timer 0, and no camera warnings.
+
+### The wake-up's tail, Lock-On's aim point, multi-hit lengths (2026-10-01)
+
+Decomp: US asm (pret `c0e10f2`) for 84119908, 84119AB4, 84111C8C,
+84111FA4; michiiik/pokestadiumgs `1b6dc17` C for 80062D20 (src/638E0.c).
+
+- 84119908 also zeroes the counter and substate and sets the timer 0x258;
+  with side flag bit 2 it clears +0x7F4 bits 0 and 6, takes substate 4 and
+  sets record +1 bits 0 and 2 (the port's `wakeState` now does all of it).
+- 84119AB4 (the tail): 0: at frame 0x14 +0x7F4 loses bits 0 and 6 (1);
+  1: once the wake animation has finished (8003EC34 when 84111C8C picks a
+  wake clip: model +0xC -> +0x2C's byte +5 >= 1 or the species in
+  D_84183A28; else 84111FA4: model +0x58 clear or 8003EFBC), frame 0 and
+  record +1 bits 0 and 2 (2); 2: at frame 0x1E, 84111BEC (3); 4: at frame
+  0x3C, 84111BEC (5). Host signal: the actor's clip has ended. Checked in
+  the VM over 160 rounds (substates, counter, +0x7F4, record +1 and +6,
+  camera bytes); four mutations fail it.
+- Lock-On (program 25): D_8418C958 is the battle FX player's dynamic
+  anchor table (its port of 84102750, `Player:dynamicAnchor`), so the
+  camera reads row 0 from it; with MOVE EFFECTS off there is none and the
+  target is held (reported once).
+- 80062D20 is D_8009782A[move * 6] (main segment, ROM data: Fury Attack
+  0x1D, Twineedle 0x4D, Double Kick 0x2C, Triple Kick 0x68, Beat Up 0x9A),
+  read from the ROM image. A non-final hit of a move with effect 0x1D /
+  0x4D or move 0xFB / 0xA7 ends at 0x28 (Double Kick's 0x2C is not in the
+  list). Checked in the VM with 80062D20 running on the ROM table; four
+  mutations fail it. Host signal (`Scene:stadiumMoreHits`): Gen 2 with
+  MOVE EFFECTS off, another damage event on that side before the next move
+  event in the screen queue (Gold emits one per hit). Gen 1 and MOVE
+  EFFECTS on (one impact per move) count every hit as the last.
+
+### The second opening record (2026-10-01, still open)
+
+8413425C sets D_841951F0 + 0x9C7, then sends out both battlers
+(84133714(0), 84133714(1)); each queues 0x22 while the flag is set, and
+841347A0 clears it when the turn loop starts. 8411FC94 ignores the record's
+side and gives battler 0's actor family 24 (34 in arena 5) both times, and
+the family's states (Dispatch_169, 8411C310, 8411C418) run from the start
+when reloaded. The records play when the current one's timer is 0: the
+wipe's end sets the timer 0 (8411C65C) and substate 3 sets 0x320 one frame
+later (8411C67C), so the second record could only start in that gap, and
+whether it does depends on the display loop's other gates (84135700:
+D_84195280 + 0x4B36 / + 0x4B4E; 8413573C), which are text and UI state
+the port does not model. The port plays the opening once. Running the
+opening in the emulator would settle it.
+
+### The busy gates 84113430 / 841133EC (2026-10-01, resolved below)
+
+Fork `1b6dc17` C: 841133EC returns D_84193DDC & 0xD0; 84113430 calls
+84113400 (8003F904 on D_84193DD8, then D_84193DDC & 0xC0) and, when that is
+0, 8410373C(D_84193DD8) and 1. D_84193DD8 is a sequence object: 84103640 /
+84103694 / 841036E8 start it with a move or entry ID (841035DC through the
+asset table D_8418CA20 that BattleAnim_RegisterAssetTable fills, then
+8003F84C / 8003F874), 84113560 with entry IDs such as 0x11C-0x11E, and
+8003F904 steps it. So the gates wait for the previous sequence to finish,
+most likely the move's own animation script. Nothing in the host matches
+it, so the port keeps treating both gates as clear (the camera states run
+at once).
+
+### Trigger audit (2026-10-01)
+
+Every controller event has a host caller. Fixed by this audit:
+
+- Dragged out: 8412A300 (US asm) queues, after text 0x45, 0x2F when the
+  incoming Pokemon is asleep (status & 7), 0x2E when frozen (& 0x20), else
+  0x2D. Gen 2 always sent 0x2F (the asleep variant); it now picks by the
+  incoming mon's status (`Scene:stadiumDragCode`, tested).
+- Gen 1's trainer AI switch ("<trainer> withdrew <mon>!",
+  `_AIBattleWithdrawText`) had no recall trigger; it now recalls the foe,
+  with the outgoing mon's sleep / freeze kept at the switch (the engine
+  swaps battle.enemy before the text). Tested.
+
+Known gaps left:
+
+- Gen 2 player switch: the engine prints no withdraw line and has no
+  retreat step before the new send-out, so Stadium's recall (family 18) has
+  nothing to pair with and is not played for the player in Gen 2.
+- Multi-hit per-hit lengths: Gen 2 with MOVE EFFECTS off only.
+- The idle animation cap, the second opening record and the busy gates, as
+  above.
+
+### Resolved: the busy gates are asset loads (2026-10-01)
+
+Fork `1b6dc17` C for 800421E0 and 8003F84C (src/229E0.c), US asm for
+841035DC, 8003F874, 8003F904. 841035DC(id) copies the byte list at
+D_84182A60[id * 8] (ended by 0x83; for example move 1: 01, entry 0x55:
+52 81, 0x11C: 5C) into D_8418D240; 8003F84C / 8003F874 hand it to
+800421E0, which posts a type-2 load request (osSendMesg on D_80126F00,
+0x18000-byte buffer at +0x70: the PokeIcon loader's background-load slot)
+and marks it pending; 8003F904 polls 80042808 and clears the pending bits.
+So D_84193DD8 loads the move's effect resources from the cartridge, and
+84113430 / 841133EC make the camera state wait until that load finishes.
+The mod has every resource in memory before the battle, so the gates are
+always clear: treating them as clear is the exact equivalent, not an
+assumption.
+
+### The second opening record: mechanism (2026-10-01)
+
+US asm for 8411DA4C / 8411DAE0 (the per-frame battle-animation update:
+8411FF1C, the actor states 8411DA2C, then 8411FEFC), 8410AA18 / 8413E2EC
+(D_84193DD0 = D_84199D80), 84136D9C, 8413677C, 84137778, 8413573C.
+
+- D_84193DD0, where 8411FEE8 writes the event timer, is D_84199D80, the
+  record 841358B0 copies each queued record into; so the timer is the
+  record gate's +0x4B06 field.
+- The other gates: +0x36 / +0x4E are the record's per-side HP-bar
+  animation frames (8413677C, side blocks of 0x18 from +0x2C; counted down
+  by 84136D9C through 84134A10); 8413573C waits for the text box
+  (D_8419A004 / D_84199FFC, 84137778). The text system also paces its text
+  on the same timer (84134A10(D_84199D86, ...)).
+- 84133714 commits each send-out as its own record (84136CA8), so the two
+  0x22 records are separate; nothing in 8411FF1C, 8411FC94, Dispatch_169,
+  8411C310 or 8411C418 skips a repeated 0x22.
+- Each frame the update dispatches a newly loaded record before the actor
+  states run, so a record loaded while the timer is 0 replaces family 24
+  before 8411C418 raises the timer again. The timer is 0 at the wipe's end
+  (8411C65C, one frame) and at the opening's end (8411C784).
+- So by the code, the second record restarts family 24 on the player at
+  the first of those moments when that record's text and HP-bar gates are
+  also clear. Which moment it is (and so what the second run shows) depends
+  on the text box's timing against the timer, which only running the
+  record loop, text system and actor states together settles; all of it is
+  fragment-79 code the MIPS VM can run.
+
+### The second opening record: run in the VM (2026-10-01)
+
+`tools/opening_records_harness.lua` (run from the gen1recomp root) runs the
+battle's per-frame order from 8413D37C in the MIPS VM: 8411DA4C (8411FF1C,
+the actor states, 8411FEFC), the record loop 841359D0, the text system
+84137778 and the HP bars 84136D9C, after building both send-out records
+the way 8413425C does (84136A9C mode 4, 84134CBC(side, 0x22),
+84135B00(0x16), 84136CA8). Real ROM code throughout except: model
+animations (84112158 / 8003EC34, the entrance length is an input), sounds,
+the message strings (8004C874 / 800472E0 give only the line count, which
+sets the record's text time 0x1E + 10 * lines in 84135A2C), 8004C8A0 and
+84134994 ("MVED").
+
+Result, the same for player entrances of 20, 45 and 90 frames: the wipe's
+end (8411C418 substate 2 -> 3) sets the timer 0, the record loop loads the
+foe's 0x22 record in the same frame (the text gate stays open: the
+records' text is started by the states' 84112564 / 84112580, which run
+later in the opening), and the next frame's 8411FF1C restarts family 24 on
+the player. The first run never reaches the foe's close-up; the second
+runs through substates 1-6 (the player's entrance again, the wipe again,
+the foe's close-up and entrance). 8411C310 does not reset the views, so
+the foe's view would stay on screen until substate 1 of the second run
+resets the rectangles. This matches ROM execution with the stubs above; it
+is not visually confirmed. Correction (same day): the text-box gate never
+engaged in the harness although the game shows text there, so the harness
+did not run the text system as the game does; the replay result is
+unreliable and a double opening would look like a glitch. The port keeps
+the single opening. Details and what would settle it:
+`opening-replay-port-plan-2026-10-01.md`.

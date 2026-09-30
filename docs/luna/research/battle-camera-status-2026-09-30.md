@@ -1,5 +1,9 @@
 # STADIUM camera: status and remaining work (2026-09-30)
 
+Update 2026-10-01: the camera port is complete (everything reachable in
+this game is ported); see the items marked Done below. Nothing is
+visually confirmed by the user yet.
+
 Local session. Details and ROM evidence for every item are in
 `battle-camera.md`; the per-change user-facing notes are in
 `battle_FX_bugs.md`. Nothing here is committed yet (last commit: importer
@@ -27,7 +31,7 @@ unless it says so.
 - The dispatcher's per-event jolt reset; the event timer (record +6).
 - Animation-timed follow-ups with host signals (clip ended, Fly / Dig
   departure finished, Transform model shown) and the ROM motion records.
-- Programs ported: 0-15, 17, 21, 22, 24, 26, 27, 29. Programs 16, 19, 20,
+- Programs ported: 0-15, 17, 18, 21, 22, 24, 25 (its target needs the FX layer), 26, 27, 29. Programs 16, 19, 20,
   23, 30 and 31 are never loaded by the ROM (unreachable).
 
 ## Fixed after the user's test (2026-09-30)
@@ -96,42 +100,47 @@ Stadium camera inactive on exactly the frames that ticked, alternating it
 with the FREE camera. Found with a headless battle driver logging
 `stadiumCameraActive` per frame. The camera now decodes doubles in plain Lua
 (`Native.wordsToDouble`), its files do not use ffi (tested), and a failed step
-keeps the Stadium camera. The effect ports (`*_native.lua`,
-`stadium2_libultra.lua`) still require ffi at module load, which works
-because they load at mod start; a lazy first load during a battle would hit
-the same refusal.
+keeps the Stadium camera. Fixed 2026-10-01: the effect ports
+(`stadium2_battle_fx_*_native.lua`, `stadium2_libultra.lua`) no longer
+require ffi; they and the native memory use exact plain-Lua conversions
+(`stadium2_native_memory.lua`: floatWordLua / wordFloatLua /
+wordsToDouble, checked against ffi on 6000 values), and the memory loads
+and works with ffi refused (tested). ffi stays only as an optional fast path
+in the native memory, taken through pcall.
 
 ## Remaining camera work
 
-- The hit follow-up (family 4's third state, 841187E4). It runs after every
-  hit and carries visible camera effects: the hit shake at frame +0x619 + 1
-  (84117880: jolt 10 / 15 / 20 / 25 by the result byte, record +9 & 7), the
-  kind reset at +0x61A (84117648, shortened by 841175D4 once
-  D_8419521C[side] is 0, which looks like the HP bar's drain), Lock-On's
-  program 25 (84117A24), Foresight's re-shots (84117744: shot D_84183C6C
-  every 12 frames, program 1) and per-move frame overrides (Whirlwind,
-  Roar, Spite, Foresight, Lock-On, Rollout). Handlers by code: 0x0A ->
-  84117CEC / 84117DC4 / 84117E94 by the side's flags; 0x0B, 0x10, 0x14,
-  0x4B, >= 0x3C -> 84117E94; 0x0C 8411862C; 0x0D 8411845C; 0x0E 84118138;
-  0x0F / 0x15 8411854C; 0x11 84118704; 0x12 84118754; 0x13 84118794; 0x3B
-  841182E0. All read; not ported. Needs the result byte from the hosts'
-  hit facts (Sequence.resultByte) and an HP-bar-settled signal.
-- The turn end (event 0x5B, 841343FC -> 8411F9D8): timer 0x12C, both actors
-  family 27, shot 0 and program 18 on the battler. Program 18 (8411F9D8's
-  0x12) is not ported; the engine has `battle.turn_ended` as the trigger.
-- Program 25 (Lock-On's, via 84117A24) and program 28 (the idle 0x64 shot;
+- Done 2026-10-01: the hit follow-up (family 4's third state): the row
+  copy, the length, the jolt by result, the per-move lengths, Foresight's
+  re-shots, Lock-On's shot and program 25, the end with the HP bar, all
+  checked in the VM. Program 25's target (D_8418C958, a particle
+  attachment point) now comes from the FX player (see below).
+- Done 2026-10-01: event 0x5B is not the turn end but the first mover's
+  shot (841343FC queues it before the first action); 8411F9D8 and program
+  18 are ported and checked in the VM, triggered after the turn-start orbit
+  (see battle-camera.md, "The first mover").
+- Program 28 (the idle 0x64 shot;
   needs the game-mode table D_84185258 by D_841910D8, which the host has no
   equivalent for: reported once and skipped).
-- Destiny Bond (0x28, family 23): only a kind reset; the two other queue
-  sites (84128664, 8412A454) are not identified.
-- The wake-up's tail (84119AB4 via 84111C8C, which reads the model's own
-  animation data) and family 1's idle clip (the host does not play Stadium's
-  idle animation; the ROM's frame-0x78 cap is used).
+- Done 2026-10-01: 0x28 (family 23) is Beat Up's end, not Destiny Bond's
+  (all three queue sites require move 0xFB); its only camera effect, a kind
+  reset, is overwritten by the next event, so it is not wired.
+- Done 2026-10-01: the wake-up's tail (84119AB4), Lock-On's aim point
+  (the FX player's dynamic anchor 0) and multi-hit lengths (80062D20 from
+  the ROM; Gen 2 per-hit signal). Family 1's idle clip stays: the host does
+  not play Stadium's idle animation, so the ROM's frame-0x78 cap is used.
 - D_8419A007 (8413C820) is never set, so the idle cycle never uses 0x63.
 - The arena-5 intro variants (families 33 / 34) belong to Stadium game modes
   the host does not have.
-- Open questions: whether the second opening record (0x22 for battler 1)
-  replays family 24; the 88 species whose wake-up offset word is out of
-  range (program 7); 841133EC / 84113430 busy flags assumed clear.
+- Resolved 2026-10-01: the "88 species" wake-up offsets came from the
+  wrong ROM table (archive + 0x5730 instead of + 0); fixed.
+- The second opening record (0x22 for battler 1): two are queued and both
+  go to the player's actor, but whether the second restarts the opening is
+  unresolved (the VM harness said yes, but its text-box gate never engaged,
+  so that result is unreliable). The port keeps the single opening. Details:
+  `opening-replay-port-plan-2026-10-01.md`.
+- Open questions: 841133EC / 84113430 wait
+  for the move's effect assets to finish loading from the cartridge
+  (resolved; always clear in the mod, which preloads them).
 - Everything above needs the user's in-game test with CAMERA set to
   STADIUM.

@@ -538,7 +538,10 @@ function Scene:handleEvent(event)
     -- With battle FX on, the hit clip plays at the Stadium impact instead
     -- (the adapter's onImpact hook), so it is not replayed here.
     if actor and not self.battleFx and event.anim==nil and (tonumber(event.amount) or 0)>0
-        and not self.substituteActive[side] then actor:hit() end
+        and not self.substituteActive[side] then
+      self:stadiumHostImpact(side)
+      actor:hit()
+    end
   elseif event.kind == "status" and side then
     self.presentedStatus[side] = event.status
   elseif event.kind == "faint" and side then
@@ -547,7 +550,7 @@ function Scene:handleEvent(event)
     -- Stadium clip at damage time makes it finish before the faint message.
     if actor then actor.pendingFaint=true end
   elseif (event.kind == "send" or event.kind == "sendout") and side then
-    if self:stadiumDraggedOut(event) then self:stadiumCameraTurnCheck(side, 0x2F)
+    if self:stadiumDraggedOut(event) then self:stadiumCameraTurnCheck(side, self:stadiumDragCode(event))
     else self:stadiumCameraSendOut(side) end
     if self.minimized then self.minimized[side]=nil end
     self.substituteActive[side]=false
@@ -656,8 +659,18 @@ Scene.TURN_CHECK_LINES = {
   {"%s's SUBSTITUTE broke!", 0x27},
 }
 
+-- 8412A300 queues, after text 0x45 "was dragged out!", 0x2F when the
+-- dragged-in Pokemon is asleep (status & 7), 0x2E when frozen (& 0x20), else
+-- 0x2D (US asm).
+function Scene:stadiumDragCode(event)
+  local status = event.mon and event.mon.status
+  if status == "sleep" then return 0x2F end
+  if status == "freeze" then return 0x2E end
+  return 0x2D
+end
+
 -- "was dragged out!" (Roar / Whirlwind) arrives as a send event; Stadium
--- gives it family 25 (event 0x2F after text 0x45), not the send-out camera.
+-- gives it family 25 (0x2D-0x2F after text 0x45), not the send-out camera.
 function Scene:stadiumDraggedOut(event)
   local battle = self.battle or (self.screen and self.screen.battle)
   if not (battle and battle.monName and event.mon and type(event.text) == "string") then return false end
@@ -674,6 +687,43 @@ end
 function Scene:stadiumWildBattle()
   local battle = self.battle or (self.screen and self.screen.battle)
   return battle ~= nil and battle.wild == true
+end
+
+-- The side's HP bar has nothing left to drain (Stadium's 8413D358 == 0):
+-- the screen shows the battler's HP and no drain runs on that side.
+function Scene:stadiumHpSettled(side)
+  local screen = self.screen
+  local battle = self.battle or (screen and screen.battle)
+  local mon = battle and battle[side]
+  if not (screen and screen.shownHp and mon and mon.hp) then return nil end
+  if screen.hpAnim and screen.hpAnim.side == side then return false end
+  return screen.shownHp[side] == mon.hp
+end
+
+-- Another hit of the move being presented is still queued for `side`: a
+-- later damage event on that side before the next move event (Gold resolves
+-- every hit of a multi-hit move first, one damage event per hit).
+function Scene:stadiumMoreHits(side)
+  -- with MOVE EFFECTS on, one impact stands for the whole move
+  if self.battleFx then return false end
+  local queue = self.screen and self.screen.queue
+  if type(queue) ~= "table" then return nil end
+  for i = 2, #queue do
+    local event = queue[i]
+    if type(event) == "table" then
+      if event.kind == "move" then return false end
+      if event.kind == "damage" and event.side == side and event.anim == nil then return true end
+    end
+  end
+  return false
+end
+
+-- The side acting first this turn: Gen 2's engine sets `firstMover` (its
+-- wEnemyGoesFirst) right after battle.turn_started, before any action.
+function Scene:stadiumFirstMover()
+  local battle = self.battle or (self.screen and self.screen.battle)
+  local side = battle and battle.firstMover
+  return (side == "player" or side == "enemy") and side or nil
 end
 
 function Scene:stadiumAwaitingCommand()

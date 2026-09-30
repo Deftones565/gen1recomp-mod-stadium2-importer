@@ -178,6 +178,21 @@ function Scene:stadiumWildBattle()
   return battle~=nil and battle.trainer==nil
 end
 
+-- The side's HP bar has nothing left to drain (Stadium's 8413D358 == 0):
+-- the bar shows the battler's HP and its drain has finished (stepHPDrain).
+function Scene:stadiumHpSettled(side)
+  local battle=self.battle
+  local b=battle and battle[side]
+  if not (b and b.mon and b.shownHP) then return nil end
+  return b.shownHP==b.mon.hp and b.drainHold==nil and not b.draining
+end
+
+-- The side acting first this turn (set by the first executeAction after the
+-- turn start), or nil while it is not known yet.
+function Scene:stadiumFirstMover()
+  return self.stadiumFirstActor or nil
+end
+
 function Scene:stadiumAwaitingCommand()
   local battle=self.battle
   return battle~=nil and (battle.phase=="menu" or battle.phase=="moveSelect")
@@ -190,6 +205,23 @@ function Scene:stadiumCameraTurnText(battle,item)
   if not okE or type(EffectRegistry.displayName)~="function" then return end
   local okH,hurt=pcall(battle.romText,battle,"_HurtItselfText","It hurt itself in\nits confusion!")
   if okH and hurt==text then return self:stadiumCameraSelfHit() end
+  -- the trainer AI's switch (AISwitchIfEnoughMons): "<trainer> withdrew
+  -- <mon>!" (_AIBattleWithdrawText) before the new mon is sent out; the
+  -- engine has already swapped battle.enemy, so the outgoing name is matched
+  -- as whatever stands between the line's fixed parts. Stadium's recall
+  -- (84124C10 / 8411ABAC) on the foe.
+  if battle.trainer and battle.trainer.name then
+    local okW,shape=pcall(battle.romText,battle,"_AIBattleWithdrawText","%s with-\ndrew %s!",battle.trainer.name,"\1")
+    local cut=okW and type(shape)=="string" and shape:find("\1",1,true)
+    if cut then
+      local head,tail=shape:sub(1,cut-1),shape:sub(cut+1)
+      if #text>#head+#tail and text:sub(1,#head)==head and text:sub(-#tail)==tail then
+        local condition=self.stadiumWithdrawn
+        self.stadiumWithdrawn=nil
+        return self:stadiumCameraRecall("enemy",condition)
+      end
+    end
+  end
   for _,side in ipairs({"player","enemy"}) do
     local b=battle[side]
     if b and b.name then
@@ -877,6 +909,7 @@ local function installHooks()
           if scene:substituteVisible(side) then actor=scene:ensureSubstitute(side)
           else actor=scene.actors[side] end
           if actor then actor:hit() end
+          if not scene:substituteVisible(side) then scene:stadiumHostImpact(side) end
         end
       end
       return unpack(result,1,result.n)
@@ -912,6 +945,26 @@ local function installHooks()
       if scene and scene.stadiumCameraMiss then pcall(scene.stadiumCameraMiss,scene,self,item) end
       if scene and scene.stadiumCameraTurnText then pcall(scene.stadiumCameraTurnText,scene,self,item) end
       return startMessage(self,item,...)
+    end
+  end
+
+  -- STADIUM camera: Stadium's event 0x5B goes to the side that acts first
+  -- (841343FC, before that side's action). Gen 1 keeps the turn order only
+  -- in its queued actions, so the first action to run names that side.
+  if BattleState.executeAction then
+    local executeAction=BattleState.executeAction
+    function BattleState:executeAction(user,target,action,...)
+      local scene=active(self)
+      if scene and scene.stadiumFirstActor==false then
+        scene.stadiumFirstActor=user==self.player and "player" or user==self.enemy and "enemy" or nil
+      end
+      -- the AI switch swaps battle.enemy at once: keep the outgoing mon's
+      -- status for the recall camera (0x1F asleep / 0x20 frozen)
+      if scene and type(action)=="table" and action.special=="aiSwitch" and user==self.enemy then
+        local status=user.mon and user.mon.status
+        scene.stadiumWithdrawn={asleep=status=="SLP",frozen=status=="FRZ"}
+      end
+      return executeAction(self,user,target,action,...)
     end
   end
 

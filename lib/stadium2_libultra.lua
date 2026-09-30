@@ -10,7 +10,6 @@
 -- 16 s16.16 integer halves then 16 fraction halves, as the RSP reads them.
 local f32 = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
 local bit = require("bit")
-local ffi = require("ffi")
 
 local U = {}
 
@@ -22,15 +21,10 @@ U.GU_ROTATE_RPYF, U.GU_ROTATE_RPY = 0x8007D310, 0x8007D454
 U.GU_TRANSLATE, U.GU_MTX_F2L = 0x80082A00, 0x80084780
 U.SQRTF, U.GU_ROTATE_F, U.GU_NORMALIZE = 0x8007AEC0, 0x8007DB50, 0x8007DF20
 
-local cell = ffi.new("union { double d; uint32_t u[2]; float f; uint32_t w; }")
-local function double(hi, lo)
-  cell.u[1], cell.u[0] = hi, lo
-  return tonumber(cell.d)
-end
-local function floatBits(x)
-  cell.f = x
-  return tonumber(cell.w)
-end
+-- Plain-Lua bit conversions (the mod sandbox refuses ffi at run time).
+local Memory = require("mods.STADIUM2_IMPORTER.lib.stadium2_native_memory")
+local double = Memory.wordsToDouble
+local floatBits = Memory.floatWord
 local function int32(v)
   v = v % 4294967296
   return v >= 2147483648 and v - 4294967296 or v

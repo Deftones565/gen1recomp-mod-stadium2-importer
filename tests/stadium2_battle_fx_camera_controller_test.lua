@@ -61,6 +61,50 @@ ok(mem:u32(0x85000000+0x10)==0x84110F64 and mem:u32(0x85000000+4)==0x85001000,"p
 for _=1,20 do camera:update(scene,0.1) ok(sane(camera:pose()),"the hit gives a finite pose") end
 ok(camera.cam.missing==nil,"program 1 runs only ported handlers")
 
+-- the hit's follow-up (841170A0 / 841187E4) with the scene's signals: the
+-- counter starts at the impact (+0x619), the jolt comes the next tick by the
+-- result (3 -> 20), and the state ends at +0x61A (the timer 0, kind 0xFF)
+do
+  local hs={actors=scene.actors,modelMatrix=scene.modelMatrix}
+  local settled=false
+  hs.stadiumHitResult=function(_,side,move) return side=="player" and move==1 and 3 or nil end
+  hs.stadiumClipFrames=function(_,side,context) return context=="hit" and 0x60 or nil end
+  hs.stadiumHpSettled=function() return settled end
+  camera:hit(hs,"player",1)
+  local a=0x85001000
+  ok(camera.runs[a]~=nil,"the hit's follow-up runs on the defender")
+  ok(mem:s16(a+0x7E8)==mem:s8(a+0x619)-1,"the frame counter starts just before the impact frame (+0x619)")
+  ok(mem:u16(0x85003000+6)==0x258,"84116B40 sets the timer 0x258")
+  local length=mem:u8(a+0x61A)
+  ok(length==0x60,"the 0x0A length is the hit clip's frames (0x60)")
+  camera:update(hs,1/30)
+  ok(mem:f32(0x85000000+0x8C)==0,"program 1's setup runs first")
+  camera:update(hs,1/30)
+  ok(mem:f32(0x85000000+0x8C)>0,"then the jolt starts")
+  local jolted=mem:f32(0x85000000+0x8C)
+  ok(jolted>15 and jolted<=20,"a super-effective hit jolts by 20 (84117880), got "..jolted)
+  settled=true
+  local ended=false
+  for _=1,0x80 do
+    camera:update(hs,1/30)
+    if mem:u8(a+0x7F6)==1 or camera.runs[a]==nil then ended=true break end
+  end
+  ok(ended and mem:u16(0x85003000+6)==0,"the state ends and releases the timer")
+  ok(mem:u8(a+0x61A)<length,"the settled HP bar brought the end forward (841175D4)")
+  ok(mem:u8(a+0x61F)==0xFF,"the end resets the defender's kind (841206D0)")
+  -- an unknown clip length or result is reported, not guessed
+  local unknown={actors=scene.actors,modelMatrix=scene.modelMatrix}
+  camera:hit(unknown,"player",1)
+  ok(camera.runs[a]==nil,"without the hit clip's length the end is not scheduled")
+  local said=false
+  for _,w in ipairs(warnings) do if w:find("hit clip length is unknown",1,true) then said=true end end
+  ok(said,"the unknown hit clip length is reported")
+  hs.stadiumHitResult=function() return nil end
+  camera:hit(hs,"player",1)
+  camera:update(hs,1/30)
+  ok(mem:f32(0x85000000+0x8C)==0,"an unknown result skips the jolt")
+end
+
 -- a turn begins: a turn shot of D_84183C60 and program 10 on the player
 local turnShots={}
 for i=0,4 do turnShots[mem:u16(0x84183C60+i*2)]=true end
@@ -71,6 +115,28 @@ ok(mem:u32(0x85000000+0x10)==0x8410ED30 and mem:u32(0x85000000+4)==0x85001000,"p
 for _=1,90 do camera:update(scene,1/30) ok(sane(camera:pose()),"the turn orbit gives a finite pose") end
 ok(mem:u32(0x85000000+0x10)==0x8411123C,"the orbit arrives and program 10 ends")
 ok(camera.cam.missing==nil,"program 10 runs only ported handlers")
+-- then event 0x5B on the side acting first (8411F9D8, program 18), once
+-- the orbit released the event timer and the host names that side
+ok(camera.firstMoverPending==true,"0x5B waits while the first mover is not known yet")
+scene.stadiumFirstMover=function() return "enemy" end
+camera:update(scene,1/30)
+ok(mem:u16(0x85003000+4)==0x5B and camera.firstMoverPending==nil,"the first mover's event is 0x5B")
+ok(mem:u32(0x85000000+0x10)==0x8410F3E8 and mem:u32(0x85000000+4)==0x85002000,"program 18 is on the first mover")
+ok(mem:u16(0x85000000+0x98)==0x24 or mem:u16(0x85000000+0x98)==0x26,"program 18's shot is 0x24 or 0x26")
+local released=false
+for _=1,200 do
+  camera:update(scene,1/30) ok(sane(camera:pose()),"program 18 gives a finite pose")
+  if mem:u16(0x85003000+6)==0 then released=true break end
+end
+ok(released and mem:u32(0x85000000+0x10)==0x8411123C,"program 18 settles, then ends the timer and its slot")
+ok(camera.cam.missing==nil,"program 18 runs only ported handlers")
+camera:turnStart(scene)
+camera.idle=nil
+camera:attack(scene,"player",1)
+ok(camera.firstMoverPending==nil,"a newer event replaces the waiting 0x5B")
+for _=1,90 do camera:update(scene,1/30) end
+ok(mem:u16(0x85003000+4)~=0x5B,"the replaced 0x5B does not play")
+scene.stadiumFirstMover=nil
 
 -- a faint: a faint shot of D_84183C74 and program 11 on that side
 local faintShots={}
@@ -614,7 +680,10 @@ end
 -- the game's mod sandbox refuses require("ffi") at run time: the camera
 -- must not use it, and its plain-Lua double decoder must match the bits
 do
-  for _,name in ipairs({"lib/stadium2_battle_camera.lua","lib/stadium2_battle_camera_native.lua"}) do
+  for _,name in ipairs({"lib/stadium2_battle_camera.lua","lib/stadium2_battle_camera_native.lua",
+      "lib/stadium2_libultra.lua","lib/stadium2_battle_fx_stochastic_native.lua",
+      "lib/stadium2_battle_fx_textured_stream_native.lua","lib/stadium2_battle_fx_tri_attack_native.lua",
+      "lib/stadium2_battle_fx_terrain_grid_native.lua"}) do
     local fh=assert(io.open("mods/STADIUM2_IMPORTER/"..name,"rb"));local text=fh:read("*a");fh:close()
     ok(not text:find('require%s*%(?%s*["\']ffi["\']'),name.." does not require ffi")
   end
@@ -630,6 +699,94 @@ do
     local got=Native.wordsToDouble(hi,lo)
     if not (want~=want and got~=got) then ok(got==want,("double %08X %08X"):format(hi,lo)) end
   end
+  -- the plain-Lua binary32 conversions against ffi's, both ways
+  local Memory=require("mods.STADIUM2_IMPORTER.lib.stadium2_native_memory")
+  local fu=ffi.new("union { float f; uint32_t w; }")
+  for i=1,4000 do
+    local w=math.random(0,0xFFFFFFFF)
+    if i%5==0 then w=w%0x800000+(math.random(0,1)*0x80000000) end -- subnormals and zeros
+    fu.w=w
+    local want=tonumber(fu.f)
+    local got=Memory.wordFloatLua(w)
+    -- NaN by its bits (LuaJIT's reading of some NaN payloads is not NaN-like)
+    local nan=math.floor(w/0x800000)%0x100==0xFF and w%0x800000~=0
+    if not nan then
+      ok(got==want,("word %08X to float"):format(w))
+      ok(Memory.floatWordLua(want)==w,("float of %08X back to its word"):format(w))
+    else ok(got~=got,("word %08X is NaN"):format(w)) end
+  end
+  for _=1,2000 do
+    local v=(math.random()*2-1)*10^math.random(-44,38)
+    fu.f=v
+    ok(Memory.floatWordLua(v)==tonumber(fu.w),("double %.17g rounds to ffi's single"):format(v))
+  end
+  -- with ffi refused (as the sandbox does), the memory still reads and writes
+  local saved,savedPreload=package.loaded.ffi,package.preload.ffi
+  package.loaded.ffi=nil
+  package.preload.ffi=function() error("ffi is not available to mods") end
+  package.loaded["mods.STADIUM2_IMPORTER.lib.stadium2_native_memory"]=nil
+  local okLoad,Plain=pcall(require,"mods.STADIUM2_IMPORTER.lib.stadium2_native_memory")
+  package.loaded.ffi,package.preload.ffi=saved,savedPreload
+  package.loaded["mods.STADIUM2_IMPORTER.lib.stadium2_native_memory"]=Memory
+  ok(okLoad,"native memory loads without ffi: "..tostring(Plain))
+  local pm=Plain.new({})
+  pm:setF32(0x100,-1.5);pm:setVec(0x104,{3,0.1,-0})
+  ok(pm:u32(0x100)==0xBFC00000 and pm:f32(0x100)==-1.5,"without ffi a float is written and read exactly")
+  ok(pm:f32(0x108)==require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")(0.1) and pm:u32(0x10C)==0x80000000,"single rounding and negative zero without ffi")
+end
+
+-- woke up (event 0x1D): program 7, the timer 0x258, then the tail waits
+-- for the wake clip and ends the timer 0x1E frames later (84119AB4)
+do
+  local w=assert(StadiumCamera.new({rom=rom,fragment79=fragment,seed=41}))
+  local ws={actors={player={dex=25,mon={hp=35},context="idle"},enemy={dex=16,mon={hp=30},context="idle"}},
+    modelMatrix=function() error("no model in this test") end}
+  w:update(ws,1/30);w.intro,w.openingPhase=nil,nil;w.cam:endSplit()
+  local wm=w.cam.mem
+  ws.actors.enemy.context="wake"
+  w:wokeUp(ws,"enemy")
+  ok(wm:u16(0x85003000+6)==0x258,"woke up sets the timer 0x258 (84119908)")
+  for _=1,0x30 do w:update(ws,1/30) end
+  ok(wm:u8(0x85002000+0x7F6)==1 and w.runs[0x85002000]~=nil,"the tail waits for the wake clip")
+  ws.actors.enemy.context="idle"
+  local ended=false
+  for _=1,0x30 do w:update(ws,1/30) if w.runs[0x85002000]==nil then ended=true break end end
+  ok(ended and wm:u16(0x85003000+6)==0 and wm:u8(0x85002000+0x61F)==0xFF,"0x1E frames after the clip the timer ends and the kind resets")
+  ok(w.cam.missing==nil,"the wake-up runs only ported handlers")
+end
+
+-- program 7 (woke up) reads the offset row DMA'd from archive + 0 (84113014):
+-- the target stays at the Pokemon for species whose + 0x5730 word was wild
+do
+  for _,sp in ipairs({9,94,249,25}) do
+    local p=assert(StadiumCamera.new({rom=rom,fragment79=fragment,seed=44}))
+    local ps={actors={player={dex=25,mon={hp=35},context="idle"},enemy={dex=sp,mon={hp=30},context="idle"}},
+      modelMatrix=function() error("no model in this test") end}
+    p:update(ps,1/30);p.intro,p.openingPhase=nil,nil;p.cam:endSplit()
+    p:wokeUp(ps,"enemy")
+    p:update(ps,1/30)
+    local pm=p.cam.mem
+    local t=pm:vec(0x84190428+0xB4)
+    local dx,dz=t[1]-pm:f32(0x85002000+0x24),t[3]-pm:f32(0x85002000+0x2C)
+    ok(math.sqrt(dx*dx+dz*dz)<100,("species %d: the wake-up shot aims at the Pokemon (%.1f away)"):format(sp,math.sqrt(dx*dx+dz*dz)))
+  end
+end
+
+-- Lock-On's program 25 aims at the FX player's dynamic anchor 0 (D_8418C958)
+do
+  local l=assert(StadiumCamera.new({rom=rom,fragment79=fragment,seed=43}))
+  local ls={actors={player={dex=25,mon={hp=35},context="idle"},enemy={dex=16,mon={hp=30},context="idle"}},
+    modelMatrix=function() error("no model in this test") end,
+    battleFx={player={dynamicAnchor=function(_,i) return i==0 and {12,34,-56} or nil end}}}
+  l:update(ls,1/30);l.intro,l.openingPhase=nil,nil;l.cam:endSplit()
+  l.cam:setProgram(0x85002000,0x19)
+  l:update(ls,1/30)
+  local t=l.cam.mem:vec(0x84190428+0xB4)
+  ok(t[1]==12 and t[2]==34 and t[3]==-56,"program 25 aims at dynamic anchor 0")
+  ls.battleFx=nil
+  l:update(ls,1/30)
+  local t2=l.cam.mem:vec(0x84190428+0xB4)
+  ok(t2[1]==12 and t2[3]==-56,"without MOVE EFFECTS the target is held")
 end
 
 -- a move without an ID is reported, not guessed

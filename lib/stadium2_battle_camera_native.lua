@@ -58,7 +58,7 @@ function Native.load(rom, fragment79, options)
   if type(fragment79) == "string" then images[#images + 1] = { base = 0x84100000, bytes = fragment79 } end
   options = type(options) == "table" and options or {}
   return setmetatable({ rom = rom, introPaths = options.introPaths, speciesShots = options.speciesShots, sine = sine, atan = atan, mem = Memory.new(images),
-    markerPosition = options.markerPosition,
+    markerPosition = options.markerPosition, attachmentPoint = options.attachmentPoint,
     onStatusVisibility = options.onStatusVisibility,
     onActorReset = options.onActorReset, onActorHome = options.onActorHome,
     onEventTimer = options.onEventTimer, warn = options.warn,
@@ -530,14 +530,7 @@ end
 -- An IEEE-754 double from its high and low words, in plain Lua (the game's
 -- mod sandbox refuses the ffi library while the game runs; Lua numbers are
 -- doubles, so this is exact).
-function Native.wordsToDouble(hi, lo)
-  local sign = hi >= 0x80000000 and -1 or 1
-  local exponent = math.floor(hi / 0x100000) % 0x800
-  local mantissa = (hi % 0x100000) * 0x100000000 + lo
-  if exponent == 0 then return sign * mantissa * 2 ^ -1074 end
-  if exponent == 0x7FF then return mantissa == 0 and sign * math.huge or 0 / 0 end
-  return sign * (1 + mantissa / 2 ^ 52) * 2 ^ (exponent - 1023)
-end
+Native.wordsToDouble = require("mods.STADIUM2_IMPORTER.lib.stadium2_native_memory").wordsToDouble
 
 -- A big-endian double constant from the ROM.
 function Native:const64(address)
@@ -745,6 +738,113 @@ function Native:turnStart(actor)
   self:setProgram(actor, 10)
 end
 
+-- ------------------------------------------------ program 18 (the first mover)
+
+-- 8411F9D8(side), camera part (event 0x5B, family 27). 841343FC, the turn
+-- body that 841347A0 runs right after queuing 0x5A, queues it on the side
+-- that acts first (841320E8's order) before that side's action (84133F10).
+-- The timer is 0x12C, record +1 bit 0 is set (84112564), controller 0's
+-- shot is 0 and the side's actor gets program 18. Family 27's states
+-- (Dispatch_190, Dispatch_002) only play the model's idle animation and
+-- hide a Pokemon underground or without HP: not the camera.
+function Native:firstMoverState(actor)
+  local m = self.mem
+  self:setTimer(0x12C)
+  local record = m:u32(Native.RECORD)
+  m:setU8(record + 1, bit.bor(m:u8(record + 1), 1))
+  m:setU16(m:u32(Native.CONTROLLER0) + 0x98, 0)
+  self:setProgram(actor, 0x12)
+end
+
+-- 8410F1A8(gc, actor) (US asm): program 18's setup. Shot 0x26 when the
+-- side's record +0x10 is 0x20, else 0x24; the look point and target (+0x50,
+-- +0x5C) at the actor's offset +0x634 turned by its facing (8410B8FC) plus
+-- its position, at height +0x638, or at the marker point's height (8411E0A4)
+-- while the side's flags have bit 1; height 30 for both when the flags have
+-- bit 2 or the actor's +0x7F4 has 0x10. +0x74 / +0x7C / +0x80 / +0x84 from
+-- the actor's +0x64C / +0x654 / +0x640 / +0x644, +0x78 = 0, the fraction
+-- +0x44 and its rate +0x48 = 0, +0x68 = the eye, FOV goal 80, stage (+0xA2)
+-- and counter (+0x94) 0; the slot empties.
+function Native:program18Setup(gc, actor)
+  local m = self.mem
+  local ctrl = self:controllerFor(gc)
+  m:setU32(Native.CURRENT, ctrl)
+  m:setU16(ctrl + 0x94, 0)
+  m:setU16(ctrl + 0xA2, 0)
+  local record = m:u32(Native.RECORD) + self:side(actor) * 16
+  m:setU16(ctrl + 0x98, m:u16(record + 0x10) == 0x20 and 0x26 or 0x24)
+  m:setF32(ctrl + 0x44, 0)
+  m:setF32(ctrl + 0x48, 0)
+  m:setF32(ctrl + 0x84, m:f32(actor + 0x644))
+  m:setF32(ctrl + 0x80, m:f32(actor + 0x640))
+  m:setF32(ctrl + 0x7C, m:f32(actor + 0x654))
+  m:setF32(ctrl + 0x74, m:f32(actor + 0x64C))
+  m:setF32(ctrl + 0x78, 0)
+  local x, z = self:rotateOffset(m:vec(actor + 0x634), m:s16(actor + 0x20))
+  x, z = f32(x + m:f32(actor + 0x24)), f32(z + m:f32(actor + 0x2C))
+  local y = m:f32(actor + 0x638)
+  m:setVec(ctrl + 0x5C, { x, y, z })
+  m:setVec(ctrl + 0x50, { x, y, z })
+  local flags = m:u16(record + 0x12)
+  if bit.band(flags, 2) ~= 0 then
+    y = self:markerPoint(actor, ctrl)[2]
+    m:setVec(ctrl + 0x5C, { x, y, z })
+    m:setVec(ctrl + 0x50, { x, y, z })
+  end
+  if bit.band(flags, 4) ~= 0 or bit.band(m:u16(actor + 0x7F4), 0x10) ~= 0 then
+    m:setF32(ctrl + 0x60, 30)
+    m:setF32(ctrl + 0x54, 30)
+  end
+  m:setVec(ctrl + 0x68, m:vec(gc + 0xA8))
+  m:setU32(ctrl + m:u32(Native.SLOT) * 8 + 8, m:u32(0x84184148))
+  m:setF32(ctrl + 0x88, 80)
+end
+
+-- 8410F3E8(gc, actor) (US asm): program 18's tick. Stage 0: the FOV eases
+-- to the goal at 0.02; the fraction +0x44 eases to +0x4C at +0x48; the
+-- target (+0xB4) moves that fraction of the way to the look point; the
+-- shot row's secondary pose on the actor's facing (8410B884), with the
+-- distance scaled by D_84188F8C and the yaw 0x1555 on the facing's side
+-- while the side's flags have bit 1; the eye moves the fraction of the way
+-- to that pose around the look point, and within 1.75 of it the stage
+-- becomes 1. The rate is scaled by D_84188F88 only on PAL (80001FF0 == 50);
+-- the US ROM runs on NTSC. Stage 1: 20 frames later the timer ends and the
+-- slot empties.
+function Native:program18Tick(gc, actor)
+  local m = self.mem
+  m:setU32(Native.CURRENT, self:controllerFor(gc))
+  local ctrl = m:u32(Native.CURRENT)
+  local stage = m:s16(ctrl + 0xA2)
+  if stage == 0 then
+    m:setF32(gc + 0x2C, Native.ease(m:f32(gc + 0x2C), m:f32(ctrl + 0x88), f32(0.02)))
+    local yaw = m:s16(actor + 0x20)
+    local sign = yaw < 0 and -1 or 1
+    m:setF32(ctrl + 0x44, Native.ease(m:f32(ctrl + 0x44), m:f32(ctrl + 0x4C), m:f32(ctrl + 0x48)))
+    local target = m:vec(gc + 0xB4)
+    local d, pitch, turn = self:angleTo(target, m:vec(ctrl + 0x50))
+    m:setVec(gc + 0xB4, self:placeEye(target, f32(m:f32(ctrl + 0x44) * d), pitch, turn))
+    self:secondaryPose(actor, ctrl, yaw)
+    local flags = m:u16(m:u32(Native.RECORD) + self:side(actor) * 16 + 0x12)
+    if bit.band(flags, 2) ~= 0 then
+      m:setF32(ctrl + 0x40, f32(m:f32(ctrl + 0x40) * self:const(0x84188F8C)))
+      m:setU16(ctrl + 0x3E, (sign * 0x1555) % 0x10000)
+    end
+    local goal = self:placeEye(m:vec(ctrl + 0x50), m:f32(ctrl + 0x40), m:s16(ctrl + 0x3C), m:s16(ctrl + 0x3E))
+    local from = m:vec(gc + 0xA8)
+    d, pitch, turn = self:angleTo(from, goal)
+    m:setVec(gc + 0xA8, self:placeEye(from, f32(m:f32(ctrl + 0x44) * d), pitch, turn))
+    if d <= 1.75 then m:setU16(ctrl + 0xA2, 1) end
+    m:setU16(ctrl + 0x94, 0)
+  elseif stage == 1 then
+    local count = m:s16(ctrl + 0x94) + 1
+    m:setU16(ctrl + 0x94, count % 0x10000)
+    if count == 20 then
+      self:setTimer(0)
+      m:setU32(ctrl + m:u32(Native.SLOT) * 8 + 8, m:u32(0x84184148))
+    end
+  end
+end
+
 -- ------------------------------------------------ program 11 (faint)
 
 Native.FAINT_SHOTS = 0x84183C74       -- D_84183C74 (3): the faint shots
@@ -915,11 +1015,9 @@ end
 -- 8410E8E4(gc, actor): program 7, one handler that runs every frame (its
 -- slot is never emptied): 84120BB4, FOV 80, the target at the actor's
 -- position plus its species offset (+0x678 -> D_84193DF8 + side * 0x20,
--- archive 0x49B780 + 0x5730, 0x20 bytes per species) turned by the actor's
+-- archive 0x49B780 + 0, 0x20 bytes per species) turned by the actor's
 -- yaw (x and z mirrored by 8411E1D4's side sign), and the eye at the offset's
 -- distance (+0xC), pitch (+0x10) and signed yaw (+0x12) from it (800371B4).
--- The offset's first word is read as a float although the ROM data there
--- does not look like one; see battle-camera.md.
 function Native:program7Tick(gc, actor)
   local m = self.mem
   self:resetShot(gc, actor)
@@ -937,19 +1035,67 @@ function Native:program7Tick(gc, actor)
   m:setVec(gc + 0xA8, self:placeEye(m:vec(gc + 0xB4), m:f32(d + 0xC), m:s16(d + 0x10), turn))
 end
 
--- 84119908(actor), camera part (family 19: event 0x1D, woke up): when the
--- side's flags (record +0x12) have bit 2, shot 0 and program 0; otherwise
--- program 7. (84111C44, the FX queue, and the model animation calls are not
--- the camera's.)
+-- 84119908(actor), camera part (family 19: event 0x1D, woke up): the frame
+-- counter and substate 0, the timer 0x258; when the side's flags (record
+-- +0x12) have bit 2 (underground), shot 0 and program 0, +0x7F4 loses bits
+-- 0 and 6, substate 4 and record +1 bits 0 and 2 (84112564 / 84112580);
+-- otherwise program 7. (84111C44, the FX queue, and the model animation
+-- calls are not the camera's.)
 function Native:wakeState(actor)
   local m = self.mem
-  local flags = m:u16(m:u32(Native.RECORD) + self:side(actor) * 16 + 0x12)
+  local record = m:u32(Native.RECORD)
+  m:setU16(actor + 0x7E8, 0)
+  m:setU8(actor + 0x7F6, 0)
+  self:setTimer(0x258)
+  local flags = m:u16(record + self:side(actor) * 16 + 0x12)
   if bit.band(flags, 4) ~= 0 then
     m:setU16(m:u32(Native.CONTROLLER0) + 0x98, 0)
     self:setProgram(actor, 0)
+    m:setU16(actor + 0x7F4, bit.band(m:u16(actor + 0x7F4), 0xFFBE))
+    m:setU8(actor + 0x7F6, 4)
+    m:setU8(record + 1, bit.bor(m:u8(record + 1), 5))
   else
     self:setProgram(actor, 7)
   end
+end
+
+-- 84119AB4(actor) (US asm), the wake-up's tail, on the actor's frame
+-- counter: 0: at frame 0x14 +0x7F4 loses bits 0 and 6 (1); 1: once the
+-- model's wake animation has finished (8003EC34, or 84111FA4 when
+-- 84111C8C picks no wake clip; `finished`), frame 0, record +1 bits 0 and
+-- 2 (2); 2: at frame 0x1E, 84111BEC (the counter 0, the timer 0, the kind
+-- reset) (3); 4 (underground): at frame 0x3C, 84111BEC (5). Returns the
+-- next substate; 3 and 5 are the end.
+function Native:wakeFrame(actor, substate, finished)
+  local m = self.mem
+  local frame = m:s16(actor + 0x7E8)
+  local function finish(next)
+    m:setU16(actor + 0x7E8, 0)
+    self:setTimer(0)
+    self:kindReset(actor)
+    m:setU8(actor + 0x7F6, next)
+    return next
+  end
+  if substate == 0 then
+    if frame ~= 0x14 then return 0 end
+    m:setU16(actor + 0x7F4, bit.band(m:u16(actor + 0x7F4), 0xFFBE))
+    m:setU8(actor + 0x7F6, 1)
+    return 1
+  elseif substate == 1 then
+    if not finished then return 1 end
+    local record = m:u32(Native.RECORD)
+    m:setU16(actor + 0x7E8, 0)
+    m:setU8(actor + 0x7F6, 2)
+    m:setU8(record + 1, bit.bor(m:u8(record + 1), 5))
+    return 2
+  elseif substate == 2 then
+    if frame ~= 0x1E then return 2 end
+    return finish(3)
+  elseif substate == 4 then
+    if frame ~= 0x3C then return 4 end
+    return finish(5)
+  end
+  return substate
 end
 
 -- BattleAnim_Dispatch_142 (8411A19C, fork C), camera part (family 20:
@@ -2609,6 +2755,9 @@ Native.HANDLERS = {
   [0x8410F78C] = function(self, gc, owner) return self:program22Setup(gc, owner) end,
   [0x8410F844] = function(self, gc, owner) return self:program22Tick(gc, owner) end,
   [0x841111B0] = function(self, gc, owner) return self:program6Tick(gc, owner) end,
+  [0x8410F1A8] = function(self, gc, owner) return self:program18Setup(gc, owner) end,
+  [0x8410F3E8] = function(self, gc, owner) return self:program18Tick(gc, owner) end,
+  [0x8411100C] = function(self, gc) return self:program25Tick(gc) end,
 }
 
 local function loadProgram(self, global, owner, program)
@@ -2716,14 +2865,27 @@ function Native:attackState(actor)
   end
 end
 
--- 84116BC0(actor), camera part: the defender's actor kind and hit shot by
--- the event code (u16 battle record +4). Skipped while +0x7EC bit 0 is set.
--- (The dispatch-row bytes it copies first, from the table at actor+0x2D4,
--- belong to the model animation layer and are not ported here.)
+-- 84116BC0(actor): the defender's own motion row for the received move
+-- (+0x2D4 + (move - 1) * 0x14: +7 the hit frame +0x619, +0xA the state's
+-- length +0x61A, +8 +0x620, +0x10..+0x13 into +0x628 / +0x62A / +0x62C /
+-- +0x661; +0x61C / +0x61D from the record's +0x13DA / +0x13DB), then the
+-- actor kind and hit shot by the event code (u16 battle record +4).
+-- Skipped while +0x7EC bit 0 is set.
 function Native:hitShot(actor)
   local m = self.mem
   if bit.band(m:u16(actor + 0x7EC), 1) ~= 0 then return end
   local move = m:u8(actor + 0x618)
+  local motion = m:u32(actor + 0x2D4)
+  local row = motion + move * 0x14
+  m:setU8(actor + 0x619, m:u8(row - 0xD))
+  m:setU8(actor + 0x61A, m:u8(row - 0xA))
+  m:setU8(actor + 0x620, m:u8(row - 0xC))
+  m:setU8(actor + 0x61C, m:u8(motion + 0x13DA))
+  m:setU8(actor + 0x61D, m:u8(motion + 0x13DB))
+  m:setU16(actor + 0x628, m:u8(row - 4))
+  m:setU16(actor + 0x62A, m:u8(row - 3))
+  m:setU16(actor + 0x62C, m:u8(row - 2))
+  m:setU8(actor + 0x661, m:u8(row - 1))
   local kind
   if move == 0x17 or move == 0x22 then kind = 0x0F
   elseif move == 0xCD then kind = 0x12
@@ -2751,6 +2913,229 @@ end
 function Native:hitState(actor)
   self:hitShot(actor)
   if self.mem:s16(self.mem:u32(Native.CONTROLLER0) + 0x98) ~= 0x21 then self:setProgram(actor, 1) end
+end
+
+-- ------------------------------------------------ the hit's follow-up (family 4)
+
+-- 841170A0 (US asm), after 84116BC0: the frame counter and substate 0, then
+-- the state's length +0x61A by event code, set through 84116B40:
+--   0x0A: 0x3C while the side's flags have bit 1 or 2, else 84116EB4: the
+--         model's hit animation length (0xFE, model +0x44 -> +0xA), at
+--         least 0x50, or 0x3C for results 2 and 5;
+--   0x0C, 0x0E: the hit animation's length; 0x0B, 0x0D, 0x0F, 0x11-0x13,
+--   0x15, 0x3B: 0x3C; every other code (0x10, 0x14, ...): 0x46.
+-- 84116B40 stores it as a byte, adds up to 40 frames past +0x620 when the
+-- result (record +9) has bit 0x10, starts the counter at +0x619 - 1 when
+-- +0x619 <= 0, sets the timer 0x258 and clears D_841911F8. A hit that is not
+-- the last of a multi-hit move (record +0xB ~= +0xA for move effects 0x1D /
+-- 0x4D (80062D20) or moves 0xFB / 0xA7) ends at 0x28. `frames` is the hit
+-- animation's length; nil when unknown, and then a code that needs it
+-- returns false (nothing is set).
+Native.HIT_LENGTH_3C = { [0x0B] = true, [0x0D] = true, [0x0F] = true, [0x11] = true,
+  [0x12] = true, [0x13] = true, [0x15] = true, [0x3B] = true }
+function Native:hitLength(actor, frames)
+  local m = self.mem
+  local record = m:u32(Native.RECORD)
+  local code = m:u16(record + 4)
+  local flags = m:u16(record + self:side(actor) * 16 + 0x12)
+  local result = m:u8(record + 9)
+  local length
+  if code == 0x0A then
+    if bit.band(flags, 6) ~= 0 then length = 0x3C
+    else
+      if frames == nil then return false end
+      length = frames < 0x50 and 0x50 or frames
+      if bit.band(result, 7) == 2 or bit.band(result, 7) == 5 then length = 0x3C end
+    end
+  elseif code == 0x0C or code == 0x0E then
+    if frames == nil then return false end
+    length = frames
+  elseif Native.HIT_LENGTH_3C[code] then length = 0x3C
+  else length = 0x46 end
+  m:setU8(actor + 0x7F6, 0)
+  m:setU16(actor + 0x7E8, 0)
+  -- 84116B40
+  m:setU8(actor + 0x61A, length % 0x100)
+  if bit.band(result, 0x10) ~= 0 then
+    local over = m:u8(actor + 0x61A) - m:u8(actor + 0x620)
+    if over < 40 then m:setU8(actor + 0x61A, (m:u8(actor + 0x61A) + 40 - over) % 0x100) end
+  end
+  local hitFrame = m:s8(actor + 0x619)
+  if hitFrame <= 0 then m:setU16(actor + 0x7E8, (hitFrame - 1) % 0x10000) end
+  self:setTimer(0x258)
+  self.hpSettled = false -- D_841911F8
+  return true
+end
+
+-- 80062D20(move) (fork C): the move's effect, D_8009782A[move * 6] for
+-- moves 1..0xFB, else 0.
+function Native:moveEffect(move)
+  if move > 0 and move < 0xFC then return self.mem:u8(0x8009782A + move * 6) end
+  return 0
+end
+
+-- 841170A0's tail (after program 1): a hit that is not the last of a
+-- multi-hit move (effects 0x1D / 0x4D, moves 0xFB / 0xA7; record +0xB, the
+-- hit, differs from +0xA, the count) ends at 0x28.
+function Native:hitMultiLength(actor)
+  local m = self.mem
+  local record = m:u32(Native.RECORD)
+  local move = m:u8(record + 8)
+  local effect = self:moveEffect(move)
+  if effect == 0x4D or effect == 0x1D or move == 0xFB or move == 0xA7 then
+    if m:u8(record + 0xB) ~= m:u8(record + 0xA) then m:setU8(actor + 0x61A, 0x28) end
+  end
+end
+
+-- 841175D4 (fork C): once the side's HP bar has nothing left to drain
+-- (8413D358: D_8419521C[side * 24] == 0; `settled` is the host's bar) and
+-- D_841911F8 is clear, the state ends 0x32 frames later if that is sooner.
+function Native:hpSettledEnd(actor, settled)
+  local m = self.mem
+  if settled and not self.hpSettled then
+    local at = m:s16(actor + 0x7E8) + 0x32
+    if at < m:u8(actor + 0x61A) then m:setU8(actor + 0x61A, at % 0x100) end
+    self.hpSettled = true
+  end
+end
+
+-- 841170A0's camera part: 84116BC0 (row, kind, shot), the length, then
+-- program 1 on the defender unless the shot is 0x21. Returns whether the
+-- length was set (false: the hit animation's length is unknown).
+function Native:hitStart(actor, frames)
+  self:hitShot(actor)
+  local known = self:hitLength(actor, frames)
+  if self.mem:s16(self.mem:u32(Native.CONTROLLER0) + 0x98) ~= 0x21 then self:setProgram(actor, 1) end
+  if known then self:hitMultiLength(actor) end
+  return known
+end
+
+-- 84117648 (fork C): 841175D4, then at frame +0x61A (0xF: only +0x7F4
+-- kept) +0x7F4 loses bits 0 and 1, and 84111BEC ends the state: the frame
+-- counter 0, the timer 0, the kind reset (841206D0); then the counter
+-- 0x12C and substate 1.
+function Native:hitEnd(actor, settled)
+  local m = self.mem
+  self:hpSettledEnd(actor, settled)
+  local length = m:u8(actor + 0x61A)
+  if m:s16(actor + 0x7E8) ~= length then return end
+  if length ~= 0xF then m:setU16(actor + 0x7F4, bit.band(m:u16(actor + 0x7F4), 0xFFFC)) end
+  m:setU16(actor + 0x7E8, 0)
+  self:setTimer(0)
+  self:kindReset(actor)
+  m:setU16(actor + 0x7E8, 0x12C)
+  m:setU8(actor + 0x7F6, 1)
+end
+
+-- 84117744 (US asm): per-move lengths (Lock-On 0xC7: 0x78, Rollout 0xCD:
+-- 0x5A, Whirlwind 0x12 / Roar 0x2E: 0x32, Spite 0xB4: 0x78); Foresight
+-- (0xC1): 0x50, +0x619 = 0, and every 12 frames below 0x25 controller 0
+-- takes shot D_84183C6C[frame / 12] with program 1.
+function Native:hitMoveFrame(actor)
+  local m = self.mem
+  local move = m:u8(actor + 0x618)
+  if move == 0xC7 then m:setU8(actor + 0x61A, 0x78) end
+  if move == 0xCD then m:setU8(actor + 0x61A, 0x5A) end
+  if move == 0x12 or move == 0x2E then m:setU8(actor + 0x61A, 0x32) end
+  if move == 0xB4 then m:setU8(actor + 0x61A, 0x78) end
+  if move == 0xC1 then
+    m:setU8(actor + 0x61A, 0x50)
+    m:setU8(actor + 0x619, 0)
+    local frame = m:s16(actor + 0x7E8)
+    if math.fmod(frame, 12) == 0 and frame < 0x25 then
+      local index = frame >= 0 and math.floor(frame / 12) or -math.floor(-frame / 12)
+      m:setU16(m:u32(Native.CONTROLLER0) + 0x98, m:u16(0x84183C6C + index * 2))
+      self:setProgram(actor, 1)
+    end
+  end
+end
+
+-- 84117880 (fork C): the frame after the hit (+0x619 + 1), the camera jolt
+-- by the result (record +9 & 7): 2 -> 10, 0 -> 15, 3 -> 20, 4 -> 25.
+Native.HIT_JOLT = { [2] = 10, [0] = 15, [3] = 20, [4] = 25 }
+function Native:hitJolt(actor)
+  local m = self.mem
+  if m:s8(actor + 0x619) + 1 ~= m:s16(actor + 0x7E8) then return end
+  local amount = Native.HIT_JOLT[bit.band(m:u8(m:u32(Native.RECORD) + 9), 7)]
+  if amount then self:setJolt(amount) end
+end
+
+-- 84117A24 (fork C): Lock-On (0xC7), two frames after the hit: 84120BB4 and
+-- 8410C934 on controller 0's GeoCamera with its shot, then program 25.
+function Native:hitLockOn(actor)
+  local m = self.mem
+  if m:s8(actor + 0x619) + 2 ~= m:s16(actor + 0x7E8) or m:u8(actor + 0x618) ~= 0xC7 then return end
+  local ctrl = m:u32(Native.CONTROLLER0)
+  local gc = m:u32(ctrl)
+  m:setU32(Native.CURRENT, ctrl)
+  self:resetShot(gc, actor)
+  self:shot(gc, actor, m:s16(ctrl + 0x98))
+  self:setProgram(actor, 0x19)
+end
+
+-- 8411100C (BattleAnim_ModelDispatch_176): program 25's only handler (its
+-- slot is never emptied): the target (+0xB4) is D_8418C958's row 0
+-- (84108940). That table is filled while particles are placed (8003C9B8,
+-- called by 84102750 / 84104A00: an attachment point of the model), so it is
+-- asked of `options.attachmentPoint(index)` (the battle FX player's port of
+-- that table); without it the step is reported once and skipped rather than
+-- aimed at a guessed point.
+function Native:program25Tick(gc)
+  local m = self.mem
+  m:setU32(Native.CURRENT, self:controllerFor(gc))
+  local point = self.attachmentPoint and self.attachmentPoint(0)
+  if point then m:setVec(gc + 0xB4, point); return end
+  if not self.attachmentReported then
+    self.attachmentReported = true
+    if self.warn then pcall(self.warn, "battle camera: program 25 (Lock-On) aims at D_8418C958's point 0, which only MOVE EFFECTS fills; the target is held") end
+  end
+end
+
+-- 841187E4 (US asm): each frame while substate (+0x7F6) is 0, the handler
+-- by event code (jtbl_84189084); their camera parts in ROM order:
+--   0x0A with side flag 4 (84117CEC) or 2 (84117DC4): 84117744, the jolt,
+--        Lock-On; at +0x61A only the kind reset and the timer 0;
+--   0x0C (8411862C), 0x0E (84118138): 84117744, the jolt, 84117648;
+--   0x0D (8411845C): 84117744, the jolt, Lock-On, 84117648;
+--   0x0F / 0x15 (8411854C): the jolt, 84117648;
+--   0x11-0x13 (84118704 / 84118754 / 84118794), 0x3B (841182E0): 84117648;
+--   any other code (84117E94): 84117744, Lock-On, the jolt, 84117648.
+-- 841133EC (the busy gate) is taken as clear. `settled`: the host's HP bar
+-- for this side has nothing left to drain (841175D4). `jolt` false skips the
+-- jolt when the result is unknown. Returns true once the substate is 1.
+function Native:hitFollowFrame(actor, settled, jolt)
+  local m = self.mem
+  if m:u8(actor + 0x7F6) ~= 0 then return true end
+  local record = m:u32(Native.RECORD)
+  local code = m:u16(record + 4)
+  local function shake() if jolt ~= false then self:hitJolt(actor) end end
+  if code == 0x0A and bit.band(m:u16(record + self:side(actor) * 16 + 0x12), 6) ~= 0 then
+    self:hitMoveFrame(actor)
+    shake()
+    self:hitLockOn(actor)
+    if m:u8(actor + 0x61A) == m:s16(actor + 0x7E8) then
+      self:kindReset(actor)
+      self:setTimer(0)
+    end
+    return false
+  elseif code == 0x0C or code == 0x0E then
+    self:hitMoveFrame(actor); shake()
+  elseif code == 0x0D then
+    self:hitMoveFrame(actor); shake(); self:hitLockOn(actor)
+  elseif code == 0x0F or code == 0x15 then
+    -- 8411854C at the hit frame (84117CAC: not for result 6) also clears
+    -- +0x7F4 bit 1, which 84117648 clears too
+    if m:s8(actor + 0x619) == m:s16(actor + 0x7E8) and bit.band(m:u8(record + 9), 7) ~= 6 then
+      m:setU16(actor + 0x7F4, bit.band(m:u16(actor + 0x7F4), 0xFFFD))
+    end
+    shake()
+  elseif code == 0x11 or code == 0x12 or code == 0x13 or code == 0x3B then
+    -- 84117648 only
+  else
+    self:hitMoveFrame(actor); self:hitLockOn(actor); shake()
+  end
+  self:hitEnd(actor, settled)
+  return m:u8(actor + 0x7F6) ~= 0
 end
 
 -- 84111774(gc0, gc1): one camera tick: controller 0's seven handlers on

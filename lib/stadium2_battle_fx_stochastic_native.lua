@@ -16,7 +16,6 @@
 --   alloc(bytes) -> address 80006DEC, the frame's display-list arena
 local f32 = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
 local U = require("mods.STADIUM2_IMPORTER.lib.stadium2_libultra")
-local ffi = require("ffi")
 
 local N = {}
 
@@ -35,10 +34,10 @@ N.TEXTURES = 0x8418CA20    -- D_8418CA20: texture per draw index
 N.SPRITE_DL = 0x84187CC0   -- D_84187CC0: the sprite quad's display list
 N.TRAIL_DL = 0x84187C30    -- D_84187C30: the trail's material
 
-local cell = ffi.new("union { double d; uint32_t u[2]; }")
+-- A big-endian double in plain Lua (the mod sandbox refuses ffi at run time).
+local wordsToDouble = require("mods.STADIUM2_IMPORTER.lib.stadium2_native_memory").wordsToDouble
 local function double(mem, address)
-  cell.u[1], cell.u[0] = mem:u32(address), mem:u32(address + 4)
-  return tonumber(cell.d)
+  return wordsToDouble(mem:u32(address), mem:u32(address + 4))
 end
 
 -- (int) of a float, stored as a 16-bit halfword.

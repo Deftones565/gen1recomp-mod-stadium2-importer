@@ -231,5 +231,10 @@ end
 
 -- This file does not release the adapter: Presentation owns shared scene
 -- teardown, which is deliberately tested by the common scene integration.
+-- 8412A300: "was dragged out!" is 0x2F asleep, 0x2E frozen, else 0x2D
+local S=Gen2.Scene
+ok(S.stadiumDragCode(nil,{mon={status="sleep"}})==0x2F,"a sleeping Pokemon dragged out is 0x2F")
+ok(S.stadiumDragCode(nil,{mon={status="freeze"}})==0x2E,"a frozen Pokemon dragged out is 0x2E")
+ok(S.stadiumDragCode(nil,{mon={status="poison"}})==0x2D and S.stadiumDragCode(nil,{mon={}})==0x2D,"otherwise 0x2D")
 Importer.betaBattleFxEnabled=oldEnabled
 print(("%d checks passed (Gen 2 battle FX presentation integration)"):format(checks))
