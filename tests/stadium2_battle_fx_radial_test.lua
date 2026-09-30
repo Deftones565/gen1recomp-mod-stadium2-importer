@@ -4,7 +4,7 @@ local f=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float')
 local file=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
 if not file then assert(os.getenv('STADIUM2_REQUIRE_ROM')~='1');print('SKIP radial ROM');return end
 local rom=file:read('*a');file:close()
-local VM=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local emitters={[4]=0x84156CCC,[6]=0x84157398,[21]=0x8415782C}
 for family,address in pairs(emitters) do for _,scale in ipairs({.5,1.75}) do for _,sign in ipairs({-1,1}) do
   local nativeRandom,luaRandom=Random.new(432),Random.new(432)

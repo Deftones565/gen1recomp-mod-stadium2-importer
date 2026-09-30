@@ -1,5 +1,5 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
 local Endpoints=require(prefix..'stadium2_battle_fx_endpoints')
 local Dispatch=require(prefix..'animation_dispatch')

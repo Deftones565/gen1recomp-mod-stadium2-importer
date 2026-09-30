@@ -134,12 +134,109 @@ function Scene.new(battle,context)
   if battleFx then self.battleFx=battleFx
     -- The defender plays its own hit clip (context 254) at the impact.
     battleFx.onImpact=function(target,_,moveId)
+      self:stadiumCameraHit(target,moveId)
       local actor=self.actors and self.actors[target]
       if not actor or not actor.hit then return false,"no defender actor" end
       return actor:hit(moveId)
     end
   elseif battleFxError then warn("Gen 1 battle FX unavailable: "..tostring(battleFxError)) end
   return self
+end
+
+-- Red's turn-check lines and Stadium's event for each (84127194 queues the
+-- event with its text): {label, format, event or "react"}. The engine has no
+-- event for these, so the exact line shown is matched. BattleState builds
+-- them with EffectRegistry.displayName (statusOnomatopoeia, the recharge
+-- and freeze checks) or with the raw name and prefixEnemy, which gives the
+-- same "Enemy <name>".
+Scene.TURN_CHECK_LINES={
+  {"_FastAsleepText","%s\nis fast asleep!",4},
+  {"_IsFrozenText","%s\nis frozen solid!",2},
+  {"_FullyParalyzedText","%s's\nfully paralyzed!",0x36},
+  {"_FlinchedText","%s\nflinched!","react"},
+  {"_MustRechargeText","%s\nmust recharge!","react"},
+  {"_WokeUpText","%s\nwoke up!",0x1D},
+  {"_IsConfusedText","%s\nis confused!",0x26},
+  -- not a turn-check line: Stadium's 0x27 (84124A14, after "SUBSTITUTE
+  -- faded!") on the doll's owner
+  {"_SubstituteBrokeText","%s's\nSUBSTITUTE broke!",0x27},
+}
+
+-- Red's charge-turn lines (BattleState CHARGE_TEXT, formatted with
+-- Strings and displayName) and Stadium's code for each (8412C47C).
+Scene.CHARGE_LINES={
+  {"%s\nmade a whirlwind!",0x16},{"%s\ntook in sunlight!",0x17},
+  {"%s\nlowered its head!",0x18},{"%s\nis glowing!",0x19},
+  {"%s\nflew up high!",0x1A},{"%s\ndug a hole!",0x1B},
+}
+
+-- Waiting for a command (Stadium's idle camera then plays): Red's fight
+-- menu or move list.
+-- A wild battle (no trainer): the STADIUM camera's wild-encounter camera.
+function Scene:stadiumWildBattle()
+  local battle=self.battle
+  return battle~=nil and battle.trainer==nil
+end
+
+function Scene:stadiumAwaitingCommand()
+  local battle=self.battle
+  return battle~=nil and (battle.phase=="menu" or battle.phase=="moveSelect")
+end
+
+function Scene:stadiumCameraTurnText(battle,item)
+  local text=type(item)=="table" and item.text or nil
+  if type(text)~="string" or not battle.romText then return end
+  local okE,EffectRegistry=pcall(require,"src.battle.EffectRegistry")
+  if not okE or type(EffectRegistry.displayName)~="function" then return end
+  local okH,hurt=pcall(battle.romText,battle,"_HurtItselfText","It hurt itself in\nits confusion!")
+  if okH and hurt==text then return self:stadiumCameraSelfHit() end
+  for _,side in ipairs({"player","enemy"}) do
+    local b=battle[side]
+    if b and b.name then
+      for _,line in ipairs(Scene.TURN_CHECK_LINES) do
+        local okT,shown=pcall(battle.romText,battle,line[1],line[2],EffectRegistry.displayName(b))
+        if okT and shown==text then
+          self:stadiumCameraTurnCheck(side,line[3])
+          return
+        end
+      end
+      local okS,Strings=pcall(require,"src.core.Strings")
+      if okS then
+        for _,line in ipairs(Scene.CHARGE_LINES) do
+          local okL,shown=pcall(Strings,line[1],EffectRegistry.displayName(b))
+          if okL and shown==text then
+            self:stadiumCameraTurnCheck(side,line[2])
+            return
+          end
+        end
+      end
+    end
+  end
+end
+
+-- Red's miss line ("<user>'s attack missed!", EffectRegistry's
+-- _AttackMissedText with its displayName) presented: Stadium queues only the
+-- defender's dodge for a miss (841246AC). Rebuilt with the engine's own
+-- text so only that line matches.
+function Scene:stadiumCameraMiss(battle,item)
+  local text=type(item)=="table" and item.text or nil
+  if type(text)~="string" or not battle.romText then return end
+  local okE,EffectRegistry=pcall(require,"src.battle.EffectRegistry")
+  if not okE or type(EffectRegistry.displayName)~="function" then return end
+  for _,side in ipairs({"player","enemy"}) do
+    local user=battle[side]
+    if user and user.name then
+      local okT,line=pcall(battle.romText,battle,"_AttackMissedText","%s's\nattack missed!",
+        EffectRegistry.displayName(user))
+      if okT and line==text then
+        local data=battle.data
+        local def=data and data.moves and user.lastMove and data.moves[user.lastMove]
+        local moveId=def and tonumber(def.index or def.number)
+        if moveId then self:stadiumCameraDodge(side=="player" and "enemy" or "player",moveId) end
+        return
+      end
+    end
+  end
 end
 
 function Scene:release()
@@ -203,6 +300,7 @@ function Scene:presentAnimStart(name,attackerIsPlayer)
       side=rowSide=="player" and "enemy" or "player"}
     def=nil
   end
+  if residual then self:stadiumCameraEntry(residual.entry,residual.side) end
   if residual and self.battleFx and self.battleFx.signalEffect then
     pcall(self.battleFx.signalEffect,self.battleFx,residual.entry,residual.side)
   end
@@ -235,6 +333,7 @@ function Scene:presentAnimStart(name,attackerIsPlayer)
     local moveId=tonumber(def.index or def.number)
     if moveId then
       self.actors[side]:attack(moveId)
+      self:stadiumCameraAttack(side,moveId)
       if self.battleFx then
         -- Gen 1 skips the move animation when a move misses, so a started
         -- animation is presented as an ordinary result: move bank now and
@@ -429,7 +528,9 @@ function Scene:syncPresentationState()
     local grow=self:hostGrow(side)
     local activeGrow=grow~=nil and grow>0 and grow<1
     if grow and not self.lastGrow[side] then
-      self.actors[side]:play("entrance",false)
+      self:stadiumCameraSendOut(side)
+      local actor=self.actors[side]
+      self:stadiumEntrance(side,function() actor:play("entrance",false) end)
       -- 8411BCC8: the send-out state signals entry 0x122 as it starts.
       if self.battleFx and self.battleFx.signalEffect then
         pcall(self.battleFx.signalEffect,self.battleFx,FxSequence.SEND_OUT_ENTRY,side)
@@ -443,6 +544,7 @@ function Scene:syncPresentationState()
     if side=="player" then
       local shrink=battle.shrinkOut
       local recalling=type(shrink)=="table" and shrink.battler==battle.player
+      if recalling and not self.lastRecall then self:stadiumCameraRecall("player") end
       if recalling and not self.lastRecall and self.battleFx and self.battleFx.signalEffect then
         pcall(self.battleFx.signalEffect,self.battleFx,FxSequence.RECALL_ENTRY,"player")
       end
@@ -454,8 +556,11 @@ function Scene:syncPresentationState()
     local faintFx=b and safeCall(battle,"fxFaintActive",b) or false
     if (faintFx or fainted) and not self.lastFainted[side]
         and self.actors[side].renderer then
-      if self.actors[side]:faint() and self.battleFx and self.battleFx.playFaint then
-        pcall(self.battleFx.playFaint,self.battleFx,side,self.actors[side])
+      if self.actors[side]:faint() then
+        self:stadiumCameraFaint(side)
+        if self.battleFx and self.battleFx.playFaint then
+          pcall(self.battleFx.playFaint,self.battleFx,side,self.actors[side])
+        end
       end
     end
     self.lastFainted[side]=fainted or faintFx or false
@@ -495,6 +600,7 @@ function Scene:update(dt)
   Camera.stickOrbit(self.stickX,dt)
   Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
+  self:updateStadiumCamera(dt)
   for _,which in ipairs({"player","enemy"}) do
     local actor=self.actors[which]
     if actor.setRest then actor:setRest(self:restCondition(which)) end
@@ -803,6 +909,8 @@ local function installHooks()
         scene.heldSubstitutes[target]=nil
         scene.substituteBreaks[item]=nil
       end
+      if scene and scene.stadiumCameraMiss then pcall(scene.stadiumCameraMiss,scene,self,item) end
+      if scene and scene.stadiumCameraTurnText then pcall(scene.stadiumCameraTurnText,scene,self,item) end
       return startMessage(self,item,...)
     end
   end

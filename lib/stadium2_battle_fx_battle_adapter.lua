@@ -705,7 +705,9 @@ function Adapter:signalEffect(id, owner)
   if type(self.player.signalContext) == "function" then self.player:signalContext(tonumber(id)) end
   -- User option (POKE BALL, non-native): OFF skips the send-out and the
   -- recall (return) effects.
-  if (tonumber(id) == Sequence.SEND_OUT_ENTRY or tonumber(id) == Sequence.RECALL_ENTRY)
+  -- (the opening's throws, 0x112 and 0x124, belong to the send-out too)
+  if (tonumber(id) == Sequence.SEND_OUT_ENTRY or tonumber(id) == Sequence.RECALL_ENTRY
+      or tonumber(id) == 0x112 or tonumber(id) == 0x124)
       and type(self.sendOutEnabled) == "function" then
     local ok, enabled = pcall(self.sendOutEnabled)
     if ok and enabled == false then return nil end

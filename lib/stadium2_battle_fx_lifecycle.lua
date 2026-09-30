@@ -296,7 +296,8 @@ function Manager:_phase(instance, phase, address)
         -- 84156BD4 compares the first float returned by
         -- BattleAnim_EffectSecondaryOwnerAnchorPosition against 0.0.
         local terrain,terrainError=TerrainGrid.new(origin[1]<0 and 1 or -1,
-          self.assets and self.assets.fragment79,inputs.terrainCamera)
+          self.assets and self.assets.fragment79,inputs.terrainCamera,
+          self.assets and self.assets.mainKernel)
         if not terrain then
           self:_emit(diagnostic("terrain-grid-native-kernel-error",nil,0x8415A9E4,
             tostring(terrainError),"error"),instance)

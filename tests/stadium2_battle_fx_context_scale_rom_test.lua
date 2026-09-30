@@ -1,7 +1,7 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local Dispatch=require(prefix..'animation_dispatch')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Motion=require(prefix..'stadium2_battle_fx_motion')
 local Adapter=require(prefix..'stadium2_battle_fx_battle_adapter')
 local single=require(prefix..'stadium2_battle_fx_float')

@@ -182,6 +182,7 @@ function Scene.new(battle,context)
   if self.battleFx then
     -- The defender plays its own hit clip (context 254) at the impact.
     self.battleFx.onImpact=function(target,_,moveId)
+      self:stadiumCameraHit(target,moveId)
       local actor=self.actors and self.actors[target]
       if not actor or not actor.hit then return false,"no defender actor" end
       return actor:hit(moveId)
@@ -476,6 +477,11 @@ function Scene:handleEvent(event)
     -- data record's index/number is only a fallback for legacy presenters
     -- that supplied a symbolic move key.
     local moveId=moveNumber(data,event.move)
+    if event.missed~=true and moveId then self:stadiumCameraAttack(side,moveId) end
+    -- a miss queues only the defender's dodge (841246AC)
+    if event.missed==true and moveId then
+      self:stadiumCameraDodge(side=="player" and "enemy" or "player",moveId)
+    end
     if self.battleFx and event.missed~=true and moveId then
       -- Presented (non-missed) moves play the move bank now and the impact
       -- bank at the attacker's dispatch hit frame (84108728/841087B8).
@@ -541,6 +547,8 @@ function Scene:handleEvent(event)
     -- Stadium clip at damage time makes it finish before the faint message.
     if actor then actor.pendingFaint=true end
   elseif (event.kind == "send" or event.kind == "sendout") and side then
+    if self:stadiumDraggedOut(event) then self:stadiumCameraTurnCheck(side, 0x2F)
+    else self:stadiumCameraSendOut(side) end
     if self.minimized then self.minimized[side]=nil end
     self.substituteActive[side]=false
     self.vanish[side]={active=false}
@@ -549,7 +557,7 @@ function Scene:handleEvent(event)
     local sent=self.actors[side] and self.actors[side].mon
     self.presentedStatus[side]=sent and sent.status or nil
     local actor = self.actors[side]
-    if actor then actor:entrance() end
+    if actor then self:stadiumEntrance(side, function() actor:entrance() end) end
   elseif event.kind == "sendout" then
     if self.minimized then self.minimized.player=nil end
     self.substituteActive.player=false
@@ -565,6 +573,7 @@ function Scene:handleEvent(event)
     self.actors[side]:load(data, shown, dexOf(data, {species=species or shown.species}))
     self.actors[side]:play("entrance", false)
   end
+  self:stadiumCameraGen2Event(event)
   self:signalEventFx(event)
 end
 
@@ -630,9 +639,86 @@ function Scene:startMoveClip(side, moveId)
   return actor:attack(moveId)
 end
 
+-- Gold's turn-check lines (Battle.lua checkTurn and the status records)
+-- and Stadium's event for each (84127194): the engine has no event for
+-- these, so the line shown is matched exactly (Strings with monName).
+Scene.TURN_CHECK_LINES = {
+  {"%s is fast asleep!", 4}, {"%s is frozen solid!", 2},
+  {"%s's fully paralyzed!", 0x36}, {"%s flinched!", "react"},
+  {"%s must recharge!", "react"}, {"%s\nis in love with", 6},
+  {"%s is confused!", 0x26},
+  -- the charge turns (Effects.lua charge texts, Battle.lua's Dig line) and
+  -- Stadium's codes for them (8412C47C)
+  {"%s made a whirlwind!", 0x16}, {"%s took in sunlight!", 0x17},
+  {"%s lowered its head!", 0x18}, {"%s is glowing!", 0x19},
+  {"%s flew up high!", 0x1A}, {"%s dug a hole!", 0x1B},
+  -- Stadium's 0x27 (84124A14, after "SUBSTITUTE faded!") on the doll's owner
+  {"%s's SUBSTITUTE broke!", 0x27},
+}
+
+-- "was dragged out!" (Roar / Whirlwind) arrives as a send event; Stadium
+-- gives it family 25 (event 0x2F after text 0x45), not the send-out camera.
+function Scene:stadiumDraggedOut(event)
+  local battle = self.battle or (self.screen and self.screen.battle)
+  if not (battle and battle.monName and event.mon and type(event.text) == "string") then return false end
+  local okS, Strings = pcall(require, "src.core.Strings")
+  local okN, name = pcall(battle.monName, battle, event.mon)
+  if not (okS and okN) then return false end
+  local okL, line = pcall(Strings, "%s was dragged out!", name)
+  return okL and line == event.text
+end
+
+-- Waiting for a command (Stadium's idle camera then plays): Gold's battle
+-- menu or move list.
+-- A wild battle: the STADIUM camera's wild-encounter camera.
+function Scene:stadiumWildBattle()
+  local battle = self.battle or (self.screen and self.screen.battle)
+  return battle ~= nil and battle.wild == true
+end
+
+function Scene:stadiumAwaitingCommand()
+  local screen=self.screen
+  return screen~=nil and (screen.phase=="menu" or screen.phase=="moves")
+end
+
+function Scene:stadiumCameraGen2Event(event)
+  local battle = self.battle or (self.screen and self.screen.battle)
+  if not (battle and battle.monName) then return end
+  local okS, Strings = pcall(require, "src.core.Strings")
+  if not okS then return end
+  if event.kind == "message" and type(event.text) == "string" then
+    local okH, hurt = pcall(Strings, "It hurt itself in its confusion!")
+    if okH and hurt == event.text then return self:stadiumCameraSelfHit() end
+    for _, side in ipairs({"player", "enemy"}) do
+      local mon = self:shownMon(side)
+      local okN, name = pcall(battle.monName, battle, mon)
+      if mon and okN then
+        for _, line in ipairs(Scene.TURN_CHECK_LINES) do
+          local okL, shown = pcall(Strings, line[1], name)
+          if okL and shown == event.text then
+            self:stadiumCameraTurnCheck(side, line[2])
+            return
+          end
+        end
+      end
+    end
+  elseif event.kind == "status" and event.status == nil and sideOk(event.side) then
+    -- the turn check's thaw (only the freeze record prints this line),
+    -- Stadium's 0x2C "defrosted"
+    local mon = self:shownMon(event.side)
+    local okN, name = pcall(battle.monName, battle, mon)
+    local name2 = okN and name or "?"
+    local okL, shown = pcall(Strings, "%s thawed out!", name2)
+    if okL and shown == event.text then return self:stadiumCameraTurnCheck(event.side, 0x2C) end
+    -- the sleep record's wake (Stadium's 0x1D after "woke up!")
+    local okW, woke = pcall(Strings, "%s woke up!", name2)
+    if okW and woke == event.text then self:stadiumCameraTurnCheck(event.side, 0x1D) end
+  end
+end
+
 function Scene:signalEventFx(event)
   local fx = self.battleFx
-  if not fx or not fx.signalEffect then return end
+  if not fx or not fx.signalEffect then fx = nil end
   if event.kind == "move" and sideOk(event.side) then
     local data = self.screen and self.screen.game and self.screen.game.data
     self.presentedMove = {side = event.side, move = moveNumber(data, event.move)}
@@ -676,11 +762,15 @@ function Scene:signalEventFx(event)
     entry = FxSequence.SEND_OUT_ENTRY
   end
   if entry then
-    pcall(fx.signalEffect, fx, entry, owner)
+    -- the STADIUM camera takes the same Stadium event (family 9), with or
+    -- without battle FX
+    self:stadiumCameraEntry(entry, owner, event.animMove)
+    if fx then pcall(fx.signalEffect, fx, entry, owner) end
     return
   end
   if event.kind == "message" and self:isEnemyWithdraw(event.text) then
-    pcall(fx.signalEffect, fx, FxSequence.RECALL_ENTRY, "enemy")
+    self:stadiumCameraRecall("enemy")
+    if fx then pcall(fx.signalEffect, fx, FxSequence.RECALL_ENTRY, "enemy") end
     return
   end
   if event.kind == "message" then
@@ -695,7 +785,10 @@ function Scene:signalEventFx(event)
       and (event.side == "player" or event.side == "enemy") then
     entry, owner = FxSequence.SANDSTORM_HIT_ENTRY, event.side
   end
-  if entry then pcall(fx.signalEffect, fx, entry, owner) end
+  if entry then
+    self:stadiumCameraEntry(entry, owner)
+    if fx then pcall(fx.signalEffect, fx, entry, owner) end
+  end
 end
 
 -- Gold's ReturnMon BG effect shrinks the native pic through its authored
@@ -753,8 +846,11 @@ function Scene:update(dt)
       local shown=self.screen and self.screen.shownHp and self.screen.shownHp[side]
       local slide=self.screen and self.screen.faintSlide
       if (shown==nil or shown<=0) and slide and slide.side==side then
-        if actor:faint() and self.battleFx and self.battleFx.playFaint then
-          pcall(self.battleFx.playFaint,self.battleFx,side,actor)
+        if actor:faint() then
+          self:stadiumCameraFaint(side)
+          if self.battleFx and self.battleFx.playFaint then
+            pcall(self.battleFx.playFaint,self.battleFx,side,actor)
+          end
         end
       end
     end
@@ -763,6 +859,7 @@ function Scene:update(dt)
   Camera.stickOrbit(self.stickX,dt)
   Camera.stickPitch(-self.stickY,dt)
   Camera.update(dt)
+  self:updateStadiumCamera(dt)
   for _,which in ipairs({"player","enemy"}) do
     local actor=self.actors[which]
     if actor.setRest then actor:setRest(self:restCondition(which)) end

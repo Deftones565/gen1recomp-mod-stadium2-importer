@@ -1,5 +1,270 @@
 Move bug list
 
+Camera fix (2026-09-30, "Pokemon no longer do their entrance animation", local session):
+- Cause: the opening send-out now waits for the split-screen arena intro
+  (the Gen 2 fix), but the game still started each entrance at its own
+  send-out, so the entrances played during the intro while the camera filmed
+  the arena.
+- Fix (Stadium-native timing): in Stadium the opening starts the entrance
+  animations itself: the player's as the opening begins (8411C310 plays
+  animation 0xFC), the foe's 0x28 frames into its close-up (8411C418
+  substate 4). While the STADIUM camera's opening is pending, the game's
+  entrance for that side is held and released at those points. Anything
+  still held is released if the opening is cut, the camera is switched off,
+  or a camera step fails. Wild battles are not held. Checked in the
+  controller test only (not in a real game run); needs your retest.
+
+Camera fix (2026-09-30, "two cameras at once" during the idle camera, local session):
+- Cause, found in a real headless battle (POKEPORT_DRIVER run on the
+  s2evo-test identity): two idle-camera programs (the over-the-shoulder
+  shot and one arena orbit) read a double-precision constant through LuaJIT's
+  ffi, which the game's mod sandbox refuses once the game is running ("ffi is
+  not available to mods"). The camera step then failed and the scene fell
+  back to the FREE camera, but only on the frames where the camera ticked (30
+  Hz against 60 fps drawing), so the two cameras alternated every frame. It
+  started partway into the shoulder shot, when its timer check first read the
+  constant.
+- Fix: the camera decodes those doubles in plain Lua (exact; checked against
+  ffi on 2000 random values in the tests), the camera files no longer use ffi
+  (a test enforces it), and a failed camera step now keeps the Stadium
+  camera's last pose instead of swapping cameras per frame (the error is
+  still logged once).
+- Checked in the real game run: no camera error, the camera active every
+  frame through the idle shots, and consecutive frames only change at real
+  shot cuts. Needs your retest.
+
+Camera follow-up (2026-09-30, STADIUM camera on custom scenes, local session):
+- New: CAMERA STADIUM now works on the custom scenes (the painted Kenney
+  levels), not only in the Stadium arenas. Stadium's battle layout is fitted
+  onto each scene's two battle spots, and while the Stadium camera is on,
+  the Pokemon use Stadium's proportions there (so they are somewhat smaller
+  than the scenes' usual size). The scene's own camera framing is off then.
+- Checked: the controller test (the mapping lands both Pokemon on the
+  scene's spots and round-trips), the full suite and the strict-ROM worker
+  checks. Needs your test: CAMERA STADIUM on a custom scene.
+
+Camera follow-up (2026-09-30, STADIUM camera, fixes from the user's test, local session):
+- Send-out throw: the split-screen parts now play Stadium's throw effects
+  (0x112 when the arena intro starts, 0x124 on the foe during the opening
+  wipe); the ball opening already played. The POKE BALL option covers them.
+- Wild battles (user-requested, not in Stadium 2): no split screen; the wild
+  Pokemon's own Stadium close-up, then Stadium's slow arena orbit until you
+  send out, then the normal opening wipe (without a foe throw).
+- Gen 2's split screen ending fast: your first send-out cut the arena intro;
+  the opening now waits for the intro, as Stadium does.
+- Idle camera glitch: the over-the-shoulder idle shot had the camera inside
+  your Pokemon's model; that Pokemon is now hidden for the shot, as in
+  Stadium. Please retest; if it still flickers, tell me which shot.
+- Notes on what is done and what is left:
+  docs/luna/research/battle-camera-status-2026-09-30.md.
+
+Camera follow-up (2026-09-30, STADIUM camera, seventeenth part, local session):
+- New: the camera steps that wait for a Pokemon's animation now happen.
+  The mod reads Stadium's own timing for each move from the ROM and uses
+  what the game shows as the signal: Fly's second shot comes once your
+  Pokemon has flown out of view; Transform's shot comes when the copied
+  model appears; the charge turns, Beat Up, the confusion self-hit and Dig's
+  first turn finish their camera moves on Stadium's frames.
+- Fixed: Dig's first turn now sets the flag Stadium uses to lower the
+  camera for a Pokemon in a hole.
+- Checked: the director test (520 more ROM rounds with each species' real
+  animation data), the controller test, the full suite and the strict-ROM
+  worker checks. Needs your test with CAMERA set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, sixteenth part, local session):
+- New: Stadium's victory camera. When the battle is won or lost, the camera
+  frames the winner (a wide shot easing in), then Stadium's close-up of it.
+  Running away or catching has no Stadium victory shot. In Gen 1 the battle
+  screen closes at once, so it may not show there.
+- Changed: the idle camera now plays while the fight menu or move list is
+  open (that is when Stadium plays it), not after the turn starts.
+- Checked: the director test (20 ROM victories), the controller test, the
+  full suite and the strict-ROM worker checks. Needs your test with CAMERA
+  set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, fifteenth part, local session):
+- New: Stadium's idle camera while you choose a command. While the fight
+  menu or move list is open, the camera cycles through Stadium's idle shots
+  in its order: over
+  each Pokemon's shoulder, slow orbits of the arena, close shots of your
+  Pokemon and the foe, each for Stadium's own time, until you act.
+- One idle shot (a mode-specific arena view) depends on Stadium game modes
+  the recomp does not have; the camera holds its previous shot for that
+  step's time and a warning is logged once.
+- Checked: the director test (400 ROM idle cases, five more camera
+  programs), the controller test, the full suite and the strict-ROM worker
+  checks. Needs your test with CAMERA set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, fourteenth part, local session):
+- New: Stadium's opening send-out. When your first Pokemon comes out, the
+  camera watches it until its entrance animation ends, then the foe's camera
+  wipes in from the right edge and takes over, closes in on the foe, and
+  stays there until the turn begins (as in Stadium, where it returns when
+  the command menu opens).
+- The foe's own send-out before yours keeps the arena intro running, since
+  Stadium films both Pokemon in this one sequence.
+- Checked: the director test (10 ROM openings), the controller test, the
+  full suite and the strict-ROM worker checks. Needs your test with CAMERA
+  set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, thirteenth part, local session):
+- New: Stadium's split-screen arena intro at battle start. The screen splits
+  into two cameras (top on your side, bottom on the foe's), each following
+  one of the ROM's five intro camera paths; after two seconds the top view
+  grows over the bottom one, and after about five seconds the normal camera
+  takes over. The battle is drawn twice only while the screen is split.
+- If the game sends out the first Pokemon before the intro ends, the split
+  closes at once (Stadium would wait; the recomp does not).
+- Also: every new battle event now ends any running camera shake first, as
+  Stadium's event dispatcher does.
+- Checked: the director test (all six paths, 166 frames each, every byte of
+  both cameras), the controller test, the full suite and the strict-ROM
+  worker checks. Needs your test with CAMERA set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, twelfth part, local session):
+- New: "It hurt itself in its confusion!" takes Stadium's self-hit shot
+  on the confused Pokemon. "SUBSTITUTE broke!" takes Stadium's shot, and
+  about a second later the camera goes back to framing the Pokemon itself
+  (Stadium's own timing now, not when the doll disappears). "was dragged
+  out!" (Gen 2 Roar / Whirlwind) takes Stadium's dragged-out camera
+  instead of the normal send-out camera.
+- Checked: the director test (360 more ROM cases), the controller test,
+  the full suite and the strict-ROM worker checks. Needs your test with
+  CAMERA set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, eleventh part, local session):
+- New: charge turns. "flew up high!", "dug a hole!", "made a whirlwind!",
+  "took in sunlight!", "lowered its head!" and "is glowing!" now take
+  Stadium's charge-turn camera. Dig's first turn changes shot again about
+  a second later, as in Stadium.
+- Not yet: Fly's second shot (Stadium waits until the Pokemon is high
+  enough, which the mod cannot see yet) and the charge moves' follow-up
+  shots, which wait for the animation.
+- Checked: the director test (400 ROM cases plus programs 2 and 15 in the
+  runner), the controller test, the full suite and the strict-ROM worker
+  checks. Needs your test with CAMERA set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, tenth part, local session):
+- New: Dig, Substitute, Transform and Beat Up use Stadium's own cameras
+  instead of the ordinary attack camera. Dig follows the digger with its
+  own camera program. Substitute switches to the doll's framing about a
+  second after the move (and back when the doll is gone).
+- Not yet: Transform's and Beat Up's later shots, which in Stadium wait for
+  the model animation to finish.
+- Checked: the director test (500 ROM cases plus program 6 in the runner),
+  the controller test, the full suite and the strict-ROM worker checks.
+  Needs your test with CAMERA set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, ninth part, local session):
+- New: "woke up!" gives Stadium's wake-up close-up (its own camera program
+  from per-species data in the ROM), and "is confused!" gives Stadium's
+  confusion shot.
+- Open: for 88 species the ROM's wake-up data looks unusable (the camera
+  target would land far outside the arena). The port does what the ROM
+  does; if that happens, the camera keeps its last good view and a warning
+  is logged once. Please tell me what the wake-up shot looks like.
+- Checked: the director test (240 ROM cases plus program 7 in the runner),
+  the controller test, the full suite and the strict-ROM worker checks.
+  Needs your test with CAMERA set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, eighth part, local session):
+- New: weather. When rain, sun or a sandstorm continues or ends (Gen 2), the
+  camera takes Stadium's wide arena shot (program 29). The sandstorm hurting
+  a Pokemon uses Stadium's residual shot, as in part six.
+- New: the turn check. "is fast asleep!", "is frozen solid!", "fully
+  paralyzed!", "flinched!", "must recharge!" and (Gen 2) "thawed out!" put
+  the camera on that Pokemon as Stadium does. The engine has no event for
+  these, so the mod recognises the exact line it prints.
+- Checked: the director test (200 ROM turn checks, 160 weather and
+  paralysis cases, program 29 in the runner), the controller test, the full
+  suite and the strict-ROM worker checks. Needs your test with CAMERA set to
+  STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, seventh part, local session):
+- New: recall. When a Pokemon is called back, the camera takes one of
+  Stadium's four recall shots on it (a special one when it is frozen).
+- Checked: the director test (120 ROM recalls and the recall camera
+  program), the controller test, the full suite and the strict-ROM worker
+  checks. Needs your test with CAMERA set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, sixth part, local session):
+- New: status and residual events (poison, burn, Leech Seed, trapping,
+  stat changes, healing, love, and in Gen 2 Nightmare, Curse and Spikes).
+  The camera takes Stadium's shot for that event on the Pokemon it happens
+  to, as the effect plays. This also works with battle FX off.
+- Checked: the director test (300 ROM cases), the controller test, the
+  full suite and the strict-ROM worker checks. Needs your test with CAMERA
+  set to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, fifth part, local session):
+- New: misses. When a move misses, the camera cuts to Stadium's dodge shot
+  on the defender (as in Stadium, the attacker gets no attack camera). In
+  Gen 1 it follows the "attack missed!" line.
+- Checked: the controller test (the dodge's three event codes and the Gen 1
+  miss line), the director test (already covers the ROM side), the full
+  suite and the strict-ROM worker checks. Needs your test with CAMERA set
+  to STADIUM.
+
+Camera follow-up (2026-09-30, STADIUM camera, fourth part, local session):
+- New: send-out. When a Pokemon comes out, the camera takes one of
+  Stadium's two send-out shots on it, rises with it for about two seconds,
+  pulls back, then settles into Stadium's follow-up shot (program 26).
+  Stadium waits for the ball's throw before it starts; here it starts with
+  the send-out.
+- Checked: the whole send-out against the ROM byte for byte, frame by frame
+  (the director test, 469 checks), the controller test, the full suite and
+  the strict-ROM worker checks. Needs your test with CAMERA set to STADIUM.
+
+Runtime follow-up (2026-09-30, no more VM, local session):
+- Razor Leaf (75), Petal Dance (80), Surf (57), Ice Beam (58), Hyper Beam
+  (63) and Tri Attack (161) no longer run Stadium's code in the built-in
+  emulator (the VM). Their effects are Lua ports of that code now, and
+  nothing in the game uses the VM; it only checks the ports in tests.
+- They are 2-7 times faster (Razor Leaf 12.4 -> 1.9 ms per frame).
+- They are also slightly closer to the N64: the old path swapped in the
+  PC's own sine and cosine for Stadium's, and a few helpers were
+  approximations.
+- Checked: every ported routine against the ROM byte for byte over whole
+  effects, the full suite and the strict-ROM worker checks. Needs your
+  test: those six moves should look the same as before.
+
+Camera follow-up (2026-09-30, STADIUM camera, third part, local session):
+- New: turn start. Once both sides have chosen, the camera swings round on
+  one of Stadium's five turn-start orbits before the moves play. The game
+  waits for that swing to finish; here the first move can cut in early.
+- New: faint. When a Pokemon's faint starts, the camera cuts to one of
+  Stadium's three faint shots on it and follows it down.
+- Checked: both against the ROM byte for byte (the director test, 308
+  checks), the controller test, the full suite and the strict-ROM worker
+  checks. Needs your test with CAMERA set to STADIUM.
+- Not yet: send-out, which keeps the last shot.
+
+Camera follow-up (2026-09-30, STADIUM camera, second part, local session):
+- The attack camera now follows Stadium's own attack state. Each move uses
+  its own shot, taken from Stadium's per-move camera table; the first part
+  wrongly used one random attack shot for every move. Fly, Surf, Waterfall
+  and Rapid Spin get their own camera programs.
+- New: when the defender is hit, the camera cuts to Stadium's hit shot for
+  that move on the defender. Sleep and freeze pick Stadium's variants. The
+  cut happens at the impact.
+- Checked: every new routine against the ROM byte for byte (the director
+  test, 225 checks), the controller test, the full suite and the strict-ROM
+  worker checks. Needs your test: moves with CAMERA set to STADIUM, including
+  Fly or Surf.
+
+Camera follow-up (2026-09-30, STADIUM camera, first part, local session):
+- New option CAMERA: FREE (the field camera, default) or STADIUM (Stadium 2's
+  own battle camera, ported from the ROM to Lua, no VM).
+- STADIUM so far: when a move starts, Stadium's attack camera on the
+  attacker (one of its six attack shots, chosen at random as in Stadium),
+  following the Pokemon and with the hit jolt. Other moments (turn start,
+  faints, send-outs, the per-move shots) keep the last shot until they are
+  ported.
+- Checked: every ported camera routine against the ROM byte for byte (maths,
+  shot setup, program 0 over 1,500 ticks, the runner), a controller test, the
+  full suite and the strict-ROM worker checks. Needs your test: a battle with
+  CAMERA set to STADIUM.
+
 Runtime follow-up (2026-09-29, the white square on hits, local session):
 - The hit of Pound (1) and 99 other move/context entries showed a white
   square. Their hit sparks (shape 109: a flat 32-unit white quad, scaled by

@@ -1,6 +1,6 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local Tri=require(prefix..'stadium2_battle_fx_tri_attack')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Random=require(prefix..'stadium2_battle_fx_random')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
 local f=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
@@ -25,7 +25,6 @@ for _,side in ipairs({-1,1}) do
     [0x84109780]=function(v)v:putVector(v.r[4],inputs.origin)end,
     [0x8007AFA0]=function(v)v.r[2]=oracleRandom:next()end,
     [0x80006DEC]=function(v)v.r[2]=allocation;vertices=allocation;allocation=allocation+v.r[4]end,
-    [0x80073F70]=function(v)v:write(0x85700000,v.f[12],4);v.f[0]=VM.floatWord(math.sin(v:float(0x85700000)))end,
     [0x8416A050]=function(v)v.r[2]=v.r[5]end,
   })
   vm:write(0x84187530,0x85000000-0x3C8,4);vm:write(0x84187E40,0x85010000,4)
@@ -43,23 +42,23 @@ for _,side in ipairs({-1,1}) do
     for j=0,19 do
       local at=0x85000048+j*0x48
       for k=0,36,4 do
-        if k==4 then assert(vm:read(at+k,1)==s.vm:read(at+k,1),'node alpha')
-        else assert(vm:float(at+k)==s.vm:float(at+k),'persistent native node') end
+        if k==4 then assert(vm:read(at+k,1)==s.mem:read(at+k,1),'node alpha')
+        else assert(vm:float(at+k)==s.mem:f32(at+k),'persistent native node') end
       end
     end
     for i=0,179 do
       for k=0,2 do
         local a=signed(vm:read(vertices+i*16+k*2,2))
-        local b=signed(s.vm:read(0x85300000+i*16+k*2,2))
+        local b=signed(s.mem:read(0x85300000+i*16+k*2,2))
         assert(math.abs(a-b)<=1,'ROM rotate/vertex quantization')
       end
-      for k=12,15 do assert(vm:read(vertices+i*16+k,1)==s.vm:read(0x85300000+i*16+k,1),'native gradient')end
+      for k=12,15 do assert(vm:read(vertices+i*16+k,1)==s.mem:read(0x85300000+i*16+k,1),'native gradient')end
     end
     for i=0,19 do
       local at=0x85010004+i*24
-      assert(vm:read(at,2)==s.vm:read(at,2),'spark pool active')
-      assert(vm:read(at+4,2)==s.vm:read(at+4,2),'spark age')
-      for k=8,20,4 do assert(math.abs(vm:float(at+k)-s.vm:float(at+k))<.001,'spark scale/position')end
+      assert(vm:read(at,2)==s.mem:read(at,2),'spark pool active')
+      assert(vm:read(at+4,2)==s.mem:read(at+4,2),'spark age')
+      for k=8,20,4 do assert(math.abs(vm:float(at+k)-s.mem:f32(at+k))<.001,'spark scale/position')end
     end
     local g=Tri.geometry(s)
     assert(g==Tri.geometry(s),'redraw keeps captured geometry')

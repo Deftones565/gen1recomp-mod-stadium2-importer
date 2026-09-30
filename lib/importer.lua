@@ -156,6 +156,15 @@ function Importer.weatherStyle()
   return "off"
 end
 
+-- CAMERA option: "stadium" (Stadium 2's own camera) or "free".
+function Importer.cameraMode()
+  if modRef and modRef.options and modRef.options.get then
+    local ok, value = pcall(modRef.options.get, modRef.options, "stadium2_camera")
+    if ok and value == "stadium" then return "stadium" end
+  end
+  return "free"
+end
+
 function Importer.shaderStyle()
   if modRef and modRef.options and modRef.options.get then
     local ok, value = pcall(modRef.options.get, modRef.options, "stadium2_shader")

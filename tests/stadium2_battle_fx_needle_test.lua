@@ -4,7 +4,7 @@ local f=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float')
 local file=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
 if not file then assert(os.getenv('STADIUM2_REQUIRE_ROM')~='1');print('SKIP needle ROM');return end
 local rom=file:read('*a');file:close()
-local VM=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Rom=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_rom')
 local catalog=assert(Rom.catalog(rom));local asset=catalog.lifecycleAssets.needle
 assert(#asset.pos==54 and #asset.idx==48 and #asset.texture.rgba==64)

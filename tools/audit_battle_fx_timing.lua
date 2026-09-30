@@ -65,7 +65,7 @@ local function rows(species)
 end
 -- Execute native US termination and scheduler code, with only emission and
 -- scheduler-release calls observed instead of allocating their draw objects.
-local VM=require(P..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Motion=require(P..'stadium2_battle_fx_motion')
 local Native=require(P..'stadium2_battle_fx_native')
 local vm=VM.new({{base=0x84100000,bytes=catalog.lifecycleAssets.fragment79}})

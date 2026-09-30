@@ -131,8 +131,14 @@ function VM:call(address,args,limit)
           elseif fn==33 then self:setDouble(sh,x)
           elseif fn==13 then F[sh]=u(trunc(x))
           elseif fn==12 or fn==36 then
+            -- cvt.w follows FCSR's rounding mode (bits 0-1): nearest even,
+            -- toward zero, toward +inf, toward -inf; round.w is always nearest
+            local mode=fn==36 and (self.fcsr or 0)%4 or 0
             local low=math.floor(x);local frac=x-low
-            F[sh]=u((frac>.5 or (frac==.5 and low%2~=0)) and low+1 or low)
+            if mode==1 then F[sh]=u(trunc(x))
+            elseif mode==2 then F[sh]=u(math.ceil(x))
+            elseif mode==3 then F[sh]=u(low)
+            else F[sh]=u((frac>.5 or (frac==.5 and low%2~=0)) and low+1 or low) end
           elseif fn>=48 then
             self.condition=(band(fn,4)~=0 and x<y) or (band(fn,2)~=0 and x==y)
               or (band(fn,1)~=0 and (x~=x or y~=y))

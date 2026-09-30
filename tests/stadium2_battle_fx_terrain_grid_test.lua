@@ -1,6 +1,6 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local Terrain=require(prefix..'stadium2_battle_fx_terrain_grid')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
 local file=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
 if not file then assert(os.getenv('STADIUM2_REQUIRE_ROM')~='1');print('SKIP Surf ROM');return end
@@ -10,15 +10,14 @@ local function signed(n)return n>=32768 and n-65536 or n end
 local function equal(a,b,label)assert(a==b,('%s native %.12g lua %.12g'):format(label,a,b))end
 for _,side in ipairs({-1,1}) do
   local camera={eye={0,30,200},focus={0,20,0},fov=45,aspect=1.5,near=20}
-  local state=assert(Terrain.new(side,catalog.lifecycleAssets.fragment79,camera))
+  local state=assert(Terrain.new(side,catalog.lifecycleAssets.fragment79,camera,rom:sub(0x1001,0xA8000)))
   local signal=0;local allocations={};local allocation=0x85200000
   -- Independent full-ROM draw: real normalize, cross, height query, camera
-  -- construction and fixed matrices. Only allocation, signal and sine hooked.
+  -- construction and fixed matrices. Only allocation and signal are hooked.
   local vm=VM.new({{base=0x84100000,bytes=catalog.lifecycleAssets.fragment79},
     {base=0x80000400,bytes=rom:sub(0x1001,0xA8000)}},{
     [0x841094EC]=function(v)v.r[2]=signal end,
-    [0x80006DEC]=function(v)v.r[2]=allocation;allocations[#allocations+1]=allocation;allocation=allocation+v.r[4]end,
-    [0x80073F70]=function(v)v:write(0x85700000,v.f[12],4);v.f[0]=VM.floatWord(math.sin(v:float(0x85700000)))end})
+    [0x80006DEC]=function(v)v.r[2]=allocation;allocations[#allocations+1]=allocation;allocation=allocation+v.r[4]end})
   vm:write(0x80094908,0x85100000,4)
   vm:putVector(0x851000A8,camera.eye);vm:putVector(0x851000B4,camera.focus);vm:putVector(0x851000C0,{0,1,0})
   vm:putFloat(0x8510002C,45);vm:putFloat(0x85100030,1.5);vm:putFloat(0x85100034,20)
@@ -53,7 +52,7 @@ for _,side in ipairs({-1,1}) do
   assert(sawSurface and sawCover,'both native water layers exercised')
   -- Reach the authored expiry without burning thousands of test ticks.
   vm:write(base+4,vm:read(base+8,2),2)
-  state.vm:write(state.base+4,state.vm:read(state.base+8,2),2)
+  state.mem:write(state.base+4,state.mem:read(state.base+8,2),2)
   equal(vm:call(0x8415AD58),Terrain.step(state,signal,camera),'native expiry')
   assert(not state.active)
 end

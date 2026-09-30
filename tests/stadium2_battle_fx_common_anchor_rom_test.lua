@@ -1,7 +1,7 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local Anchor=require(prefix..'stadium2_battle_fx_common_anchor')
 local Motion=require(prefix..'stadium2_battle_fx_motion')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
 local f=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
 if not f then assert(os.getenv('STADIUM2_REQUIRE_ROM')~='1');print('SKIP common anchor ROM');return end

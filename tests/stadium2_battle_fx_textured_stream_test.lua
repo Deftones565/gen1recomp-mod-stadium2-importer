@@ -1,6 +1,6 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local Stream=require(prefix..'stadium2_battle_fx_textured_stream')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Random=require(prefix..'stadium2_battle_fx_random')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
 local file=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
@@ -31,7 +31,6 @@ for _,side in ipairs({-1,1})do
     [0x841094A4]=function(v)v.r[2]=0x85600000;v:putVector(0x856000A8,inputs.cameraEye)end,
     [0x8007AFA0]=function(v)v.r[2]=oracleRandom:next()end,
     [0x80006DEC]=function(v)v.r[2]=allocation;if v.r[4]==160 then glowVertices=allocation end;allocation=allocation+v.r[4]end,
-    [0x80073F70]=trig(math.sin),[0x8007E9C0]=trig(math.cos),
   })
   vm:write(0x84187DC0,0x85000000-0x900,4);vm:write(0x84187D40,0x85010000,4)
   vm:call(family==8 and 0x84159C2C or 0x84158E24)
@@ -92,7 +91,7 @@ for _,side in ipairs({-1,1})do
       -- scratch vertex pointer populated independently by each draw.
       for offset=0,0x373 do
         if offset<0x88 or offset>=0x8C then
-          assert(vm:read(at+offset,1)==s.vm:read(at+offset,1),'native slot state')
+          assert(vm:read(at+offset,1)==s.mem:read(at+offset,1),'native slot state')
         end
       end
       assert(#layer.idx==114 and layer.geometryMode==0x200005)

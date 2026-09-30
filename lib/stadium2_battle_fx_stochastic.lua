@@ -1,5 +1,10 @@
--- US fragment 79 shared twenty-six-slot controller (families 3 and 15).
-local VM=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_mips')
+-- US fragment 79 shared twenty-six-slot controller (families 3 and 15:
+-- Razor Leaf, Petal Dance). The controller is the Lua port in
+-- stadium2_battle_fx_stochastic_native.lua, run on Stadium's own memory
+-- layout; this module steps it at 30 Hz and reads its display list back
+-- into renderer geometry.
+local Native=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_stochastic_native')
+local Memory=require('mods.STADIUM2_IMPORTER.lib.stadium2_native_memory')
 local bit=require('bit')
 local Stochastic={}
 local POOL,DL,VERT=0x8419F070,0x85200000,0x85300000
@@ -19,10 +24,10 @@ local function drawSpec(texture,wordA,wordB)
     primary={255,255,255,255},environment={0,0,0,0},lodFraction=0,
     alpha=1,uv={0,0,0,0},scrollAndShift={0,0,0,0,0,0,0,0}}
 end
-local function matrix(vm,pointer)
+local function matrix(v,pointer)
   local m={}
   for j=0,15 do
-    local value=vm:read(pointer+j*2,2)*65536+vm:read(pointer+32+j*2,2)
+    local value=v:read(pointer+j*2,2)*65536+v:read(pointer+32+j*2,2)
     m[j]=((value>=2147483648 and value-4294967296 or value)/65536)
   end
   return m
@@ -32,9 +37,8 @@ local function layer(draw,textureScale)
     textureScale=textureScale}
 end
 local function capture(s)
-  local v=s.vm;s.allocation=VERT
-  local drawResult=v:call(0x84166A64,{DL,s.family==3 and 34 or 35})
-  local finish=drawResult%4294967296
+  local v=s.mem;s.allocation=VERT
+  local finish=Native.draw(v,s.callbacks,DL,s.family==3 and 34 or 35)
   local g={kind='rom-beam',family=s.family,layers={}}
   local spriteDraw=drawSpec(s.family==3 and 34 or 35,0xFCFFFFFF,0xFFFCF279)
   local trailDraw=drawSpec(nil,0xFCFFFFFF,0xFFFE793C)
@@ -50,7 +54,7 @@ local function capture(s)
   for i=0,25 do
     local at=POOL+i*0x360
     local active=v:read(at,2)==1
-    local spriteActive=active and v:float(at+0x54)>0
+    local spriteActive=active and v:f32(at+0x54)>0
     local sprite=layer(drawSpec(spriteDraw.textures[1],0xFCFFFFFF,0xFFFCF279),{.5,.5})
     local trail=layer(drawSpec(nil,0xFCFFFFFF,0xFFFE793C))
     local m=spriteActive and matrix(v,assert(matrices[sprites+1],'missing native sprite matrix')) or nil
@@ -82,7 +86,7 @@ local function capture(s)
   s.geometry=g;s.visible=visible;s.drawEnd=finish
 end
 function Stochastic.new(fragment,mainKernel,inputs,rng,family)
-  if not fragment or not mainKernel then return nil,'native stochastic controller requires fragment 79 and main kernel' end
+  if not fragment then return nil,'native stochastic controller requires fragment 79' end
   if family~=3 and family~=15 then return nil,'unsupported stochastic family' end
   if not inputs or not (inputs.swiftOrigin or inputs.origin) or not inputs.endpointB then
     return nil,'native stochastic controller requires live source and target anchors'
@@ -93,21 +97,17 @@ function Stochastic.new(fragment,mainKernel,inputs,rng,family)
   local s={family=family,origin=inputs.swiftOrigin or inputs.origin,target=target,
     frameOrigin=frameOrigin,scale=inputs.modelScale or 1,signal=0,
     age=0,active=true}
-  local function trig(fn)return function(v)
-    v:write(0x85700000,v.f[12],4);v.f[0]=VM.floatWord(fn(v:float(0x85700000)))
-  end end
-  s.vm=VM.new({{base=0x84100000,bytes=fragment},{base=0x80000400,bytes=mainKernel}},{
-    [0x84156BA0]=function()end,
-    [0x84109780]=function(v)v:putVector(v.r[4],s.origin)end,
-    [0x841098FC]=function(v)v:putVector(v.r[4],s.target)end,
-    [0x84109544]=function(v)v.f[0]=VM.floatWord(s.scale)end,
-    [0x841094EC]=function(v)v.r[2]=s.signal end,
-    [0x8007AFA0]=function(v)v.r[2]=rng:next()end,
-    [0x80073F70]=trig(math.sin),[0x8007E9C0]=trig(math.cos),
-    [0x80006DEC]=function(v)v.r[2]=s.allocation;s.allocation=s.allocation+v.r[4]end,
-  })
+  s.mem=Memory.new({{base=0x84100000,bytes=fragment}})
+  s.callbacks={
+    origin=function()return s.origin end,
+    target=function()return s.target end,
+    scale=function()return s.scale end,
+    signal=function()return s.signal end,
+    random=function()return rng:next()end,
+    alloc=function(n)local a=s.allocation;s.allocation=s.allocation+n;return a end,
+  }
   local ok,err=pcall(function()
-    s.vm:call(family==3 and 0x84157AB0 or 0x84157CB0)
+    Native.init(s.mem,family)
     capture(s)
   end)
   if not ok then return nil,tostring(err)end
@@ -118,7 +118,7 @@ function Stochastic.step(s,inputs,signal)
   s.age=s.age+1;s.origin=inputs.swiftOrigin or inputs.origin;s.signal=signal or 0
   s.target={}
   for k=1,3 do s.target[k]=inputs.endpointB[k]+s.frameOrigin[k]end
-  local ok,result=pcall(function()return s.vm:call(s.family==3 and 0x84157ADC or 0x84157CDC)end)
+  local ok,result=pcall(Native.update,s.mem,s.callbacks,s.family)
   if not ok then s.error='update: '..tostring(result);s.active=false;return -1 end
   if result~=-1 then
     local drawOk,drawError=pcall(capture,s)
@@ -130,7 +130,7 @@ function Stochastic.step(s,inputs,signal)
 end
 function Stochastic.snapshot(s)
   local active=0
-  for i=0,25 do if s.vm:read(POOL+i*0x360,2)==1 then active=active+1 end end
+  for i=0,25 do if s.mem:read(POOL+i*0x360,2)==1 then active=active+1 end end
   return {kind='rom-stochastic-state',family=s.family,age=s.age,active=s.active,
     activeSlots=active,drawReady=not s.error,error=s.error}
 end

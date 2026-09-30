@@ -1,6 +1,6 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local Rom=require(prefix..'stadium2_battle_fx_rom')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Player=require(prefix..'stadium2_battle_fx_player')
 local Resources=require(prefix..'stadium2_battle_fx_resources')
 local Renderer=require(prefix..'renderer')

@@ -35,7 +35,7 @@ print('Swift: motion, phase, trail history, mesh updates, 14-slot pool and clean
 local file=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
 if not file then assert(os.getenv('STADIUM2_REQUIRE_ROM')~='1');print('SKIP Swift ROM oracle');return end
 local rom=file:read('*a');file:close()
-local VM=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 for _,scale in ipairs({.5,1,1.75}) do
   local nativeRandom=Random.new(432);local luaRandom=Random.new(432)
   local signal=0;local origin={-90,20,5};local direction={.8,.25,-.15}

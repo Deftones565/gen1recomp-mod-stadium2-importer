@@ -327,6 +327,49 @@ function Camera.arenaFrame(width,height,opts)
   local sourceScale=math.max(1e-6,tonumber(opts.scale) or .05)
   local groundY=tonumber(opts.groundY) or 0
   local stadium=Camera.STADIUM
+  local native=opts.stadiumPose
+  if native then
+    -- CAMERA STADIUM: Stadium 2's own camera (Stadium units; ground y = 0)
+    -- Stadium units to the scene: scale, a turn about Y (custom scenes) and
+    -- the origin (the arena's ground, or the custom scene's battle centre)
+    local theta=tonumber(opts.stadiumTheta) or 0
+    local origin=opts.stadiumOrigin or {0,groundY,0}
+    local ct,st=math.cos(theta),math.sin(theta)
+    local function scene(p)
+      local x,y,z=p[1]*sourceScale,p[2]*sourceScale,p[3]*sourceScale
+      return {origin[1]+x*ct+z*st,origin[2]+y,origin[3]-x*st+z*ct}
+    end
+    local eye,focus=scene(native.eye),scene(native.focus)
+    local view=Renderer.lookAt(eye[1],eye[2],eye[3],focus[1],focus[2],focus[3])
+    local fov=math.rad(native.fov)
+    -- A split-screen view (the Stadium intro) covers its rectangle of the
+    -- game's 320 x 240 screen, stretched to the canvas like the full view:
+    -- its own aspect, and a clip-space remap that places it there.
+    local vp=native.viewport
+    local scissor
+    local remap
+    local aspect=width/height
+    if vp and not (vp[1]==0 and vp[2]==0 and vp[3]==320 and vp[4]==240) then
+      local x0,y0=vp[1]/320*width,vp[2]/240*height
+      local wc,hc=vp[3]/320*width,vp[4]/240*height
+      aspect=wc/hc
+      remap={wc/width,0,0,(2*x0+wc)/width-1, 0,hc/height,0,1-(2*y0+hc)/height, 0,0,1,0, 0,0,0,1}
+      scissor={math.floor(x0+.5),math.floor(y0+.5),math.floor(wc+.5),math.floor(hc+.5)}
+    end
+    local perspective=Renderer.perspective(fov,aspect,stadium.near*sourceScale,stadium.far*sourceScale)
+    if remap then perspective=Renderer.matMul(remap,perspective) end
+    local projection=Renderer.matMul(LOVE_CANVAS_Y,perspective)
+    local fit=Camera.fitScale(width,height)
+    local ox,oy=Camera.fitOrigin(width,height,fit)
+    return {
+      view=view,projection=projection,vp=Renderer.matMul(projection,view),
+      eye=eye,focus=focus,
+      letterbox={lx=ox,ly=oy,scale=fit,pw=width,ph=height},
+      stadium={fov=fov,near=stadium.near*sourceScale,far=stadium.far*sourceScale,
+        sourceScale=sourceScale,mode="stadium",label="STADIUM CAMERA",native=true},
+      scissor=scissor,
+    }
+  end
   local pose=arenaPresetPose(opts,groundY/sourceScale)
   local sourceFocus=pose and pose.focus or arenaFocus(opts)
   local focus={sourceFocus[1]*sourceScale,

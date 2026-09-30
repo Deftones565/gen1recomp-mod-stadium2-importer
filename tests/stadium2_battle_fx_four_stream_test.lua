@@ -1,7 +1,7 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local Stream=require(prefix..'stadium2_battle_fx_four_stream')
 local Random=require(prefix..'stadium2_battle_fx_random')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
 local file=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
 if not file then assert(os.getenv('STADIUM2_REQUIRE_ROM')~='1');print('SKIP Sonic Boom ROM');return end

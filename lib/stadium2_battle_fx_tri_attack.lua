@@ -1,8 +1,11 @@
--- Family 20 / US 84158840: persistent Radial20 mode-5 kernel and native
--- generated display-list capture. Draw-side RNG/spawns run once per 30 Hz
--- tick; host redraws only consume the captured geometry.
-local VM=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_mips')
-local f=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float')
+-- Family 20 / US 84158840: Tri Attack. The radial mode-5 kernel and its
+-- display-list builder are the Lua port in
+-- stadium2_battle_fx_tri_attack_native.lua, run on Stadium's own memory
+-- layout; this module steps it at 30 Hz and reads the display list back
+-- into renderer geometry. Draw-side RNG/spawns run once per 30 Hz tick;
+-- host redraws only consume the captured geometry.
+local Native=require('mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_tri_attack_native')
+local Memory=require('mods.STADIUM2_IMPORTER.lib.stadium2_native_memory')
 local bit=require('bit')
 local Tri={}
 local POOL,AUX,DL,VERT=0x85000000,0x85010000,0x85200000,0x85300000
@@ -21,9 +24,9 @@ local function normalize(v)
 end
 local function cross(a,b)return {a[2]*b[3]-a[3]*b[2],a[3]*b[1]-a[1]*b[3],a[1]*b[2]-a[2]*b[1]}end
 local function capture(s)
-  local vm=s.vm
+  local vm=s.mem
   s.allocation=VERT
-  local finish=vm:call(0x8415DBBC,{DL})%4294967296
+  local finish=Native.draw(vm,s.callbacks,DL)
   local g={kind='rom-beam',family=20,nativeCulling=true,layers={layer(false),layer(false),layer(false),layer(true)}}
   g.layers[1].geometryMode=0x200405;g.layers[1].cull=true
   g.layers[2].geometryMode=0x200205;g.layers[2].cull=true
@@ -51,8 +54,9 @@ local function capture(s)
     elseif op==5 then triangle(a)
     elseif op==6 then triangle(a);triangle(b) end
   end
-  -- 8416A050 billboards the ROM quad using inverse camera rotation.
-  -- Simulation and random spark births above execute the original kernel.
+  -- 8416A050 billboards the ROM quad using inverse camera rotation; the
+  -- spark's size is 84169F18's (Native.sparkScale). Simulation and random
+  -- spark births above are the ported kernel.
   local camera=assert(s.camera,'Tri Attack requires live camera inputs')
   local z=normalize({camera.eye[1]-camera.focus[1],camera.eye[2]-camera.focus[2],camera.eye[3]-camera.focus[3]})
   local x=normalize(cross(camera.up or {0,1,0},z));local y=cross(z,x)
@@ -61,10 +65,9 @@ local function capture(s)
   for i=0,19 do
     local at=AUX+4+i*24;local active=vm:read(at,2)==1
     if active then s.sparkCount=s.sparkCount+1 end
-    local age=vm:read(at+4,2)
-    local scale=active and f(vm:float(at+8)*f(math.sin(f(f(age*vm:float(0x8418C940))/10)))) or 0
+    local scale=active and Native.sparkScale(vm,at) or 0
     scale=math.floor(scale*65536)/65536
-    local p=vm:vector(at+12)
+    local p=vm:vec(at+12)
     for j=0,3 do
       local v=0x84187E48+j*16
       for k=1,3 do
@@ -83,26 +86,18 @@ function Tri.new(fragment,inputs,rng)
   if type(fragment)~='string' then return nil,'Tri Attack requires fragment 79' end
   local s={frameOrigin=inputs.swiftFrameOrigin or {0,0,0},camera=inputs.terrainCamera,
     origin=inputs.swiftOrigin or inputs.origin,direction=inputs.direction,age=0,active=true}
-  s.vm=VM.new({{base=0x84100000,bytes=fragment}},{
-    [0x841569E0]=function(v)
-      for k=1,3 do v:putFloat(v.r[k+3],s.origin[k])end
-      v:putFloat(v.r[7],s.direction[1]);v:putFloat(v:read(v.r[29]+16,4),s.direction[2]);v:putFloat(v:read(v.r[29]+20,4),s.direction[3])
-    end,
-    [0x84109780]=function(v)v:putVector(v.r[4],s.origin)end,
-    [0x8007AFA0]=function(v)v.r[2]=rng:next()end,
-    [0x80006DEC]=function(v)v.r[2]=s.allocation;s.allocation=s.allocation+v.r[4]end,
-    [0x8415D430]=function(v)
-      v:write(0x85700000,v.f[12],4);local angle=v:float(0x85700000)
-      v:write(0x85700000,v.r[7],4);local radius=v:float(0x85700000)
-      local radians=f(f(angle*360/6.2831854820251465)*f(3.1415926/180))
-      v:putVector(v.r[6],{0,f(-f(math.sin(radians))*radius),f(f(math.cos(radians))*radius)})
-    end,
-    -- Billboard submission is captured from the same persistent child pool.
-    [0x8416A050]=function(v)v.r[2]=v.r[5]end,
-  })
+  s.mem=Memory.new({{base=0x84100000,bytes=fragment}})
+  s.callbacks={
+    anchor=function()return s.origin,s.direction end,
+    origin=function()return s.origin end,
+    random=function()return rng:next()end,
+    alloc=function(n)local a=s.allocation;s.allocation=s.allocation+n;return a end,
+    -- the sparks are billboarded from the live camera in capture()
+    sparks=function(_,dl)return dl end,
+  }
   local ok,err=pcall(function()
-    s.vm:write(0x84187530,POOL-0x3C8,4);s.vm:write(0x84187E40,AUX,4)
-    s.vm:call(0x84169B80);s.vm:call(0x8415C530);s.vm:call(0x84158768)
+    s.mem:write(Native.POOL_POINTER,POOL-0x3C8,4);s.mem:write(Native.SPARK_POINTER,AUX,4)
+    Native.init(s.mem,s.callbacks)
     capture(s)
   end)
   if not ok then return nil,tostring(err)end
@@ -113,8 +108,7 @@ function Tri.step(s,inputs)
   s.origin=inputs.swiftOrigin or inputs.origin;s.camera=inputs.terrainCamera
   s.age=s.age+1
   local ok,result=pcall(function()
-    if s.age>=181 then return -1 end
-    local result=s.vm:call(0x8415DAE4)
+    local result=Native.update(s.mem,s.callbacks)
     if result~=-1 then capture(s)end
     return result
   end)

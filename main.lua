@@ -4,7 +4,7 @@
 -- previous version's modules back from require. Evict them when the build
 -- changed; within one build the cached modules (and their caches) are kept.
 -- MOD_BUILD must match manifest.json's version (stadium2_independence_test).
-local MOD_BUILD = "0.21.0"
+local MOD_BUILD = "0.22.0"
 do
   local PREFIX = "mods.STADIUM2_IMPORTER."
   local STAMP = PREFIX .. "__build"
@@ -140,6 +140,9 @@ return function(mod)
     { key="stadium2_battle_hud", label="BATTLE HUD", type="toggle",
       default=true,
       help="Show Stadium's glass battle HUD. Turn OFF to leave the native or another mod's battle UI unobstructed." },
+    { key="stadium2_camera", label="CAMERA", type="choice", default="free",
+      choices={{"FREE","free"},{"STADIUM","stadium"}},
+      help="STADIUM runs Stadium 2's own battle camera (being ported: its attack shots so far; other moments keep the last shot). FREE is the field camera you can steer." },
     { key="stadium2_graphics", label="GRAPHICS", type="choice", default=false,
       choices={{"HIDE",false},{"SHOW",true}},
       help="Show or hide the graphics settings: shader style, 3D resolution, battle AA, extra effects, Poke Ball and scene weather." },
@@ -475,6 +478,13 @@ return function(mod)
     pendingEncounter=nil
   end)
 
+  -- STADIUM camera: the turn-start shot (Stadium's event 0x5A is queued at
+  -- the same point: both sides have chosen, neither has acted).
+  mod.events:on("battle.turn_started", function()
+    local scene=BattleSceneApi.current()
+    if scene and scene.stadiumCameraTurn then scene:stadiumCameraTurn() end
+  end)
+
   -- Hit facts for the battle FX result byte (Sequence.resultByte).
   mod.events:on("battle.damage_dealt", function(ev)
     local ok, Adapter = pcall(require,
@@ -483,6 +493,9 @@ return function(mod)
   end)
 
   mod.events:on("battle.ended", function(ev)
+    -- STADIUM camera: the victory shot on the winner (8413D2E4's 0x67)
+    local scene=BattleSceneApi.current()
+    if scene and scene.stadiumCameraBattleEnd and ev then scene:stadiumCameraBattleEnd(ev.result) end
     -- Gold decides the outcome before its visible faint/victory/experience
     -- queue has finished.  Pass the owner so its scene can defer teardown;
     -- Gen 1's implementation still finishes immediately.

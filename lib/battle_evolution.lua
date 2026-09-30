@@ -664,6 +664,12 @@ function Evolution.install(mod, currentScene, warn)
     local result = next(game, viewport, ...)
     local scene = currentScene()
     if scene then
+      -- a mod's Renderer:endFrame wrap can drop the viewport (STADIUM2_UI's
+      -- frame_viewport.lua rebuilds it from Renderer:frameRects)
+      if type(viewport) ~= "table" then
+        local okF, FrameViewport = pcall(require, "mods.STADIUM2_UI.lib.frame_viewport")
+        if okF then viewport = FrameViewport.resolve(game, viewport, warn) end
+      end
       local ok, err = pcall(Evolution.drawHud, scene, viewport, warn)
       if not ok and warn then pcall(warn, "evolution text: " .. tostring(err)) end
     end

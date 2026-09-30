@@ -1,6 +1,6 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local Stochastic=require(prefix..'stadium2_battle_fx_stochastic')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Random=require(prefix..'stadium2_battle_fx_random')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
 local file=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')
@@ -13,9 +13,6 @@ for _,family in ipairs({3,15})do
   local random,oracleRandom=Random.new(432),Random.new(432)
   local state=assert(Stochastic.new(catalog.lifecycleAssets.fragment79,catalog.lifecycleAssets.mainKernel,inputs,random,family))
   local signal,allocation=0,0x85300000
-  local function trig(fn)return function(v)
-    v:write(0x85700000,v.f[12],4);v.f[0]=VM.floatWord(fn(v:float(0x85700000)))
-  end end
   local vm=VM.new({{base=0x84100000,bytes=catalog.lifecycleAssets.fragment79},
     {base=0x80000400,bytes=catalog.lifecycleAssets.mainKernel}},{
     [0x84156BA0]=function()end,
@@ -24,7 +21,6 @@ for _,family in ipairs({3,15})do
     [0x84109544]=function(v)v.f[0]=VM.floatWord(inputs.modelScale)end,
     [0x841094EC]=function(v)v.r[2]=signal end,
     [0x8007AFA0]=function(v)v.r[2]=oracleRandom:next()end,
-    [0x80073F70]=trig(math.sin),[0x8007E9C0]=trig(math.cos),
     [0x80006DEC]=function(v)v.r[2]=allocation;allocation=allocation+v.r[4]end,
   })
   vm:call(family==3 and 0x84157AB0 or 0x84157CB0)
@@ -53,7 +49,7 @@ for _,family in ipairs({3,15})do
         assert(#spriteLayer.idx==6 and #trailLayer.idx==54)
         for offset=0,0x35F do
           if offset<0x20 or offset>=0x24 then
-            assert(vm:read(at+offset,1)==state.vm:read(at+offset,1),
+            assert(vm:read(at+offset,1)==state.mem:read(at+offset,1),
               ('native pool state family=%d tick=%d slot=%d offset=%X'):format(family,tick,slot,offset))
           end
         end

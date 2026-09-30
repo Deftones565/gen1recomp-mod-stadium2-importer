@@ -1,7 +1,7 @@
 local prefix='mods.STADIUM2_IMPORTER.lib.'
 local State=require(prefix..'stadium2_battle_fx_battle_state')
 local Rom=require(prefix..'stadium2_battle_fx_rom')
-local VM=require(prefix..'stadium2_battle_fx_mips')
+local VM=require('mods.STADIUM2_IMPORTER.tests.support.stadium2_battle_fx_mips')
 local Material=require(prefix..'stadium2_battle_fx_material')
 local Player=require(prefix..'stadium2_battle_fx_player')
 local file=io.open(os.getenv('STADIUM2_ROM') or 'mods/STADIUM2_IMPORTER/baseroms/stadium2.z64','rb')

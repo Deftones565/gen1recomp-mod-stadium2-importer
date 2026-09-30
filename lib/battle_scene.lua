@@ -22,6 +22,11 @@ local Lake = require("mods.STADIUM2_IMPORTER.lib.battle_freshwater")
 local Ocean = require("mods.STADIUM2_IMPORTER.lib.battle_ocean")
 local Town = require("mods.STADIUM2_IMPORTER.lib.battle_town")
 local Importer = require("mods.STADIUM2_IMPORTER.lib.importer")
+-- CAMERA option STADIUM (the Stadium 2 camera, arenas and custom scenes)
+local function stadiumCameraMode()
+  return type(Importer.cameraMode)=="function" and Importer.cameraMode()=="stadium"
+end
+
 -- In-battle evolution (user-requested extension, not Stadium 2 behaviour).
 local Evolution = require("mods.STADIUM2_IMPORTER.lib.battle_evolution")
 
@@ -280,6 +285,8 @@ end
 
 local function restoreWorldTarget(self,g)
   g.setCanvas(sceneTarget(self))
+  -- a split-screen view keeps drawing inside its own rectangle
+  if self.viewScissor and g.setScissor then g.setScissor(unpack(self.viewScissor)) end
   if g.setShader then g.setShader() end
   if g.setDepthMode then g.setDepthMode("lequal",true) end
   if g.setMeshCullMode then g.setMeshCullMode("none") end
@@ -336,11 +343,199 @@ function Scene:environmentGame()
   return self.screen and self.screen.game or self.game
 end
 
+-- CAMERA option STADIUM: Stadium 2's own camera (stadium2_battle_camera.lua)
+-- in the arena, stepped with the battle; FREE keeps the field camera.
+function Scene:updateStadiumCamera(dt)
+  if not stadiumCameraMode() then
+    self.stadiumCameraActive=false
+    self:stadiumReleaseEntrance("player"); self:stadiumReleaseEntrance("enemy")
+    return
+  end
+  local StadiumCamera=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_camera")
+  local camera,err=StadiumCamera.forScene(self,self.warn)
+  if not camera then
+    if not self.stadiumCameraReported and self.warn then
+      self.stadiumCameraReported=true
+      pcall(self.warn,"STADIUM camera unavailable: "..tostring(err))
+    end
+    self.stadiumCameraActive=false
+    self:stadiumReleaseEntrance("player"); self:stadiumReleaseEntrance("enemy")
+    return
+  end
+  local ok,stepErr=pcall(camera.update,camera,self,dt)
+  if not ok and not self.stadiumCameraStepReported and self.warn then
+    self.stadiumCameraStepReported=true
+    pcall(self.warn,"STADIUM camera: "..tostring(stepErr))
+  end
+  -- a failed step can not release a held entrance at its moment
+  if not ok then self:stadiumReleaseEntrance("player"); self:stadiumReleaseEntrance("enemy") end
+  -- A failed step keeps the Stadium camera's last pose on screen (reported
+  -- once above): falling back to the FREE camera only on the frames that
+  -- fail would alternate the two cameras frame by frame.
+  self.stadiumCameraActive=true
+end
+
+-- A move starts (the attack state): Stadium's attack shot on the attacker.
+function Scene:stadiumCameraAttack(side,moveId)
+  if self.stadiumCameraActive and self.stadiumCamera then
+    pcall(self.stadiumCamera.attack,self.stadiumCamera,self,side,moveId)
+  end
+end
+
+-- A turn begins (both sides have chosen): Stadium's turn-start orbit.
+function Scene:stadiumCameraTurn()
+  if self.stadiumCameraActive and self.stadiumCamera then
+    pcall(self.stadiumCamera.turnStart,self.stadiumCamera,self)
+  end
+end
+
+-- A status or residual Stadium event (its FX entry; trapMove for a
+-- trapping tick): Stadium's family 9 camera on that side.
+function Scene:stadiumCameraEntry(entry,side,trapMove)
+  if self.stadiumCameraActive and self.stadiumCamera then
+    pcall(self.stadiumCamera.statusEvent,self.stadiumCamera,self,side,entry,trapMove)
+  end
+end
+
+-- A Pokemon is recalled: Stadium's recall camera on it.
+function Scene:stadiumCameraRecall(side)
+  if self.stadiumCameraActive and self.stadiumCamera then
+    local condition=self.restCondition and self:restCondition(side) or nil
+    pcall(self.stadiumCamera.recall,self.stadiumCamera,self,side,condition)
+  end
+end
+
+-- A send-out's entrance animation (`start` plays it): run now, or held while
+-- the STADIUM camera's opening is not yet filming that side (it releases it
+-- at Stadium's own moment).
+function Scene:stadiumEntrance(side,start)
+  local cam=self.stadiumCameraActive and self.stadiumCamera
+  local okH,hold=false,false
+  if cam and cam.holdEntrance then okH,hold=pcall(cam.holdEntrance,cam,side) end
+  if okH and hold then
+    self.stadiumHeldEntrance=self.stadiumHeldEntrance or {}
+    self.stadiumHeldEntrance[side]=start
+    return false
+  end
+  start()
+  return true
+end
+
+function Scene:stadiumReleaseEntrance(side)
+  local held=self.stadiumHeldEntrance
+  local start=held and held[side]
+  if not start then return false end
+  held[side]=nil
+  pcall(start)
+  return true
+end
+
+-- The battle is decided (battle.ended): Stadium's victory camera.
+function Scene:stadiumCameraBattleEnd(result)
+  if self.stadiumCameraActive and self.stadiumCamera then
+    pcall(self.stadiumCamera.battleEnd,self.stadiumCamera,self,result)
+  end
+end
+
+-- The turn check's event on `side` (code, or "react"): Stadium's camera.
+-- "It hurt itself in its confusion!" names no one; both engines print it
+-- right after that battler's "is confused!" line, so it goes to that side.
+function Scene:stadiumCameraSelfHit()
+  local side=self.stadiumConfusedSide
+  self.stadiumConfusedSide=nil
+  if side then self:stadiumCameraTurnCheck(side,1) end
+end
+
+function Scene:stadiumCameraTurnCheck(side,code)
+  if code==0x26 then self.stadiumConfusedSide=side end
+  if self.stadiumCameraActive and self.stadiumCamera then
+    local condition=self.restCondition and self:restCondition(side) or nil
+    pcall(self.stadiumCamera.turnCheck,self.stadiumCamera,self,side,code,condition)
+  end
+end
+
+-- A move misses: Stadium's dodge camera on the defender.
+function Scene:stadiumCameraDodge(side,moveId)
+  if self.stadiumCameraActive and self.stadiumCamera then
+    local condition=self.restCondition and self:restCondition(side) or nil
+    pcall(self.stadiumCamera.dodge,self.stadiumCamera,self,side,moveId,condition)
+  end
+end
+
+-- A Pokemon is sent out: Stadium's send-out camera on it.
+function Scene:stadiumCameraSendOut(side)
+  if self.stadiumCameraActive and self.stadiumCamera then
+    pcall(self.stadiumCamera.sendOut,self.stadiumCamera,self,side)
+  end
+end
+
+-- A Pokemon faints (its faint clip starts): Stadium's faint camera on it.
+function Scene:stadiumCameraFaint(side)
+  if self.stadiumCameraActive and self.stadiumCamera then
+    pcall(self.stadiumCamera.faint,self.stadiumCamera,self,side)
+  end
+end
+
+-- The defender is hit (at the impact): Stadium's hit shot on the defender,
+-- by its presented sleep / freeze (restCondition).
+function Scene:stadiumCameraHit(side,moveId)
+  if self.stadiumCameraActive and self.stadiumCamera then
+    local condition=self.restCondition and self:restCondition(side) or nil
+    pcall(self.stadiumCamera.hit,self.stadiumCamera,self,side,moveId,condition)
+  end
+end
+
+-- Where Stadium units sit in this scene: {scale, theta, origin}. The arena
+-- uses its own scale at its ground. A custom scene (CAMERA STADIUM there)
+-- takes the Stadium layout (player at X -150, foe at X +150, both at the
+-- ground) and fits it onto the scene's two battle spots: the scale makes 150
+-- the half distance between them, the turn about Y aligns the Stadium X axis
+-- with the player-to-foe line, and the origin is the midpoint.
+Scene.STADIUM_HALF_DISTANCE=150
+function Scene:stadiumSpace()
+  if self.arenaMode then
+    return {scale=self.arenaScale,theta=0,origin={0,self.arenaGroundY,0}}
+  end
+  local a,b=Stage.positions.player,Stage.positions.enemy
+  local dx,dz=b[1]-a[1],b[3]-a[3]
+  local half=math.sqrt(dx*dx+dz*dz)/2
+  -- R(theta) maps +X to the player-to-foe direction (x'=x cos+z sin,
+  -- z'=-x sin+z cos)
+  local theta=math.atan2 and math.atan2(-dz,dx) or math.atan(-dz,dx)
+  return {scale=half/Scene.STADIUM_HALF_DISTANCE,theta=theta,
+    origin={(a[1]+b[1])/2,(a[2]+b[2])/2,(a[3]+b[3])/2}}
+end
+
+-- CAMERA STADIUM in a custom (non-arena) scene: the Pokemon take Stadium's
+-- layout and proportions in the scene's Stadium space (user request: the
+-- Stadium camera on the custom scenes, rescaled as needed).
+function Scene:stadiumCustomScene()
+  return not self.arenaMode and stadiumCameraMode()
+end
+
+-- Stadium units -> world, and back (the STADIUM camera's model markers).
+function Scene:stadiumToWorld(p)
+  local sp=self:stadiumSpace()
+  local x,y,z=p[1]*sp.scale,p[2]*sp.scale,p[3]*sp.scale
+  local c,s=math.cos(sp.theta),math.sin(sp.theta)
+  return {sp.origin[1]+x*c+z*s,sp.origin[2]+y,sp.origin[3]-x*s+z*c}
+end
+function Scene:worldToStadium(p)
+  local sp=self:stadiumSpace()
+  local x,y,z=p[1]-sp.origin[1],p[2]-sp.origin[2],p[3]-sp.origin[3]
+  local c,s=math.cos(sp.theta),math.sin(sp.theta)
+  return {(x*c-z*s)/sp.scale,y/sp.scale,(x*s+z*c)/sp.scale}
+end
+
 function Scene:visualActor(side)
   return self.actors and self.actors[side] or nil
 end
 
 function Scene:actorPosition(side)
+  if not self.arenaMode and self:stadiumCustomScene() then
+    local actor=self:visualActor(side)
+    return self:stadiumToWorld(StadiumBattleLayout.slot(side,actor and actor.dex))
+  end
   if self.arenaMode then
     local actor=self:visualActor(side)
     local slot=StadiumBattleLayout.slot(side,actor and actor.dex)
@@ -387,6 +582,18 @@ function Scene:modelMatrix(side,actor,image)
           +elevation*metrics.height*self.arenaScale,
         (slot[3]+o[3])*self.arenaScale),
       mul(rotateY(yaw),scale(k))),yaw
+  end
+  if self:stadiumCustomScene() then
+    -- the arena's placement and proportions, in the scene's Stadium space
+    local sp=self:stadiumSpace()
+    local size=image and image.scale or actor:scale()
+    local k=sp.scale*size*self:picScale(side)
+    local slot,yaw=StadiumBattleLayout.slot(side,actor.dex)
+    local o=image and image.offset or actor.nativeOffset or {0,0,0}
+    local at=self:stadiumToWorld({slot[1]+o[1],o[2],slot[3]+o[3]})
+    local turn=yaw+sp.theta
+    return mul(translate(at[1],at[2]-metrics.floor*k+elevation*metrics.height*sp.scale,at[3]),
+      mul(rotateY(turn),scale(k))),turn
   end
   local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
   local k=worldHeight/metrics.height*actor:scale()*self:picScale(side)
@@ -472,23 +679,51 @@ function Scene:render(requestedWidth,requestedHeight)
       self.environment=self.weather:lighting(self.environment,self.weatherDT)
     end
     self.weatherTime=now
+    -- CAMERA STADIUM draws one pass per drawn view: normally one full
+    -- screen, two during Stadium's split-screen intro (each clipped to its
+    -- rectangle of the game's 320 x 240 screen). Once-per-frame work
+    -- (visitors, the HUD box, UI anchors) belongs to the first view.
+    local stadiumViews={false}
+    if self.stadiumCameraActive and self.stadiumCamera then
+      local okViews,views=pcall(self.stadiumCamera.views,self.stadiumCamera)
+      if okViews and type(views)=="table" and #views>0 then stadiumViews=views end
+    end
+    for viewIndex,viewPose in ipairs(stadiumViews) do
+    local primary=viewIndex==1
+    local rect=viewPose and viewPose.viewport
+    self.viewScissor=nil
+    if rect and not (rect[1]==0 and rect[2]==0 and rect[3]==320 and rect[4]==240) then
+      local x0,y0=math.floor(rect[1]/320*renderWidth+.5),math.floor(rect[2]/240*renderHeight+.5)
+      local x1,y1=math.floor((rect[1]+rect[3])/320*renderWidth+.5),math.floor((rect[2]+rect[4])/240*renderHeight+.5)
+      self.viewScissor={x0,y0,math.max(0,x1-x0),math.max(0,y1-y0)}
+      if g.setScissor then g.setScissor(unpack(self.viewScissor)) end
+    end
     local defaultFrame
     if self.arenaMode then
       defaultFrame=Camera.sceneFrame(width,height,{
         arena=true,
         scale=self.arenaScale,groundY=self.arenaGroundY,actors=self.actors,
+        stadiumPose=viewPose or nil,
+      })
+    elseif viewPose then
+      -- CAMERA STADIUM on a custom scene: Stadium's pose in the scene's
+      -- Stadium space (the scene's own framing is not applied)
+      local sp=self:stadiumSpace()
+      defaultFrame=Camera.sceneFrame(width,height,{
+        arena=true,scale=sp.scale,groundY=sp.origin[2],stadiumTheta=sp.theta,
+        stadiumOrigin=sp.origin,actors=self.actors,stadiumPose=viewPose,
       })
     else
       defaultFrame=Camera.sceneFrame(width,height)
     end
-    if natureActive then defaultFrame=environmentScene.frame(defaultFrame) end
+    if natureActive and not viewPose then defaultFrame=environmentScene.frame(defaultFrame) end
     local initialMarks=projectedMarks(self,defaultFrame,width,height)
     local cameraCtx=extensionContext(self,g,defaultFrame,width,height,renderWidth,renderHeight,initialMarks)
     cameraCtx.cameraPhase="select"
     local selectedFrame=Extensions.camera(cameraCtx,function() return defaultFrame end)
     local frame=normalizeFrame(selectedFrame,defaultFrame)
     frame=Evolution.sceneFrame(self,frame)
-    if self.visitors then
+    if self.visitors and primary then
       self.visitors:update(self.pendingVisitorDT or 0,frame)
       self.visitors:prune(frame)
     end
@@ -528,11 +763,19 @@ function Scene:render(requestedWidth,requestedHeight)
     end)
     restoreWorldTarget(self,g)
     local vp=frame.vp
-    self.hudBox=frame.letterbox
+    if primary then self.hudBox=frame.letterbox end
     local matrices,candidateActors={},{}
     local dynamicObjectIndex=0
+    -- CAMERA STADIUM: the Pokemon Stadium hides for the current shot (the
+    -- over-the-shoulder idle shot puts the eye at that Pokemon)
+    local stadiumHidden=nil
+    if self.stadiumCameraActive and self.stadiumCamera and self.stadiumCamera.hiddenSide then
+      local okH,hidden=pcall(self.stadiumCamera.hiddenSide,self.stadiumCamera)
+      if okH then stadiumHidden=hidden end
+    end
     for _,side in ipairs({"enemy","player"}) do
       local actor=self:visualActor(side)
+      if side==stadiumHidden then actor=nil end
       -- an evolution on screen stands in the player's slot, alone
       local evolving,evolutionActor=Evolution.actorFor(self,side)
       if evolving then actor=evolutionActor end
@@ -604,10 +847,10 @@ function Scene:render(requestedWidth,requestedHeight)
       if not fxOk and self.warn then pcall(self.warn,tostring(fxError)) end
     end
     local box=frame.letterbox
-    self.uiAnchors={
+    if primary then self.uiAnchors={
       player={(marks.player.x-box.lx)/box.scale,(marks.player.y-box.ly)/box.scale},
       enemy={(marks.enemy.x-box.lx)/box.scale,(marks.enemy.y-box.ly)/box.scale},
-    }
+    } end
 
     restoreWorldTarget(self,g)
     ext.battlerPhase="draw"
@@ -703,7 +946,12 @@ function Scene:render(requestedWidth,requestedHeight)
     Extensions.overlay(ext)
     restoreWorldTarget(self,g)
     g.setColor(1,1,1,1)
+    end
+    self.viewScissor=nil
+    if g.setScissor then g.setScissor() end
   end)
+  self.viewScissor=nil
+  if g.setScissor then pcall(g.setScissor) end
 
   if previous and #previous>0 then pcall(g.setCanvas,unpack(previous))
   else pcall(g.setCanvas) end
