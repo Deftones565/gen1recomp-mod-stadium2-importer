@@ -141,9 +141,28 @@ near(legacyAfterArena.focus[1],Camera.RIG.lookX,1e-8,
 
 local steelixActor={dex=208,renderer=modelActor.renderer,scale=modelActor.scale}
 local steelixMatrix=arenaScene:modelMatrix("enemy",steelixActor)
-near(steelixMatrix[4],0,1e-6,
-  "arena mode preserves Stadium's zero-origin Steelix placement override")
-for species,distance in pairs({[3]=185,[95]=225,[130]=200,[249]=200,[250]=185}) do
+-- 8411EFE4: the model's origin height is the species' battle profile +0x08
+-- (84112704 -> +0x650), not its lowest point on the floor
+do
+  local function f32(v) -- big-endian binary32 for the small positive values used here
+    local m,e=math.frexp(v)
+    local bits=(e+126)*2^23+(m*2-1)*2^23
+    local out={}
+    for i=3,0,-1 do out[#out+1]=string.char(math.floor(bits/2^(8*i))%256) end
+    return table.concat(out)
+  end
+  local profile=string.rep("\0",8)..f32(100)..string.rep("\0",8)..f32(140)..string.rep("\0",0x30-0x18)
+  local model=setmetatable({fxBattleProfile=profile},{__index=modelActor.renderer.model})
+  local renderer=setmetatable({model=model},{__index=modelActor.renderer})
+  local hover={dex=22,renderer=renderer,scale=modelActor.scale}
+  local m=arenaScene:modelMatrix("enemy",hover)
+  near(m[8],arenaScene.arenaGroundY+100*arenaScene.arenaScale,1e-6,
+    "a species with a profile height floats at it (Fearow 100)")
+end
+-- D_84189810 / D_84189814 (fragment 79 data, before relocOffset): -325 / +325
+near(steelixMatrix[4],325*.05,1e-6,
+  "arena mode places Steelix at its ROM slot (325)")
+for species,distance in pairs({[3]=185,[95]=225,[130]=200,[208]=325,[249]=200,[250]=185}) do
   local playerSlot,playerYaw=StadiumBattleLayout.slot("player",species)
   local enemySlot,enemyYaw=StadiumBattleLayout.slot("enemy",species)
   ok(playerSlot[1]==-distance and enemySlot[1]==distance

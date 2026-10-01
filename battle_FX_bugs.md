@@ -14,6 +14,18 @@ Extension (2026-10-01, user-requested option 1, NOT native to Stadium 2):
   affect ..." (native: no effect is a miss to Stadium's engine).
 - Needs your retest.
 
+Battle fix (2026-10-01, Pokemon height and Steelix's spot, after v0.24.0, local session):
+- Flying and floating Pokemon (Fearow, Gastly, Haunter, Koffing,
+  Butterfree, Zubat, Magnemite...) stood on the floor. Stadium 2 places
+  every Pokemon at a height from its own data (8411EFE4: the battle
+  profile's +0x08), and the camera already aimed there, so its shots were
+  framed above them. They now float at Stadium's height; Magikarp's model
+  sits as low as in Stadium. 54 species change by more than 2 units
+  (docs/luna/research/battle-placement-audit-2026-10-01.md).
+- Steelix stood in the middle of the field; Stadium 2 puts it at 325 from
+  the centre (its ROM data), and so does the mod now.
+- Needs your retest.
+
 Battle fix (2026-10-01, shadow on the floor before the Pokemon is out of its ball, local session):
 - Cause: Stadium's send-out effect (0x122) keeps the Pokemon invisible
   (opacity 0) for its first 96 frames, until it pops out of the ball at

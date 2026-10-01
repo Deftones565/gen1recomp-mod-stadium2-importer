@@ -12,11 +12,10 @@ Layout.SPECIES_DISTANCE = {
   [3] = 185,   -- Venusaur
   [95] = 225,  -- Onix
   [130] = 200, -- Gyarados
-  -- Steelix loads its two slot values from fragment-79 overlay storage. That
-  -- storage lies after relocOffset (0x8C950) and is zeroed by Stadium's
-  -- fragment loader, so both sides deliberately use X = 0. Steelix's model
-  -- data supplies its own displacement.
-  [208] = 0,
+  -- Steelix loads its slot from fragment-79 data D_84189810 / D_84189814:
+  -- -325 / +325 (US ROM). Corrected 2026-10-01: that data is at fragment
+  -- offset 0x89810, before relocOffset (0x8C950), so it is not zeroed.
+  [208] = 325,
   [249] = 200, -- Lugia
   [250] = 185, -- Ho-Oh
 }

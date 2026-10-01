@@ -710,6 +710,19 @@ end
 -- animation timeline. Apply in world space so scaling cannot cancel it.
 function Scene:picElevation() return 0 end
 
+-- 8411EFE4: the battler's origin height (+0x28) is +0x650, the species'
+-- battle profile +0x08 (84112704), in Stadium units; most species have 0,
+-- flying and floating ones hover (Fearow 100, Gastly 110). Nil without a
+-- profile (the model is then grounded by its lowest point instead).
+function Scene.nativeOriginHeight(actor)
+  local model=actor and actor.renderer and actor.renderer.model
+  local bytes=model and model.fxBattleProfile
+  if not bytes then return nil end
+  local Dispatch=require("mods.STADIUM2_IMPORTER.lib.animation_dispatch")
+  local profile=Dispatch.battleProfile(bytes)
+  return profile and profile.groundY or nil
+end
+
 -- `image` (optional) is one of actor.afterimages: its offset and scale
 -- replace the battler's own (lib/battle_special_moves.lua).
 function Scene:modelMatrix(side,actor,image)
@@ -731,9 +744,13 @@ function Scene:modelMatrix(side,actor,image)
     local ky=axes and k*axes[6] or k
     local model=mul(rotateY(yaw),scale(k))
     if axes then model=mul(model,axes) end
+    -- 8411EFE4: the model's origin at the profile height (Stadium units);
+    -- without a profile, its lowest point on the floor
+    local origin=Scene.nativeOriginHeight(actor)
+    local y=origin and self.arenaGroundY+origin*self.arenaScale
+      or self.arenaGroundY-metrics.floor*ky
     return mul(translate((slot[1]+o[1])*self.arenaScale,
-        self.arenaGroundY-metrics.floor*ky+o[2]*self.arenaScale
-          +elevation*metrics.height*self.arenaScale,
+        y+o[2]*self.arenaScale+elevation*metrics.height*self.arenaScale,
         (slot[3]+o[3])*self.arenaScale),
       model),yaw
   end
@@ -744,13 +761,16 @@ function Scene:modelMatrix(side,actor,image)
     local k=sp.scale*size*self:picScale(side)
     local slot,yaw=StadiumBattleLayout.slot(side,actor.dex)
     local o=image and image.offset or actor.nativeOffset or {0,0,0}
-    local at=self:stadiumToWorld({slot[1]+o[1],o[2],slot[3]+o[3]})
+    -- 8411EFE4's origin height, as in the arena (see above)
+    local origin=Scene.nativeOriginHeight(actor)
+    local at=self:stadiumToWorld({slot[1]+o[1],(origin or 0)+o[2],slot[3]+o[3]})
     local turn=yaw+sp.theta
     local axes=axisScale(actor,image)
     local ky=axes and k*axes[6] or k
     local model=mul(rotateY(turn),scale(k))
     if axes then model=mul(model,axes) end
-    return mul(translate(at[1],at[2]-metrics.floor*ky+elevation*metrics.height*sp.scale,at[3]),
+    local y=origin and at[2] or at[2]-metrics.floor*ky
+    return mul(translate(at[1],y+elevation*metrics.height*sp.scale,at[3]),
       model),turn
   end
   local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
