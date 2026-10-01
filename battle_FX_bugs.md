@@ -1,5 +1,173 @@
 Move bug list
 
+Extension (2026-10-01, user-requested option 1, NOT native to Stadium 2):
+- A move that misses or has no effect now shows its attempt: the attacker
+  plays its attack animation and the move effect, the camera holds on it
+  as for any attack, then cuts to the target dodging. The effect is cut
+  where the hit would land (Stadium's failed-impact path, 841089D8(1)).
+  In Stadium itself the attacker does not animate on a miss (8412E420
+  queues only the target's dodge).
+- Both gens. Gen 2: on Gold/Crystal's missed move. Gen 1: Red's cancelled
+  move row is kept as a placeholder and played when Red's miss or
+  no-effect line follows it (other cancels, e.g. charge turns, play
+  nothing). Gen 1 also now shows the target's dodge on "It doesn't
+  affect ..." (native: no effect is a miss to Stadium's engine).
+- Needs your retest.
+
+Battle fix (2026-10-01, shadow on the floor before the Pokemon is out of its ball, local session):
+- Cause: Stadium's send-out effect (0x122) keeps the Pokemon invisible
+  (opacity 0) for its first 96 frames, until it pops out of the ball at
+  frame 97. The model followed that, but its shadow did not.
+- Fix: a Pokemon casts its shadow only while its model is at least half
+  visible, by the same opacity the model is drawn with. The same applies
+  to any other effect that hides a Pokemon. (The shadows are the mod's
+  own; Stadium's opacity track is native.)
+- Needs your retest.
+
+Battle fix (2026-10-01, the camera in the wrong place / events overlapping, both gens, local session):
+- Cause: the game's own battle (Red / Gold / Crystal) and Stadium's
+  presentation ran on separate clocks, so a new event (the foe's move)
+  could start while Stadium was still showing the last one (your switch,
+  your attack), and the camera had two jobs at once.
+- Fix: Stadium's own rule (84135778): the next battle event now waits until
+  Stadium's current one has finished: send-outs, switches, attacks, hits,
+  faints, status effects, drag-ins, the turn-start shot. Both gens. The
+  STADIUM camera's state machine now runs with the FREE camera too, so the
+  timing is the same with either camera option. No hold lasts more than 8
+  seconds.
+- Expect: each event plays fully before the next; the turn starts with
+  Stadium's turn-start shot (about 3 seconds) before the first move.
+- Native timing; not seen in game yet. Needs your retest.
+
+Extension (2026-10-01, user-requested, NOT native to Red, Gold or Stadium 2):
+- When a move has no effect, "<Pokemon> used <MOVE>!" now waits for A/B
+  before "It doesn't affect <Pokemon>" appears, so you can read which move
+  was tried. Both gens; every other line keeps its normal timing.
+- Gen 1: the no-effect line (Red's _DoesntAffectMonText) turns the used
+  line queued just before it into a button page. Gen 2: when the line
+  after a move is Gold's "It doesn't affect ...", the move line waits for
+  A/B. Code: Scene.noEffectPrompt in lib/gen1_battle.lua and
+  lib/gen2_battle.lua.
+- Needs your retest.
+
+FX fix (2026-10-01, Razor Wind 13, Gust 16, Whirlwind 18, Roar 46 family, local session):
+- Checked every effect record of the four moves against the ROM; the
+  effect programs themselves run completely (the audit shows no gaps), and
+  today's texture-scroll fix already animates their wind funnel (shapes
+  142 and 161).
+- Missing (Whirlwind / Roar, Gen 2): what Stadium does when a Pokemon is
+  dragged out (family 25). The new Pokemon starts invisible and effect
+  0x12C plays on it: a black flash that fades and the Pokemon fading in.
+  0x12C is also the signal Whirlwind's and Roar's wind waits on before it
+  fades away, so without it the wind stayed on screen. A sleeping
+  Pokemon also gets the sleep effect (0x100), a frozen one the frozen
+  effect (0xFE), half a second later. The Poke Ball send-out effect no
+  longer plays for a dragged-in Pokemon (Stadium doesn't).
+- Checked and already native: the wind funnel turns with the attacker's
+  facing (841072BC) and follows the camera every frame (84101D54); Razor
+  Wind's charge turn plays its own effect (entry 255).
+- Gen 1 has no drag-out (Red's Roar/Whirlwind end wild battles or fail).
+- Matches the ROM by reading; needs your retest.
+
+Battle fix (2026-10-01, the foe's whole turn going by during your attack, Gen 2, local session):
+- What you saw: you use a move, your Pokemon's attack plays, and meanwhile
+  the foe's turn ("used <MOVE>!", "It doesn't affect ...") already goes by;
+  the camera never shows it.
+- Cause: in Stadium 2 the next battle message/event only starts once the
+  current one's timer is 0 (84135778), and the attack keeps that timer
+  running until the attack ends (84114A04 / 84114BF4). Gold's event queue
+  did not wait for the Stadium attack, so it ran ahead of it.
+- Fix: Gold's queue now waits while the Stadium attack runs (the STADIUM
+  camera's attack state, or the attacker's attack animation without that
+  camera; never longer than 8 seconds), then carries on.
+- Correction: an earlier change the same day made Gen 1 play the
+  attacker's attack when a move has no effect. That is not what Stadium
+  does: on a miss or no effect its engine queues no attack for the user
+  (8412E420), only the target's dodge after the miss text. It was removed.
+- Needs your retest.
+
+FX fix (2026-10-01, strike marks 10, 15, 17, 22, 154, 163, 210, 211, 231, 232, 238 still staying, local session):
+- In Stadium 2 these marks never fade on their own; the game removes them
+  with its "clear all effects" routine (841089D8(1)). The mod already ran
+  it when the battle returns to the command menu and at every send-out,
+  but not at the other place Stadium runs it: the start of every status
+  event (84118C08). Those include poison/burn/Leech Seed damage, stat rose
+  or fell, HP restored (drain heals, berries), trapping damage and the
+  sandstorm hit. So a mark could stay through all of those.
+- Fix: every such event now clears the effects before playing its own, in
+  Gen 1 and Gen 2, with or without the STADIUM camera. Weather start/end
+  messages do not clear (their routine, 84119630, does not).
+- Still not wired: full paralysis clears 0x33 frames into its event (it
+  comes at the start of a turn, after the menu clear, so marks from the
+  previous turn are already gone).
+- Matches the decomp; needs your retest.
+
+FX fix (2026-10-01, Absorb family still static, local session):
+- Cause: each of these moves' main effect (shapes 244 Absorb, 245 Mega
+  Drain, 237 Meditate, 241 Rage/Focus Energy/Bide, 233/234 Dream Eater,
+  243 Leech Life, 431 Giga Drain) animates by scrolling its two texture
+  layers through a model callback (fragment 26 descriptor 0x138, mode 0:
+  func_8100337C -> 810024E0). The renderer only let that callback drive
+  textures on arena models, and never on "decal" draws, so these effects
+  drew one fixed texture layer with no scroll: a still sheet.
+- Fix: battle-FX shapes compiled from graph layouts now take both texture
+  layers and their per-frame scroll from that callback. Absorb now shows
+  scrolling streaks converging on the Pokemon using the move. The hit
+  effects were checked and look the same as before.
+- Seen moving in the viewer (two captures, FX frames 13 and 32); needs
+  your retest in game.
+
+FX fix (2026-10-01, Absorb family 71, 72, 96, 99, 116, 117, 138, 141, 202, local session):
+- Absorb / Mega Drain / Leech Life / Dream Eater (Gen 1): the part where
+  the energy pours into the Pokemon using the move never played. In
+  Stadium 2 the user's HP gain is its own event (84129180): Absorb plays
+  effect 0x114, Mega Drain 0x115, Leech Life 0x117, Giga Drain 0x116 and
+  any other drain (Dream Eater) 0x10D on the user. 0x114-0x117 reuse
+  Absorb's rising stream model, played backwards (descriptor flag 0x4000),
+  so it falls into the user, with a glow on the user and 8 orbs. Gen 2
+  already sent these; Gen 1 has no heal event, so the mod now starts the
+  effect when the user's HP bar starts rising from the drain.
+- Meditate (96): Stadium also stretches the user (behaviour kind 0xD,
+  84122A78 / 84122AB8): tall and thin, then a wobble that dies away. Ported
+  and matched against the ROM code tick by tick.
+- Gen 1 stat changes: "<mon>'s ATTACK rose!" (Meditate and other boosting
+  moves) and "<mon>'s RAGE is building!" now play Stadium's stat-up effect
+  (0xFC) on that Pokemon; "fell!" lines play 0xFD for the moves Stadium
+  shows it for (Growl, Sand-Attack, String Shot, Screech, Smokescreen,
+  Flash). Gen 2 already did this.
+- Checked and already right: Dream Eater's reversed models, the impact
+  banks on the hit Pokemon (Rage and Bide), and Absorb's cyan screen sheet
+  (static in the ROM data too). Focus Energy (116) has no extra Stadium
+  logic beyond its effect program.
+- Matches the ROM / decomp in tests; needs your retest.
+
+Mobile fix (2026-10-01, broken Pokemon faces on phones, e.g. Koffing, local session):
+- Cause: the lighter shader used on Android did not handle the N64's
+  "mirror once, then clamp" texture mode, which the desktop shader handles
+  by hand. Mirrored face decals (Koffing's eyes, mouth and crossbones) then
+  showed only one half or were stretched.
+- Fix: the Android shader now folds texture coordinates the same way.
+- How to see the mobile look on PC: from the gen1recomp folder run
+  `LOVE_GRAPHICS_USE_OPENGLES=1 love mods/STADIUM2_IMPORTER/tests/stadium2_koffing_croconaw_visual`
+  (the renderer then uses the Android shader). Koffing was broken there
+  before the fix and matches the desktop render after it. Needs your retest
+  on the phone; other models using the same texture mode are fixed by the
+  same change.
+
+Camera fix (2026-10-01, "the camera cuts away before the move is shown", local session):
+- Cause: the camera cut to the hit Pokemon as soon as the game reported the
+  hit. In Stadium 2 the hit shot waits until the attacker's move has
+  finished: each move has a length in the Pokemon's own data (about 2.7
+  seconds for most moves).
+- Fix: the camera now stays on the attacking Pokemon for that length (or
+  until its move animation ends), then cuts to the hit Pokemon, as Stadium
+  does. Earthquake and Fissure, and Magnitude, Flail, Return and
+  Frustration, now also shake the camera at their hit frame.
+- Note: the game itself may still play the hit Pokemon's flinch and HP
+  drain while the camera is on the attacker; the camera then shows the hit
+  Pokemon afterwards.
+- Matches the ROM in the VM test; needs your retest.
+
 FX fix (2026-10-01, slashes staying on screen, local session):
 - Cause: Stadium 2 clears leftover move effects from the battle side when
   the battle returns to the command menu after a turn (and at send-outs),

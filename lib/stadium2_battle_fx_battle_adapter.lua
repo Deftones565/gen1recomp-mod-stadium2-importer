@@ -1176,6 +1176,10 @@ function Adapter:draw(sceneContext)
   return result
 end
 
+function Adapter:modelColors()
+  return self.player and self.player.modelColors and self.player:modelColors() or nil
+end
+
 function Adapter:backgroundColor(base)
   return self.player and self.player:backgroundColor(base) or base
 end

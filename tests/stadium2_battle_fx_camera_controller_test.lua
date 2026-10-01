@@ -50,9 +50,19 @@ ok(count>=3,"attack shots vary ("..count.." of 6 seen)")
 ok(camera.cam.missing==nil,"program 0 runs only ported handlers")
 ok(mem:u32(0x85000000+0x10)==0x84110718 and mem:u32(0x85000000+4)==0x85002000,"program 0 is on the attacker")
 
--- the defender's hit: program 1 on the defender, event code by condition
+-- the defender's hit waits for the attacker's state (84114BF4) to end, as
+-- Stadium's next record waits for the attack's timer: the camera stays on
+-- the attacker meanwhile
+camera:attack(scene,"enemy",1)
+ok(camera.attacking~=nil,"the attack state runs on the attacker")
+ok(mem:u16(0x85003000+6)==600,"84114A04 sets the timer 600")
 camera:hit(scene,"player",1,{asleep=true})
-ok(mem:u16(0x85003000+4)==0x0B,"an asleep defender is hit with event 0x0B")
+ok(mem:u16(0x85003000+4)==0 and mem:u32(0x85000000+4)==0x85002000,"a hit during the attack is held (the attacker keeps the camera)")
+local waited=0
+for _=1,400 do camera:update(scene,1/30) waited=waited+1 if not camera.attacking then break end end
+ok(camera.attacking==nil and waited>1,"the attack ends after its row length ("..waited.." ticks)")
+ok(mem:u16(0x85003000+4)==0x0B,"then the held hit plays: an asleep defender is hit with event 0x0B")
+ok(mem:s16(0x85001000+0x7E8)<=1,"a held hit starts with its state (frame 0), not at the impact")
 camera:hit(scene,"player",1,{frozen=true})
 ok(mem:u16(0x85003000+4)==0x0D,"a frozen defender is hit with event 0x0D")
 camera:hit(scene,"player",1)
@@ -801,4 +811,28 @@ ok(reported,"a model without markers is reported, with the anchor point standing
 local frame=Camera.arenaFrame(640,480,{scale=0.05,groundY=0,stadiumPose=camera:pose()})
 ok(frame.stadium.native==true and math.abs(frame.eye[1]-camera:pose().eye[1]*0.05)<1e-6,
   "arenaFrame takes Stadium's eye (scaled to the scene)")
+-- 84135778's gate (StadiumCamera:busy): a record holds the hosts while its
+-- timer runs or a timer-less family plays; the idle cycle, the opening and
+-- the victory camera never do, and a new record starts at timer 0.
+do
+  local timer=0
+  local mem={u16=function() return timer end}
+  local fake=setmetatable({cam={mem=mem,setTimer=function(_,v) timer=v end,setJolt=function() end},
+    runs={},timed={},transformed={}},{__index=StadiumCamera})
+  ok(StadiumCamera.busy(fake)==false,"nothing playing: not busy")
+  timer=0x258
+  ok(StadiumCamera.busy(fake)==true,"a record's timer holds the hosts")
+  fake.idleTimer=true
+  ok(StadiumCamera.busy(fake)==false,"the idle cycle's timer does not")
+  StadiumCamera.newFamily(fake,nil)
+  ok(timer==0 and fake.idleTimer==nil,"a new record starts at timer 0 after the idle cycle")
+  fake.sendingOut={actor=1,frame=3}
+  ok(StadiumCamera.busy(fake)==true,"a send-out holds the hosts")
+  fake.opening={substate=2}
+  ok(StadiumCamera.busy(fake)==false,"the battle's opening does not")
+  fake.opening,fake.sendingOut=nil,nil
+  fake.victory={actor=1}
+  timer=0x154
+  ok(StadiumCamera.busy(fake)==false,"the victory camera does not")
+end
 print(checks.." checks passed (STADIUM camera controller)")

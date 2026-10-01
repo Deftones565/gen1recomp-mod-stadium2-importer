@@ -517,6 +517,34 @@ function StadiumCamera:attack(scene, side, moveId)
     return
   end
   self.cam:attackState(address)
+  -- 841154F8 -> 84114BF4 each tick until the attack ends (its row length
+  -- +0x61A, or the attacker's clip when that is 0). The defender's hit or
+  -- dodge record only plays after that (84135778 waits for the attack's
+  -- timer), so the camera stays on the attacker until then. Rest (0x9C)
+  -- runs 841153DC instead and has no hit.
+  if moveId ~= 0x9C then
+    self.attacking = { actor = address }
+    self.runs[address] = { step = function(sc, s)
+      local done = self.cam:attackFrame(address, clipEnded(sc, s))
+      if done then
+        self.attacking = nil
+        local held = self.heldHit
+        self.heldHit = nil
+        if held then self[held.kind](self, sc, held.side, held.moveId, held.condition, true) end
+      end
+      return done
+    end }
+  end
+end
+
+-- A hit or dodge reported while the other side's attack state still runs
+-- waits for it (the record gate); `deferred` marks one released that way.
+function StadiumCamera:holdHit(kind, address, side, moveId, condition)
+  if self.attacking and self.attacking.actor ~= address then
+    self.heldHit = { kind = kind, side = side, moveId = moveId, condition = condition }
+    return true
+  end
+  return false
 end
 
 -- The defender is hit: 84124604's event code (0x0B asleep, 0x0D frozen,
@@ -791,10 +819,11 @@ end
 
 -- The defender dodges (the move missed): 841246AC's event code (0x13
 -- asleep, 0x12 frozen, else 0x11), then 841170A0's camera part on it.
-function StadiumCamera:dodge(scene, side, moveId, condition)
+function StadiumCamera:dodge(scene, side, moveId, condition, deferred)
   local address = ACTOR[side]
   moveId = tonumber(moveId)
   if not address or not moveId or moveId < 1 or moveId > 251 then return end
+  if not deferred and self:holdHit("dodge", address, side, moveId, condition) then return end
   self:sync(scene)
   local m = self.cam.mem
   condition = condition or {}
@@ -844,17 +873,20 @@ function StadiumCamera:startHit(scene, side, address, moveId, atImpact, result)
   end }
 end
 
-function StadiumCamera:hit(scene, side, moveId, condition)
+function StadiumCamera:hit(scene, side, moveId, condition, deferred)
   local address = ACTOR[side]
   moveId = tonumber(moveId)
   if not address or not moveId or moveId < 1 or moveId > 251 then return end
+  if not deferred and self:holdHit("hit", address, side, moveId, condition) then return end
   self:sync(scene)
   local m = self.cam.mem
   condition = condition or {}
   self:newFamily(address)
   m:setU16(RECORD + 4, condition.asleep and 0x0B or condition.frozen and 0x0D or 0x0A)
   m:setU8(address + 0x618, moveId)
-  self:startHit(scene, side, address, moveId, true)
+  -- a hit held for the attack starts with its state (frame 0), as the
+  -- record does in Stadium; otherwise it is lined up with the host's impact
+  self:startHit(scene, side, address, moveId, not deferred)
 end
 
 -- A turn begins: 8411F94C's camera part (event 0x5A, side 0).
@@ -917,6 +949,7 @@ function StadiumCamera:nextIdle(scene)
   local m = self.cam.mem
   m:setU16(RECORD + 4, code)
   self.cam:setTimer(0x64)
+  self.idleTimer = true -- the idle cycle's timer never holds the battle
   self.cam:endSplit()
   local family = self.cam:idleState(address)
   if family == 1 then
@@ -942,6 +975,14 @@ end
 -- restarts the event timer (8411FEE8(100)) before giving the actor its
 -- family; newFamily is that entry for every controller event.
 function StadiumCamera:newFamily(address)
+  -- any other event ends the wait for an attack (its held hit is dropped)
+  self.attacking, self.heldHit = nil, nil
+  if not self.idleDispatch then
+    -- 841358B0: a new record starts with its own timer (+6), not what the
+    -- idle cycle left in the previous one
+    if self.idleTimer then self.cam:setTimer(0) end
+    self.idleTimer = nil
+  end
   self.cam:setJolt(0)
   self.firstMoverPending = nil -- a newer event replaces a waiting 0x5B
   if not self.idleDispatch then self.idle, self.idleFamily1 = nil, nil end
@@ -1198,6 +1239,28 @@ end
 
 -- The scene's camera, created on first use (nil plus a reason when the ROM
 -- data is missing; reported once by the caller).
+-- 84135778: the next battle record loads only once the current one has
+-- finished: its timer (+6) is 0 (the families set and clear it), and here
+-- also no family that the port tracks without a timer (send-out, timed
+-- states, runs) is still playing. The hosts hold
+-- their own event queues on this (Scene:stadiumPresentationBusy). The
+-- battle's opening and the arena intro wait on the hosts' send-outs
+-- themselves, and the victory camera plays after the battle: none of them
+-- hold the hosts. The idle cycle's timer never does either.
+function StadiumCamera:busy()
+  if self.opening or self.intro or self.openingPhase or self.pendingOpening
+      or self.victory then
+    return false
+  end
+  -- (a pending first mover is not: its side is known only once the host
+  -- runs that action, so holding it would wait for itself; the 0x5A timer
+  -- and the first mover's own timer cover the turn start)
+  if self.attacking or self.sendingOut then return true end
+  if next(self.timed or {}) ~= nil or next(self.runs or {}) ~= nil then return true end
+  if self.idleTimer or self.idle then return false end
+  return self.cam.mem:u16(RECORD + 6) > 0
+end
+
 function StadiumCamera.forScene(scene, warn)
   if scene.stadiumCamera then return scene.stadiumCamera end
   if scene.stadiumCameraError then return nil, scene.stadiumCameraError end

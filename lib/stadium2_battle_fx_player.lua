@@ -314,6 +314,13 @@ function Player:_frameSnapshot()
   end
   return self.frameSnapshot
 end
+-- The native model colour/opacity state by side (mode-5 tracks), current
+-- for this tick; the scene reads it before the effects draw (shadows).
+function Player:modelColors()
+  if self.released then return nil end
+  local native=self:_frameSnapshot().nativeObjects
+  return native and native.modelColors
+end
 function Player:backgroundColor(base)
   local native=self:_frameSnapshot().nativeObjects
   return NativeObjects.backgroundColor(base,native and native.nativeColor)

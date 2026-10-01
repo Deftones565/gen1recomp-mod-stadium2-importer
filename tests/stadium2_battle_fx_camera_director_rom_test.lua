@@ -817,6 +817,54 @@ do
   ok(cam:hitStart(A0,nil)==false,"an unknown hit animation length leaves the 0x0A length unset")
 end
 
+-- the attack (family 2): 84114A04 with 84114804's motion row copy
+-- (841146D4) from the real motion record, then 841154F8 -> 84114BF4 each
+-- frame: the hit-frame jolts and the end at +0x61A or when the attacker's
+-- animation finishes (8003EC34 answers from a ready frame); non-camera
+-- calls stubbed, Rest (0x9C, 841153DC) excluded
+local attackSeen={ended=0,byAnim=0,jolt=0}
+for round=1,300 do
+  local ready,frame=rnd(120),0
+  local hooks={[0x84113430]=yes,[0x84112E40]=stub,[0x84112EAC]=stub,[0x841126C8]=stub,
+    [0x841120AC]=stub,[0x84112324]=stub,[0x841133EC]=stub,[0x80030420]=stub,[0x84111D64]=stub,
+    [0x84111E50]=stub,[0x84111E80]=stub,[0x84111DB4]=stub,[0x84123F60]=stub,[0x80023A3C]=stub,
+    [0x8410890C]=stub,[0x84108E00]=stub,[0x84112290]=stub,[0x84108A10]=stub,[0x8003F4E8]=stub,
+    [0x84114600]=stub,[0x84114678]=stub,[0x84124104]=stub,[0x84112158]=stub,[0x84112418]=stub,
+    [0x841146D4]=false,[0x8003EC34]=function(v) v.r[2]=frame>=ready and 1 or 0 end,
+    [0x8411FEE8]=function(v) v:write(REC+6,v.r[4]%65536,2) end}
+  local vm,cam,seed=setup(hooks)
+  loadRecords(vm,cam)
+  local actor=rnd(2)==0 and A0 or A1
+  local move=rnd(3)==0 and ({0x59,0x5A,0xDE,0xAF,0xDA,0xD8,0x13,0x0A,0x21})[rnd(9)+1] or 1+rnd(251)
+  if move==0x9C then move=0x9D end
+  for _,m in ipairs({vm,cam.mem}) do m:write(actor+0x7EC,0,2);m:write(actor+0x618,move,1);m:write(REC+4,0,2) end
+  vm:call(0x84114A04,{actor});cam:attackState(actor)
+  compare(vm,cam,seed,("attack setup round %d move %X"):format(round,move))
+  for _,off in ipairs({0x619,0x61A,0x61B,0x7E8,0x7E9,0x7F6}) do
+    if vm:byte(actor+off)~=cam.mem:u8(actor+off) then error(("FAIL attack setup round %d move %X byte +%X ROM %02X Lua %02X"):format(round,move,off,vm:byte(actor+off),cam.mem:u8(actor+off)),0) end
+  end
+  if vm:read(REC+6,2)~=cam.mem:u16(REC+6) then error(("FAIL attack setup round %d timer"):format(round),0) end
+  -- every fifth round a row length of 0: the end waits for the animation
+  if round%5==0 then for _,m in ipairs({vm,cam.mem}) do m:write(actor+0x61A,0,1) end end
+  local ended=false
+  for f=1,0x140 do
+    frame=f
+    for _,m in ipairs({vm,cam.mem}) do m:write(actor+0x7E8,(m:read(actor+0x7E8,2)+1)%65536,2) end
+    vm:call(0x841154F8,{actor});ended=cam:attackFrame(actor,frame>=ready)
+    if cam.mem:f32(C0+0x8C)>0 then attackSeen.jolt=attackSeen.jolt+1 end
+    compare(vm,cam,seed,("attack round %d move %X frame %d"):format(round,move,f))
+    for _,off in ipairs({0x7E8,0x7E9,0x7F6}) do
+      if vm:byte(actor+off)~=cam.mem:u8(actor+off) then error(("FAIL attack round %d move %X frame %d byte +%X ROM %02X Lua %02X"):format(round,move,f,off,vm:byte(actor+off),cam.mem:u8(actor+off)),0) end
+    end
+    if vm:read(actor+0x7F4,2)%16~=cam.mem:u16(actor+0x7F4)%16 then error(("FAIL attack round %d move %X frame %d +0x7F4"):format(round,move,f),0) end
+    if vm:read(REC+6,2)~=cam.mem:u16(REC+6) then error(("FAIL attack round %d move %X frame %d timer ROM %d Lua %d"):format(round,move,f,vm:read(REC+6,2),cam.mem:u16(REC+6)),0) end
+    if ended then attackSeen.ended=attackSeen.ended+1 if cam.mem:u8(actor+0x61A)==0 then attackSeen.byAnim=attackSeen.byAnim+1 end break end
+  end
+end
+ok(attackSeen.ended>200,"the attack state ended in "..attackSeen.ended.." of 300 rounds")
+ok(attackSeen.jolt>0,"the hit-frame jolts were exercised")
+ok(attackSeen.byAnim>30,"the end on the animation's finish was exercised in "..attackSeen.byAnim.." rounds")
+
 -- Transform's substates (8411B1F4) with the real motion records; 800427B8
 -- (the new model is loaded) answers from a ready frame
 local transformDone=0

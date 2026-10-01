@@ -28,8 +28,8 @@ local deps = manifest:match('"dependencies": (%b[])')
 ok(deps and deps:gsub("%s", "") == '["STADIUM2_UI@>=1.1.0<2.0.0"]'
   and manifest:find('"STADIUM2_UI": "Deftones565/Stadium-2-UI"', 1, true) ~= nil,
   "the only required mod is STADIUM2_UI, with its GitHub source")
-ok(manifest:find('"version": "0.23.1"', 1, true) ~= nil,
-  "public API release is pinned to 0.23.1")
+ok(manifest:find('"version": "0.24.0"', 1, true) ~= nil,
+  "public API release is pinned to 0.24.0")
 ok(main:find('local MOD_BUILD = "' .. manifest:match('"version": "([^"]+)"') .. '"', 1, true) ~= nil,
   "main.lua's module-cache build stamp matches the manifest version")
 ok(main:find('require("mods.STADIUM2_IMPORTER.lib.battle_router")', 1, true) ~= nil,
@@ -51,7 +51,9 @@ ok(main:find('BattleUIOwnership.bind',1,true)~=nil
 ok(not gen1:find('function BattleState:drawHUDs',1,true),
   "Gen 1 no longer suppresses the native status HUD by monkey patch")
 ok(not gen1:find('function BattleState:submit',1,true)
-   and not gen1:find('function BattleState:update',1,true)
+   -- exact name: the updateQueue wrapper only holds presentation (the
+   -- record gate, drain heals) and leaves the battle's outcome alone
+   and not gen1:find('function BattleState:update(',1,true)
    and not gen1:find('function BattleState:performMove',1,true)
    and not gen1:find('function BattleState:throwBall',1,true),
   "Gen 1 adapter does not replace battle mechanics")

@@ -16,7 +16,22 @@ local sprites={}
 Host.speciesSprite=function(_,species)
   sprites[species]=sprites[species] or {};return sprites[species]
 end
+-- the host queue step: pops one row (BattleState:updateQueue); a waitSound
+-- row starts its wait (the real host polls the returned source)
+Host.updateQueue=function(self)
+  local item=table.remove(self.queue,1)
+  if item and item.waitSound then self.waitingSound=item.waitSound() end
+end
 package.loaded["src.battle.BattleState"]=Host
+-- the damaging pipeline runs a drain move's afterDamage (drainHalf), which
+-- queues the heal's HP drain row and its text
+local Registry={runDamaging=function(battle,ctx)
+  battle.nextInsert=0
+  ctx.drain()
+  battle.nextInsert=battle.nextInsert+1
+  table.insert(battle.queue,battle.nextInsert,{text="Sucked health from\nEnemy PIKACHU!"})
+end}
+package.loaded["src.battle.EffectRegistry"]=Registry
 local Player={start=function() return "started",nil,9 end}
 package.loaded["src.battle.AnimPlayer"]=Player
 local Gen1=require("mods.STADIUM2_IMPORTER.lib.gen1_battle")
@@ -95,5 +110,51 @@ assert(p.dex==25 and battle.player.mon.species=="DITTO",
 battle.player={mon={species="DITTO"},sprite={}}
 scene:sync()
 assert(p.dex==132,"switching back in retained transformed appearance")
+-- Red's drain heal: the HP drain row drainHalf queues starts Stadium's
+-- per-move heal entry (84129180) on the user, once, when it leaves the queue.
+do
+  local signals,entries={},{}
+  scene.battleFx={signalEffect=function(_,id,owner) signals[#signals+1]={id,owner} end}
+  scene.stadiumCameraEntry=function(_,id,side) entries[#entries+1]={id,side} end
+  battle.queue={}
+  battle.drainNext=function(self) self.nextInsert=(self.nextInsert or 0)+1
+    table.insert(self.queue,self.nextInsert,{drain=true}) end
+  local function run(user,move)
+    local ctx={user=user,move=move,drain=function() battle:drainNext() end}
+    Registry.runDamaging(battle,ctx)
+  end
+  run(battle.player,{index=71})
+  assert(#battle.queue==2 and battle.queue[1].drain and #signals==0,"the heal waits for its HP row")
+  battle:updateQueue()
+  assert(#signals==1 and signals[1][1]==0x114 and signals[1][2]=="player"
+    and entries[1][1]==0x114 and entries[1][2]=="player","Absorb's heal row signals 0x114 on the user")
+  battle:updateQueue()
+  assert(#signals==1,"the heal text row does not signal again")
+  run(battle.enemy,{index=138})
+  battle:updateQueue()
+  assert(#signals==2 and signals[2][1]==0x10D and signals[2][2]=="enemy","Dream Eater's heal is 0x10D on the user")
+  battle.queue={}
+  scene.battleFx=nil;scene.stadiumCameraEntry=nil
+end
+-- 84135778's gate in Red's queue: a new row waits while Stadium's record
+-- plays; HP drain rows pass (the record's hit waits for the HP bar); a row
+-- in progress is never held.
+do
+  local busy=true
+  scene.stadiumDirectorActive=true
+  scene.stadiumCamera={busy=function() return busy end}
+  battle.queue={{text="It's super\neffective!"}}
+  battle.current,battle.animPlaying=nil,false
+  assert(battle:updateQueue()==true and #battle.queue==1,"a new row waits for the record")
+  battle.queue={{drain=true},{text="next"}}
+  battle:updateQueue()
+  assert(#battle.queue==1 and battle.queue[1].text=="next","an HP drain row passes")
+  battle:updateQueue()
+  assert(#battle.queue==1,"the row after it waits")
+  busy=false
+  battle:updateQueue()
+  assert(#battle.queue==0,"and goes once the record has finished")
+  battle.queue={};scene.stadiumDirectorActive=nil;scene.stadiumCamera=nil
+end
 Gen1.finish(battle)
-print("Move triggers: repeated Surf, attacker side, hit routing, Transform timing and switch reset passed")
+print("Move triggers: repeated Surf, attacker side, hit routing, Transform timing, switch reset, drain heals and the record gate passed")

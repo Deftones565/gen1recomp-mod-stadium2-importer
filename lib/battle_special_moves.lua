@@ -14,7 +14,18 @@ local f = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_float")
 local Special = {}
 
 Special.MINIMIZE, Special.AGILITY, Special.DOUBLE_TEAM = 9, 6, 7
-Special.KINDS = {[97] = 6, [104] = 7, [107] = 9}
+Special.MEDITATE = 13
+Special.KINDS = {[96] = 13, [97] = 6, [104] = 7, [107] = 9}
+
+-- Kind 13 (Meditate, 84114804's kind 0x0D for move 0x60): start 84122A78,
+-- update 84122AB8 (US asm). They wobble the battler's scale (+0x30/+0x34/
+-- +0x38) around its base (+0x5E4, the X scale at the start): stage 0 a
+-- rising sine stretches it tall and thin, stage 1 keeps oscillating while
+-- the amplitude decays by 0.8 each time the swing is within 0.01, and ends
+-- on the base scale once the amplitude itself is within 0.01.
+Special.MEDITATE_AMPLITUDE = f(0.4)    -- D_84189CB8
+Special.MEDITATE_SMALL = f(0.01)       -- D_84189CBC
+Special.MEDITATE_DECAY = f(0.8)        -- D_84189CC0
 
 -- Kind 6 (Agility): start 841218EC, update 84121920; afterimages 84120E7C
 -- (init) and 84120F5C (update).
@@ -129,13 +140,50 @@ local function doubleTeamUpdate(state, trig)
   state.alpha = Special.doubleTeamAlpha(trig, state.afterimages[1].phase)
 end
 
+local function trunc(v) return v < 0 and math.ceil(v) or math.floor(v) end
+
+-- 84122A78: +0x5FC 0x16C, phase +0x5FE 0, speed +0x600 0, amplitude 0.4,
+-- base = the X scale (taken as 1.0, the battler's own scale), stage 0.
+local function meditateStart(state)
+  state.meditate = {speedPhase = 0x16C, phase = 0, speed = 0,
+    amplitude = Special.MEDITATE_AMPLITUDE, base = 1, stage = 0}
+  state.axisScale = {1, 1, 1}
+end
+
+-- 84122AB8, one tick.
+local function meditateUpdate(state, trig)
+  local m = state.meditate
+  local base = m.base
+  if m.stage == 0 then
+    if m.speedPhase >= 0 then m.speedPhase = s16(m.speedPhase + 0x2D) end
+    m.speed = s16(trunc(f(f(sins(trig, m.speedPhase) * 182) * 15)))
+    if m.phase >= 0 and m.phase < 0x4001 then m.phase = s16(m.phase + m.speed) end
+    local swing = f(sins(trig, m.phase) * m.amplitude)
+    state.axisScale = {f(base - swing), f(swing + base), f(base - swing)}
+    if m.phase >= 0x4000 then m.speed, m.stage = 0x1554, 1 end
+  elseif m.stage == 1 then
+    local speed = m.speed
+    m.phase = s16(m.phase + speed)
+    local s = sins(trig, m.phase)
+    local swing = f(s * m.amplitude)
+    if swing <= Special.MEDITATE_SMALL then
+      m.speed = s16(speed + 0x444)
+      m.amplitude = f(m.amplitude * Special.MEDITATE_DECAY)
+      swing = f(s * m.amplitude)
+    end
+    local other = f(s * m.amplitude)
+    state.axisScale = {f(base - swing), f(other + base), f(base - other)}
+    if m.amplitude <= Special.MEDITATE_SMALL then state.axisScale = {base, base, base} end
+  end
+end
+
 -- `opts`: kind, yaw (binary angle), trig ({tableA, tableB}), bodyHeight
 -- (battle profile +04, Stadium units; Double Team only).
 -- Returns the state, or nil and a reason when the evidence is missing.
 function Special.new(opts)
   opts = type(opts) == "table" and opts or {}
   local kind = opts.kind
-  if kind ~= Special.AGILITY and kind ~= Special.DOUBLE_TEAM then
+  if kind ~= Special.AGILITY and kind ~= Special.DOUBLE_TEAM and kind ~= Special.MEDITATE then
     return nil, "unsupported behaviour kind " .. tostring(kind)
   end
   local trig = opts.trig
@@ -154,9 +202,12 @@ end
 function Special.step(state)
   if not state.started then
     state.started = true
-    if state.kind == Special.AGILITY then agilityStart(state) else doubleTeamStart(state) end
+    if state.kind == Special.AGILITY then agilityStart(state)
+    elseif state.kind == Special.MEDITATE then meditateStart(state)
+    else doubleTeamStart(state) end
   end
   if state.kind == Special.AGILITY then agilityUpdate(state, state.trig)
+  elseif state.kind == Special.MEDITATE then meditateUpdate(state, state.trig)
   else doubleTeamUpdate(state, state.trig) end
 end
 

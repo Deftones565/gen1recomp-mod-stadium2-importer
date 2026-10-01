@@ -127,6 +127,17 @@ Sequence.FAINT_ENTRIES = {first = 0x119, second = 0x11A} -- 8411A620
 -- 18 -> 8411ABAC signals 0x126 on the outgoing mon, which keeps its pose;
 -- 8411ACE8 ends the state 70 frames later.
 Sequence.RECALL_ENTRY = 0x126
+-- Dragged out (events 0x2D-0x2F, family 25): Dispatch_177 sets the new
+-- Pokemon's model alpha (+0x1D) to 0 and signals 0x12C on it (P392: a
+-- black flash fading over 15 frames, and a mode-5 colour track fading the
+-- model back in; entry 0x12C also latches the global alpha gate D_841901A4
+-- that Whirlwind's and Roar's camera-ray particles wait on). 8411B898
+-- substate 3 signals 0x100 (asleep, 0x2F) or 0xFE (frozen, 0x2E) at its
+-- frame 6: the 12th tick after the start (substate 1 on tick 1, substate 2
+-- for 5 frames).
+Sequence.DRAG_IN_ENTRY = 0x12C
+Sequence.DRAG_IN_STATUS_ENTRIES = {[0x2F] = 0x100, [0x2E] = 0xFE}
+Sequence.DRAG_IN_STATUS_TICK = 12
 -- 84132778 (HandleWrap): each turn a trapped mon is hurt, the trapping move
 -- (battle mon +0x1C) picks the code: Fire Spin 0x4C, Clamp 0x58, Whirlpool
 -- 0x50, any other (Bind, Wrap) 0x45; signalled on the trapped mon.

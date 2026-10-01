@@ -102,4 +102,24 @@ end
 -- the 0x23 selector-1 combiner, one keeps the preceding blade list's.
 ok(grips == 2 and callbackParts == 11, "two grip primitives and eleven callback parts")
 renderer:release()
+-- Absorb's sheet (move 71, shape 244): a decal-mode draw behind a 0x138
+-- mode-0 callback in a compiled FX layout. The callback owns both tiles and
+-- their per-frame scroll (func_8100337C -> 810024E0); it must not draw static.
+do
+  local absorb = model(71, 244)
+  local sheet = assert(Renderer.new(absorb, {flipY = false}))
+  local prim = sheet.parts[1].prim
+  ok(prim.decal and absorb.handlers.records[1].descriptor == 0x81000138,
+    "Absorb's sheet is a decal draw behind callback 0x138")
+  ok(sheet:callbackUsesMaterialFx(prim) and sheet:callbackOwnsTexture(prim),
+    "the FX layout's 0x138 callback owns the sheet's textures")
+  local function scroll(frame)
+    sheet:setHandlerRuntime({callbackFrame = frame, materialFrame = frame}, false)
+    local set = sheet.handlerState.textureSetBySite[prim.callbackOffset]
+    return set and set.scroll and set.scroll[1]
+  end
+  local a, b = scroll(0), scroll(30)
+  ok(a and b and (a[1] ~= b[1] or a[2] ~= b[2]), "the sheet's texture scrolls with the FX clock")
+  sheet:release()
+end
 print(checks .. " checks passed (battle FX compiled textures)")

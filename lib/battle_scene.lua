@@ -49,6 +49,12 @@ end
 local function scale(value)
   return {value,0,0,0,0,value,0,0,0,0,value,0,0,0,0,1}
 end
+-- A battler's per-axis native scale (Meditate) on top of its uniform one.
+local function axisScale(actor,image)
+  local a=not image and actor.nativeAxisScale
+  if not a then return nil end
+  return {a[1],0,0,0,0,a[2],0,0,0,0,a[3],0,0,0,0,1}
+end
 local function rotateY(angle)
   local c,s=math.cos(angle),math.sin(angle)
   return {c,0,s,0,0,1,0,0,-s,0,c,0,0,0,0,1}
@@ -165,7 +171,7 @@ function Scene:updateBattleFx(dt)
   -- camera, once its idle cycle has started, since it also waits for the
   -- event timer). D_841911FA is `stadiumIdleCleared`, reset at turn start.
   if not self.stadiumIdleCleared then
-    local cam=self.stadiumCameraActive and self.stadiumCamera
+    local cam=self.stadiumDirectorActive and self.stadiumCamera
     local idle
     if cam then idle=cam.idle~=nil
     else idle=type(self.stadiumAwaitingCommand)=="function" and self:stadiumAwaitingCommand() end
@@ -359,20 +365,20 @@ end
 
 -- CAMERA option STADIUM: Stadium 2's own camera (stadium2_battle_camera.lua)
 -- in the arena, stepped with the battle; FREE keeps the field camera.
+-- The camera's state machine (the director) runs with either CAMERA option:
+-- it is Stadium's record timing, which the hosts' event queues follow
+-- (Scene:stadiumPresentationBusy). Only its camera pose depends on STADIUM
+-- (stadiumCameraActive); stadiumDirectorActive says the machine runs.
 function Scene:updateStadiumCamera(dt)
-  if not stadiumCameraMode() then
-    self.stadiumCameraActive=false
-    self:stadiumReleaseEntrance("player"); self:stadiumReleaseEntrance("enemy")
-    return
-  end
   local StadiumCamera=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_camera")
   local camera,err=StadiumCamera.forScene(self,self.warn)
   if not camera then
-    if not self.stadiumCameraReported and self.warn then
+    if stadiumCameraMode() and not self.stadiumCameraReported and self.warn then
       self.stadiumCameraReported=true
       pcall(self.warn,"STADIUM camera unavailable: "..tostring(err))
     end
     self.stadiumCameraActive=false
+    self.stadiumDirectorActive=false
     self:stadiumReleaseEntrance("player"); self:stadiumReleaseEntrance("enemy")
     return
   end
@@ -386,13 +392,73 @@ function Scene:updateStadiumCamera(dt)
   -- A failed step keeps the Stadium camera's last pose on screen (reported
   -- once above): falling back to the FREE camera only on the frames that
   -- fail would alternate the two cameras frame by frame.
-  self.stadiumCameraActive=true
+  self.stadiumDirectorActive=true
+  self.stadiumCameraActive=stadiumCameraMode()
+end
+
+-- USER-REQUESTED EXTENSION (2026-10-01; not Stadium 2): a move that misses
+-- or has no effect still shows its attempt. Stadium's engine queues no move
+-- event for the attacker then (8412E420), only the defender's dodge after
+-- the miss text. Here the attacker plays its attack clip, the camera's
+-- attack state and the move bank with the missed result (841087B8 then
+-- takes 841089D8(1) at the hit frame: the effect is cut where the hit would
+-- land), and the dodge follows once the attack has ended.
+function Scene:stadiumPresentAttempt(side,moveId)
+  moveId=tonumber(moveId)
+  local actor=self.actors and self.actors[side]
+  if not (moveId and actor) then return false end
+  if actor.attack then pcall(actor.attack,actor,moveId) end
+  self:stadiumCameraAttack(side,moveId)
+  local fx=self.battleFx
+  if fx and fx.playMoveAndImpact then
+    local FxSequence=require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
+    pcall(fx.playMoveAndImpact,fx,moveId,side,actor,FxSequence.RESULT_MISSED,
+      self.actors[side=="player" and "enemy" or "player"])
+  end
+  return true
+end
+
+-- How visible a battler's model is: the native opacity track (mode 5, model
+-- +0x1D through 8003F4DC, e.g. the send-out fading it in) times the actor's
+-- materialAlpha, exactly as the model draw applies them. A shadow map has
+-- no partial darkness, so the model casts its shadow once it is at least
+-- half visible (Scene.SHADOW_MIN_OPACITY).
+Scene.SHADOW_MIN_OPACITY=0.5
+function Scene:battlerOpacity(side,actor)
+  local fx=self.battleFx
+  local colors
+  if fx and type(fx.modelColors)=="function" then
+    local ok,value=pcall(fx.modelColors,fx)
+    if ok then colors=value end
+  end
+  local native=type(colors)=="table" and colors[side] or nil
+  local opacity=native and native.opacity and native.opacity/255 or 1
+  return opacity*((actor and actor.modelAlphaByte or 255)/255)
+end
+
+-- The hosts hold their next battle event while Stadium's current record is
+-- still playing (StadiumCamera:busy, 84135778). Without the director, the
+-- attacker's attack clip stands in. Scene.PRESENTATION_HOLD_LIMIT (seconds)
+-- releases any hold whose end never comes.
+Scene.PRESENTATION_HOLD_LIMIT=8
+function Scene:stadiumPresentationBusy()
+  if (self.heldAdvanceTime or 0)>=Scene.PRESENTATION_HOLD_LIMIT then return false end
+  local cam=self.stadiumDirectorActive and self.stadiumCamera
+  if cam and cam.busy then
+    local ok,busy=pcall(cam.busy,cam)
+    if ok then return busy==true end
+  end
+  for _,side in ipairs({"player","enemy"}) do
+    local actor=self.actors and self.actors[side]
+    if actor and actor.context=="attack" then return true end
+  end
+  return false
 end
 
 -- A move starts (the attack state): Stadium's attack shot on the attacker.
 function Scene:stadiumCameraAttack(side,moveId)
   self.stadiumLastMove={side=side,move=tonumber(moveId)}
-  if self.stadiumCameraActive and self.stadiumCamera then
+  if self.stadiumDirectorActive and self.stadiumCamera then
     pcall(self.stadiumCamera.attack,self.stadiumCamera,self,side,moveId)
   end
 end
@@ -411,22 +477,32 @@ function Scene:stadiumCameraTurn()
   self.stadiumIdleCleared=false -- 8411FF1C's 0x5A case clears D_841911FA
   self.stadiumTurnSeen=true
   self.stadiumFirstActor=false -- Gen 1 records the turn's first action here
-  if self.stadiumCameraActive and self.stadiumCamera then
+  self.stadiumPresentedMove=nil -- Gen 1's stat lines pair with this turn's move
+  if self.stadiumDirectorActive and self.stadiumCamera then
     pcall(self.stadiumCamera.turnStart,self.stadiumCamera,self)
   end
 end
 
 -- A status or residual Stadium event (its FX entry; trapMove for a
 -- trapping tick): Stadium's family 9 camera on that side.
+-- Weather start/end entries come from 84119630 (codes 0x30-0x35), which
+-- does not clear; every other entry here is a family-9 event (84118C08).
+local NO_CLEAR_ENTRIES={[0x106]=true,[0x107]=true,[0x113]=true,
+  [0x11F]=true,[0x120]=true,[0x121]=true}
+
 function Scene:stadiumCameraEntry(entry,side,trapMove)
-  if self.stadiumCameraActive and self.stadiumCamera then
+  -- 84118C08: a status/residual/stat/heal event (family 9) clears the
+  -- battle effects (84111C1C -> 841089D8(1)) before it plays its own, so a
+  -- move's leftover marks end there. Independent of the camera mode.
+  if not NO_CLEAR_ENTRIES[tonumber(entry)] then self:battleFxClear() end
+  if self.stadiumDirectorActive and self.stadiumCamera then
     pcall(self.stadiumCamera.statusEvent,self.stadiumCamera,self,side,entry,trapMove)
   end
 end
 
 -- A Pokemon is recalled: Stadium's recall camera on it.
 function Scene:stadiumCameraRecall(side,condition)
-  if self.stadiumCameraActive and self.stadiumCamera then
+  if self.stadiumDirectorActive and self.stadiumCamera then
     condition=condition or (self.restCondition and self:restCondition(side)) or nil
     pcall(self.stadiumCamera.recall,self.stadiumCamera,self,side,condition)
   end
@@ -436,7 +512,7 @@ end
 -- the STADIUM camera's opening is not yet filming that side (it releases it
 -- at Stadium's own moment).
 function Scene:stadiumEntrance(side,start)
-  local cam=self.stadiumCameraActive and self.stadiumCamera
+  local cam=self.stadiumDirectorActive and self.stadiumCamera
   local okH,hold=false,false
   if cam and cam.holdEntrance then okH,hold=pcall(cam.holdEntrance,cam,side) end
   if okH and hold then
@@ -459,7 +535,7 @@ end
 
 -- The battle is decided (battle.ended): Stadium's victory camera.
 function Scene:stadiumCameraBattleEnd(result)
-  if self.stadiumCameraActive and self.stadiumCamera then
+  if self.stadiumDirectorActive and self.stadiumCamera then
     pcall(self.stadiumCamera.battleEnd,self.stadiumCamera,self,result)
   end
 end
@@ -475,7 +551,7 @@ end
 
 function Scene:stadiumCameraTurnCheck(side,code)
   if code==0x26 then self.stadiumConfusedSide=side end
-  if self.stadiumCameraActive and self.stadiumCamera then
+  if self.stadiumDirectorActive and self.stadiumCamera then
     local condition=self.restCondition and self:restCondition(side) or nil
     pcall(self.stadiumCamera.turnCheck,self.stadiumCamera,self,side,code,condition)
   end
@@ -483,7 +559,7 @@ end
 
 -- A move misses: Stadium's dodge camera on the defender.
 function Scene:stadiumCameraDodge(side,moveId)
-  if self.stadiumCameraActive and self.stadiumCamera then
+  if self.stadiumDirectorActive and self.stadiumCamera then
     local condition=self.restCondition and self:restCondition(side) or nil
     pcall(self.stadiumCamera.dodge,self.stadiumCamera,self,side,moveId,condition)
   end
@@ -495,14 +571,14 @@ function Scene:stadiumCameraSendOut(side)
   -- the battle's first send-outs are the opening's (8411C418 clears at its
   -- wipe instead, see StadiumCamera:update)
   if self.stadiumTurnSeen then self:battleFxClear() end
-  if self.stadiumCameraActive and self.stadiumCamera then
+  if self.stadiumDirectorActive and self.stadiumCamera then
     pcall(self.stadiumCamera.sendOut,self.stadiumCamera,self,side)
   end
 end
 
 -- A Pokemon faints (its faint clip starts): Stadium's faint camera on it.
 function Scene:stadiumCameraFaint(side)
-  if self.stadiumCameraActive and self.stadiumCamera then
+  if self.stadiumDirectorActive and self.stadiumCamera then
     pcall(self.stadiumCamera.faint,self.stadiumCamera,self,side)
   end
 end
@@ -510,7 +586,7 @@ end
 -- The defender is hit (at the impact): Stadium's hit shot on the defender,
 -- by its presented sleep / freeze (restCondition).
 function Scene:stadiumCameraHit(side,moveId)
-  if self.stadiumCameraActive and self.stadiumCamera then
+  if self.stadiumDirectorActive and self.stadiumCamera then
     local condition=self.restCondition and self:restCondition(side) or nil
     pcall(self.stadiumCamera.hit,self.stadiumCamera,self,side,moveId,condition)
   end
@@ -651,11 +727,15 @@ function Scene:modelMatrix(side,actor,image)
     -- Stadium model bounds and field vertices use the same source units.
     -- Fragment 79 authors X/Z and facing globally for every field. Ground the
     -- extracted model's real floor to reproduce its model-derived Y offset.
+    local axes=axisScale(actor,image)
+    local ky=axes and k*axes[6] or k
+    local model=mul(rotateY(yaw),scale(k))
+    if axes then model=mul(model,axes) end
     return mul(translate((slot[1]+o[1])*self.arenaScale,
-        self.arenaGroundY-metrics.floor*k+o[2]*self.arenaScale
+        self.arenaGroundY-metrics.floor*ky+o[2]*self.arenaScale
           +elevation*metrics.height*self.arenaScale,
         (slot[3]+o[3])*self.arenaScale),
-      mul(rotateY(yaw),scale(k))),yaw
+      model),yaw
   end
   if self:stadiumCustomScene() then
     -- the arena's placement and proportions, in the scene's Stadium space
@@ -666,8 +746,12 @@ function Scene:modelMatrix(side,actor,image)
     local o=image and image.offset or actor.nativeOffset or {0,0,0}
     local at=self:stadiumToWorld({slot[1]+o[1],o[2],slot[3]+o[3]})
     local turn=yaw+sp.theta
-    return mul(translate(at[1],at[2]-metrics.floor*k+elevation*metrics.height*sp.scale,at[3]),
-      mul(rotateY(turn),scale(k))),turn
+    local axes=axisScale(actor,image)
+    local ky=axes and k*axes[6] or k
+    local model=mul(rotateY(turn),scale(k))
+    if axes then model=mul(model,axes) end
+    return mul(translate(at[1],at[2]-metrics.floor*ky+elevation*metrics.height*sp.scale,at[3]),
+      model),turn
   end
   local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
   local k=worldHeight/metrics.height*actor:scale()*self:picScale(side)
@@ -877,7 +961,10 @@ function Scene:render(requestedWidth,requestedHeight)
       ext.shadowPhase=nil
       for _,side in ipairs({"enemy","player"}) do
         local actor,entry=candidateActors[side],matrices[side]
-        if battlerModes[side]=="host" and entry and actor.renderer then
+        -- a model the send-out (or any opacity track) still keeps invisible
+        -- casts no shadow: no shadow on the floor before the ball opens
+        if battlerModes[side]=="host" and entry and actor.renderer
+            and self:battlerOpacity(side,actor)>=Scene.SHADOW_MIN_OPACITY then
           local drawn,drawErr=actor.renderer:drawShadowMap(entry[1],lightVP)
           if not drawn and self.warn then
             pcall(self.warn,self.label.." shadow draw failed: "..tostring(drawErr))

@@ -188,7 +188,17 @@ assembly; not checked against ROM execution or visually.
   particle's +0x2C..+0x34. No match adds nothing. The new particle already
   occupies its slot; a slot not yet updated still holds zero at +0x20.
 - 84101D54 (update) calls 84104A00 again only for descriptor flag 0x20000,
-  so the pool origin is a construction-time anchor.
+  so the pool origin is a construction-time anchor. Correction (2026-10-01,
+  US asm 84101D94..84101DC0): it also re-runs 84105930 every update for
+  descriptor flag 0x1, so camera-ray particles follow the camera; the port's
+  per-frame flag-1 anchor (motion updateAnchor) is native.
+- Mode-0 particles' orientation (2026-10-01): 841072BC copies the owner
+  model's Y rotation (+0x20) into the particle yaw (+0x6C) at emission;
+  841027B4 hands +0x6A/+0x6C/+0x6E, the +0x18 scale and the position to the
+  compiled model each update. The port seeds the yaw the same way
+  (nativeSourceYaw, +-0x4000 by side). A camera-ray funnel (Absorb 244,
+  Gust/Whirlwind 142, Roar 161) therefore faces the attacker's facing, and
+  only looks centred under Stadium's attack shot.
 - Draw passes: 84103478 draws live slots with 0x1000 and 0x2000 set and
   0x100800 clear (0x4000 selects the 841032F0 screen path). 84103394 draws
   slots with 0x1000 set and 0x102800 clear when D_80094910+0x18 equals 3
@@ -303,6 +313,10 @@ holds row 251 (idle) so its loop ends as the counter reaches 0. Then
   (122) for 42/173/90/92/93/94/108 (D_841839F4), Rollout (205) for
   76/232/241 (D_84183A04), which play only the sound (84114678), and Curse
   (174), whose route needs result bit 0x80.
+- Correction (2026-10-01, battle-timeline-audit-2026-10-01.md): 84112564
+  only sets record +1 bit 0, read by the text system (84137778) and the HP
+  bars (84136D9C); the defender's record loads after the attack's timer is
+  0 (84135778). The frames below are the text/HP start, not the defender's.
 - 84112564 releases the next event record (the defender): for ordinary
   moves at counter 0 when (+0x61A - 30) < +0x619, otherwise at +0x619. For
   D_84183A18 (Explosion 153, Self-Destruct 120: k = 30; Softboiled 135: 70;

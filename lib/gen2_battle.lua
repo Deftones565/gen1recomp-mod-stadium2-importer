@@ -478,8 +478,10 @@ function Scene:handleEvent(event)
     -- that supplied a symbolic move key.
     local moveId=moveNumber(data,event.move)
     if event.missed~=true and moveId then self:stadiumCameraAttack(side,moveId) end
-    -- a miss queues only the defender's dodge (841246AC)
+    -- a miss queues only the defender's dodge (841246AC); before it, the
+    -- attempt (Scene:stadiumPresentAttempt, user-requested extension)
     if event.missed==true and moveId then
+      if event.animParam~=1 then self:stadiumPresentAttempt(side,moveId) end
       self:stadiumCameraDodge(side=="player" and "enemy" or "player",moveId)
     end
     if self.battleFx and event.missed~=true and moveId then
@@ -550,7 +552,10 @@ function Scene:handleEvent(event)
     -- Stadium clip at damage time makes it finish before the faint message.
     if actor then actor.pendingFaint=true end
   elseif (event.kind == "send" or event.kind == "sendout") and side then
-    if self:stadiumDraggedOut(event) then self:stadiumCameraTurnCheck(side, self:stadiumDragCode(event))
+    if self:stadiumDraggedOut(event) then
+      local code = self:stadiumDragCode(event)
+      self:stadiumCameraTurnCheck(side, code)
+      self:stadiumDragInFx(side, code)
     else self:stadiumCameraSendOut(side) end
     if self.minimized then self.minimized[side]=nil end
     self.substituteActive[side]=false
@@ -667,6 +672,32 @@ function Scene:stadiumDragCode(event)
   if status == "sleep" then return 0x2F end
   if status == "freeze" then return 0x2E end
   return 0x2D
+end
+
+-- Family 25's battle effects (Sequence.DRAG_IN_ENTRY): 0x12C on the
+-- dragged-in Pokemon now, its status entry on the 12th tick.
+function Scene:stadiumDragInFx(side, code)
+  local fx = self.battleFx
+  if not (fx and fx.signalEffect) then return end
+  pcall(fx.signalEffect, fx, FxSequence.DRAG_IN_ENTRY, side)
+  local entry = FxSequence.DRAG_IN_STATUS_ENTRIES[code]
+  self.stadiumDragIn = entry and {side = side, entry = entry, clock = 0, ticks = 0} or nil
+end
+
+function Scene:stepDragInFx(dt)
+  local pending = self.stadiumDragIn
+  if not pending then return end
+  pending.clock = pending.clock + (tonumber(dt) or 0) * 30
+  while pending.clock >= 1 do
+    pending.clock = pending.clock - 1
+    pending.ticks = pending.ticks + 1
+    if pending.ticks >= FxSequence.DRAG_IN_STATUS_TICK then
+      self.stadiumDragIn = nil
+      local fx = self.battleFx
+      if fx and fx.signalEffect then pcall(fx.signalEffect, fx, pending.entry, pending.side) end
+      return
+    end
+  end
 end
 
 -- "was dragged out!" (Roar / Whirlwind) arrives as a send event; Stadium
@@ -807,7 +838,9 @@ function Scene:signalEventFx(event)
     owner = event.side
     entry = FxSequence.statChangeEntry({side = event.side, stages = event.stages,
       moveSide = moving.side, moveId = moving.move, rage = volatile and volatile.rage})
-  elseif (event.kind == "send" or event.kind == "sendout") then
+  elseif (event.kind == "send" or event.kind == "sendout")
+      and not self:stadiumDraggedOut(event) then
+    -- a dragged-in Pokemon is family 25 (Scene:stadiumDragInFx), not 12
     owner = sideOk(event.side) and event.side or "player"
     entry = FxSequence.SEND_OUT_ENTRY
   end
@@ -887,6 +920,40 @@ function Scene:syncBattleFxAnimation(started)
   end
 end
 
+-- USER-REQUESTED EXTENSION (2026-10-01; neither Gold nor Stadium 2 does
+-- this): when a move has no effect, "<mon> used <MOVE>!" waits for A/B
+-- instead of running straight on to "It doesn't affect ...", so the player
+-- can read which move was tried. Gold shows a move line without a wait
+-- (messageTimer 0); a positive messageTimer is its A/B prompt.
+function Scene.noEffectPrompt(screen)
+  if (screen.messageTimer or 0) > 0 or not screen.message then return end
+  local okS, Strings = pcall(require, "src.core.Strings")
+  if not okS then return end
+  local okF, shape = pcall(Strings, "It doesn't affect %s...", "\1")
+  local cut = okF and type(shape) == "string" and shape:find("\1", 1, true)
+  if not cut then return end
+  local head, tail = shape:sub(1, cut - 1), shape:sub(cut + 1)
+  for _, queued in ipairs(screen.queue or {}) do
+    if queued.kind == "move" then return end
+    local text = queued.text
+    if type(text) == "string" then
+      if #text > #head + #tail and text:sub(1, #head) == head and text:sub(-#tail) == tail then
+        screen.messageTimer = 1
+      end
+      return
+    end
+  end
+end
+
+function Scene:resumeHeldAdvance(dt)
+  local screen = self.heldAdvance
+  if not screen then self.heldAdvanceTime = nil; return end
+  self.heldAdvanceTime = (self.heldAdvanceTime or 0) + (tonumber(dt) or 0)
+  if self:stadiumPresentationBusy() then return end
+  self.heldAdvance, self.heldAdvanceTime = nil, nil
+  screen:advanceQueue()
+end
+
 function Scene:update(dt)
   self:sync()
   self:syncBattleFxAnimation()
@@ -919,6 +986,8 @@ function Scene:update(dt)
   self.substituteActors.player:update(dt)
   self.substituteActors.enemy:update(dt)
   self:updateBattleFx(dt)
+  self:stepDragInFx(dt)
+  self:resumeHeldAdvance(dt)
   return self:render()
 end
 
@@ -1206,6 +1275,13 @@ local function installScreenHooks()
   function BattleState:advanceQueue(...)
     local event = self.queue and self.queue[1] or nil
     local scene = active(self)
+    -- 84135778: Stadium loads the next battle record only once the current
+    -- one has finished (Scene:stadiumPresentationBusy). Gold's queue does
+    -- not wait for Stadium's presentation, so hold it; Scene:update resumes.
+    if scene and scene:stadiumPresentationBusy() then
+      scene.heldAdvance = self
+      return
+    end
     local after = event and (event.kind == "send" or event.kind == "sendout"
       or event.kind == "transform")
     if scene and event and not after then
@@ -1214,6 +1290,7 @@ local function installScreenHooks()
     end
     local result = originalAdvance(self, ...)
     if scene and event and event.kind=="move" then scene:syncBattleFxAnimation(true) end
+    if scene and event and event.kind=="move" then Scene.noEffectPrompt(self) end
     if scene and event and after then
       scene.screen = self
       scene:handleEvent(event)

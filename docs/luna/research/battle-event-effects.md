@@ -28,7 +28,7 @@ entries) and calls a wrapper that selects a state family through
 | 0x26 | 20 | 251, 258 | 0x104 |
 | 0x27 | 21 | 251, 258 | move route |
 | 0x28 | 23 | 251, 258 | 0x100 |
-| 0x2D-0x2F | 25 | 251 | 0x100, 0x12C, 0xFE |
+| 0x2D-0x2F | 25 | 251 | 0x100, 0x12C, 0xFE (Gen 2 wired 2026-10-01: Scene:stadiumDragInFx) |
 | 0x30-0x36 | 28 (84119630) | 251, 258 | weather, 0x10C |
 | 0x37 / 0x65 / 0x66 / 0x67 | 32 / 33 / 29 / 30 | - | 0x12A (33) |
 | 0x06, 0x3C-0x59 | 9 (84118DD4) | 251, 258 | table in sequencing-render-emission.md |
@@ -82,8 +82,19 @@ Send-out: family 12's 8411BCC8 signals 0x122 (sound 5) as the state starts.
 
 Not wired, missing event detail: Leftovers heals (no source on Gold's heal
 event), Spikes (a plain damage event after a message), full paralysis and
-Attract (messages without a side), Gen 1 stat changes (no stat event or
-hook). Gen 2 has no Nightmare tick.
+Attract (messages without a side). Gen 2 has no Nightmare tick.
+
+Gen 1 (2026-10-01, lib/gen1_battle.lua): Red has no heal or stage event.
+- Drain heals: 84129180 puts the heal's HP fill (84136A9C), text 0xAF
+  (84135B00) and the event (0x54 Absorb 0x47, 0x52 Mega Drain 0x48, 0x51
+  Leech Life 0x8D, 0x53 Giga Drain 0xCA, 0x4A otherwise) in one record on
+  the healing side (D_841951BC). The mod wraps EffectRegistry.runDamaging so
+  the drain effect's ctx.drain() tags the HP drain row it queues, and
+  BattleState:updateQueue signals the entry when that row starts.
+- Stat changes: changeStage's lines and _BuildingRageText (applyDamage)
+  are matched when their message starts (Scene.stadiumStatLine) and go
+  through Sequence.statChangeEntry with this turn's presented move.
+Matches the assembly by reading; not visually confirmed.
 
 ## Switching, trapping, items, balls (2026-09-25)
 

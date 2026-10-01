@@ -48,6 +48,7 @@ local autoCaptureAt = math.max(1,
   math.floor(tonumber(os.getenv("STADIUM2_VISUAL_AUTOCAPTURE_FRAME")) or 8))
 local autoKeys = os.getenv("STADIUM2_VISUAL_AUTOKEYS")
 local autoKeysApplied = false
+local autoKeysWaited = 0
 local shaderStyle = os.getenv("STADIUM2_VISUAL_SHADER") == "cel" and "cel" or "stadium"
 local rapidashCutEffect = os.getenv("STADIUM2_VISUAL_RAPIDASH_CUT_FX") ~= "0"
 local rapidashButtonHeld = false
@@ -1451,7 +1452,11 @@ function love.update(dt)
     end
     return
   end
-  if scene and not autoKeysApplied then
+  -- STADIUM2_VISUAL_AUTOKEYS_DELAY: frames to wait first, so keys such as K
+  -- run after the first draw has supplied the scene context (as a real press)
+  autoKeysWaited = (autoKeysWaited or 0) + 1
+  if scene and not autoKeysApplied
+      and autoKeysWaited > (tonumber(os.getenv("STADIUM2_VISUAL_AUTOKEYS_DELAY")) or 0) then
     autoKeysApplied = true
     for key in tostring(autoKeys or ""):gmatch("[^,%s]+") do love.keypressed(key) end
   end

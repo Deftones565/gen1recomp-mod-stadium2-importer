@@ -198,11 +198,59 @@ function Scene:stadiumAwaitingCommand()
   return battle~=nil and (battle.phase=="menu" or battle.phase=="moveSelect")
 end
 
+-- Red's stat-change lines (MoveEffects changeStage: "X's / STAT rose!",
+-- "greatly rose!", "fell!", "greatly fell!") and Rage's "X's / RAGE is
+-- building!" (BattleState:applyDamage). Red has no stage event; Stadium's
+-- 84124DEC / 8412FD24 / 84128CB8 queue 0x41 / 0x42 with the same lines
+-- (Sequence.statChangeEntry decides the entry). The stat name is whatever
+-- stands in its slot. Returns the side, stages sign and rage flag, or nil.
+Scene.STAT_LINES={
+  {"%s's\n%s rose!",1},{"%s's\n%s\ngreatly rose!",2},
+  {"%s's\n%s fell!",-1},{"%s's\n%s\ngreatly fell!",-2},
+}
+function Scene.stadiumStatLine(battle,text,displayName,Strings)
+  for _,side in ipairs({"player","enemy"}) do
+    local b=battle[side]
+    if b and b.name then
+      local name=displayName(b)
+      local okR,rage=pcall(battle.romText,battle,"_BuildingRageText","%s's\nRAGE is building!",name)
+      if okR and rage==text then return side,1,true end
+      for _,line in ipairs(Scene.STAT_LINES) do
+        local okS,shape=pcall(Strings,line[1],name,"\1")
+        local cut=okS and type(shape)=="string" and shape:find("\1",1,true)
+        if cut then
+          local head,tail=shape:sub(1,cut-1),shape:sub(cut+1)
+          if #text>#head+#tail and text:sub(1,#head)==head and text:sub(-#tail)==tail
+              and not text:sub(#head+1,#text-#tail):find("\n",1,true) then
+            return side,line[2],false
+          end
+        end
+      end
+    end
+  end
+end
+
+function Scene:stadiumStatChange(side,stages,rage)
+  local moving=self.stadiumPresentedMove or {}
+  local entry=FxSequence.statChangeEntry({side=side,stages=stages,
+    moveSide=moving.side,moveId=moving.moveId,rage=rage})
+  if not entry then return end
+  self:stadiumCameraEntry(entry,side)
+  if self.battleFx and self.battleFx.signalEffect then
+    pcall(self.battleFx.signalEffect,self.battleFx,entry,side)
+  end
+end
+
 function Scene:stadiumCameraTurnText(battle,item)
   local text=type(item)=="table" and item.text or nil
   if type(text)~="string" or not battle.romText then return end
   local okE,EffectRegistry=pcall(require,"src.battle.EffectRegistry")
   if not okE or type(EffectRegistry.displayName)~="function" then return end
+  local okStr,Strings=pcall(require,"src.core.Strings")
+  if okStr then
+    local side,stages,rage=Scene.stadiumStatLine(battle,text,EffectRegistry.displayName,Strings)
+    if side then return self:stadiumStatChange(side,stages,rage) end
+  end
   local okH,hurt=pcall(battle.romText,battle,"_HurtItselfText","It hurt itself in\nits confusion!")
   if okH and hurt==text then return self:stadiumCameraSelfHit() end
   -- the trainer AI's switch (AISwitchIfEnoughMons): "<trainer> withdrew
@@ -267,6 +315,92 @@ function Scene:stadiumCameraMiss(battle,item)
         if moveId then self:stadiumCameraDodge(side=="player" and "enemy" or "player",moveId) end
         return
       end
+      -- no effect is a miss to Stadium's engine too (8412E420 / 841246AC):
+      -- the dodge is on the Pokemon the line names
+      local okN,none=pcall(battle.romText,battle,"_DoesntAffectMonText","It doesn't affect\n%s!",
+        EffectRegistry.displayName(user))
+      if okN and none==text then
+        local attacker=battle[side=="player" and "enemy" or "player"]
+        local data=battle.data
+        local def=data and data.moves and attacker and attacker.lastMove and data.moves[attacker.lastMove]
+        local moveId=def and tonumber(def.index or def.number)
+        if moveId then self:stadiumCameraDodge(side,moveId) end
+        return
+      end
+    end
+  end
+end
+
+-- Red's drain moves (DRAIN_HP_EFFECT, DREAM_EATER_EFFECT: drainHalf heals
+-- the user, queues its HP drain, then "Sucked health from ..." / "... dream
+-- was eaten"). Stadium's 84129180 puts the heal's HP fill, its text and its
+-- event in one record on the healing side: 0x54 Absorb, 0x52 Mega Drain,
+-- 0x51 Leech Life, 0x53 Giga Drain, 0x4A otherwise (entries 0x114, 0x115,
+-- 0x117, 0x116, 0x10D). Red has no heal event, so the entry is signalled
+-- when the heal's own HP drain row starts (the record's start).
+function Scene:stadiumDrainQueued(battle,ctx)
+  local item=battle.queue and battle.queue[battle.nextInsert or 0]
+  if type(item)~="table" or not item.drain then return end
+  local user=ctx.user
+  local side=user==battle.player and "player" or user==battle.enemy and "enemy" or nil
+  local move=ctx.move
+  local moveId=type(move)=="table" and tonumber(move.index or move.number) or nil
+  if not side then return end
+  self.stadiumDrainHeals=self.stadiumDrainHeals or setmetatable({},{__mode="k"})
+  self.stadiumDrainHeals[item]={side=side,moveId=moveId}
+end
+
+function Scene:stadiumDrainHeal(heal)
+  local entry=FxSequence.DRAIN_ENTRIES[heal.moveId] or FxSequence.HEAL_ENTRY
+  self:stadiumCameraEntry(entry,heal.side)
+  if self.battleFx and self.battleFx.signalEffect then
+    pcall(self.battleFx.signalEffect,self.battleFx,entry,heal.side)
+  end
+end
+
+-- USER-REQUESTED EXTENSION: Red's miss line ("<user>'s attack missed!") or
+-- no-effect line right after its move row was cancelled arms that row's
+-- placeholder to present the attempt (Scene:stadiumPresentAttempt).
+local function lineShape(battle,label,fmt)
+  local ok,shape=pcall(battle.romText,battle,label,fmt,"\1")
+  local cut=ok and type(shape)=="string" and shape:find("\1",1,true)
+  if not cut then return nil end
+  return shape:sub(1,cut-1),shape:sub(cut+1)
+end
+local function matches(text,head,tail)
+  return head and #text>#head+#tail and text:sub(1,#head)==head and text:sub(-#tail)==tail
+end
+function Scene.armAttempt(battle,text)
+  local placeholder=battle.stadiumAttemptRow
+  if not (placeholder and battle.romText) then return end
+  local missed=matches(text,lineShape(battle,"_AttackMissedText","%s's\nattack missed!"))
+  local immune=matches(text,lineShape(battle,"_DoesntAffectMonText","It doesn't affect\n%s!"))
+  if not (missed or immune) then return end
+  battle.stadiumAttemptRow=nil
+  local row=placeholder.stadiumAttempt
+  local def=battle.data and battle.data.moves and battle.data.moves[row.anim]
+  local moveId=def and tonumber(def.index or def.number)
+  local side=row.attackerIsPlayer and "player" or "enemy"
+  placeholder.fn=function()
+    local scene=session
+    if scene and scene.battle==battle and moveId then scene:stadiumPresentAttempt(side,moveId) end
+  end
+end
+
+-- See the sayNext hook in installHooks (user-requested extension).
+function Scene.noEffectPrompt(battle,text)
+  if not battle.romText then return end
+  local ok,shape=pcall(battle.romText,battle,"_DoesntAffectMonText","It doesn't affect\n%s!","\1")
+  local cut=ok and type(shape)=="string" and shape:find("\1",1,true)
+  if not cut then return end
+  local head,tail=shape:sub(1,cut-1),shape:sub(cut+1)
+  if not (#text>#head+#tail and text:sub(1,#head)==head and text:sub(-#tail)==tail) then return end
+  local queue=battle.queue or {}
+  for i=(battle.nextInsert or #queue)-1,1,-1 do
+    local item=queue[i]
+    if type(item)=="table" and item.text then
+      if item.auto then item.auto=nil;item.autoDelay=nil end
+      return
     end
   end
 end
@@ -364,6 +498,7 @@ function Scene:presentAnimStart(name,attackerIsPlayer)
     local side=rowSide
     local moveId=tonumber(def.index or def.number)
     if moveId then
+      self.stadiumPresentedMove={side=side,moveId=moveId}
       self.actors[side]:attack(moveId)
       self:stadiumCameraAttack(side,moveId)
       if self.battleFx then
@@ -948,6 +1083,95 @@ local function installHooks()
     end
   end
 
+  -- Drain heals (Scene:stadiumDrainQueued): tag the HP drain row the drain
+  -- effect queues, and signal its heal when that row starts.
+  local EffectRegistry=require("src.battle.EffectRegistry")
+  if EffectRegistry.runDamaging and BattleState.updateQueue then
+    local runDamaging,updateQueue=EffectRegistry.runDamaging,BattleState.updateQueue
+    function EffectRegistry.runDamaging(battle,ctx,...)
+      local scene=active(battle)
+      if not scene then return runDamaging(battle,ctx,...) end
+      if type(ctx)=="table" and type(ctx.drain)=="function" then
+        local drain=ctx.drain
+        ctx.drain=function(...)
+          local result=pack(drain(...))
+          pcall(scene.stadiumDrainQueued,scene,battle,ctx)
+          return unpack(result,1,result.n)
+        end
+      end
+      return runDamaging(battle,ctx,...)
+    end
+    function BattleState:updateQueue(...)
+      local scene=active(self)
+      -- 84135778: Red's next row waits while Stadium's current record is
+      -- still playing (Scene:stadiumPresentationBusy). Only a new row is held,
+      -- never one in progress; HP drain and wait rows belong to the record
+      -- (its hit waits for the HP bar) and always pass.
+      local nextRow=self.queue and self.queue[1]
+      if scene and nextRow and not self.current and not self.waitingUI
+          and not ((self.waitFrames or 0)>0) and not self.waitingSound
+          and not self.draining and not self.animPlaying
+          and not nextRow.drain and not nextRow.wait then
+        if scene:stadiumPresentationBusy() then
+          scene.heldAdvanceTime=(scene.heldAdvanceTime or 0)+1/60
+          return true
+        end
+      end
+      if scene then scene.heldAdvanceTime=nil end
+      local heals=scene and scene.stadiumDrainHeals
+      local head=heals and self.queue and self.queue[1]
+      local result=pack(updateQueue(self,...))
+      local heal=head and heals[head]
+      if heal and self.queue[1]~=head then
+        heals[head]=nil
+        pcall(scene.stadiumDrainHeal,scene,heal)
+      end
+      return unpack(result,1,result.n)
+    end
+  end
+
+  -- USER-REQUESTED EXTENSION (2026-10-01; neither Red nor Stadium 2 does
+  -- this): when a move has no effect, "<mon> used <MOVE>!" waits for A/B
+  -- instead of running straight on to "It doesn't affect ...". Red queues
+  -- the used line as an auto row (sayNextAuto) earlier in the same action,
+  -- so the no-effect line turns the nearest earlier text row into a prompt.
+  if BattleState.sayNext then
+    local sayNext=BattleState.sayNext
+    function BattleState:sayNext(text,...)
+      local scene=active(self)
+      local result=pack(sayNext(self,text,...))
+      if scene and type(text)=="string" then
+        pcall(Scene.noEffectPrompt,self,text)
+        pcall(Scene.armAttempt,self,text)
+      end
+      return unpack(result,1,result.n)
+    end
+  end
+  -- USER-REQUESTED EXTENSION (Scene.armAttempt): the move row Red cancels
+  -- leaves a placeholder in its place; a miss / no-effect line arms it.
+  if BattleState.cancelMoveAnim then
+    local cancel=BattleState.cancelMoveAnim
+    function BattleState:cancelMoveAnim(...)
+      local scene=active(self)
+      local row=self.moveAnimRow
+      local at
+      if scene and row and self.queue then
+        for i,item in ipairs(self.queue) do if item==row then at=i break end end
+      end
+      local before=self.nextInsert
+      local result=pack(cancel(self,...))
+      if at and self.moveAnimRow==nil and self.queue[at]~=row then
+        local placeholder={fn=function() end,stadiumAttempt=row}
+        table.insert(self.queue,at,placeholder)
+        if before and self.nextInsert and self.nextInsert<before then
+          self.nextInsert=self.nextInsert+1
+        end
+        self.stadiumAttemptRow=placeholder
+      end
+      return unpack(result,1,result.n)
+    end
+  end
+
   -- STADIUM camera: Stadium's event 0x5B goes to the side that acts first
   -- (841343FC, before that side's action). Gen 1 keeps the turn order only
   -- in its queued actions, so the first action to run names that side.
@@ -1343,7 +1567,8 @@ function Gen1.install()
   if installed then return true end
   patches=PatchScope.new()
   local ok,err=pcall(function()
-    patches:capture({require("src.battle.BattleState"),require("src.battle.AnimPlayer")},installHooks)
+    patches:capture({require("src.battle.BattleState"),require("src.battle.AnimPlayer"),
+      require("src.battle.EffectRegistry")},installHooks)
   end)
   if not ok then warn(err); return false end
   local composeOk,composeErr=pcall(installComposeHook)

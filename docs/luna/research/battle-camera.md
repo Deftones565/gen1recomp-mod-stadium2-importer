@@ -1155,3 +1155,65 @@ did not run the text system as the game does; the replay result is
 unreliable and a double opening would look like a glitch. The port keeps
 the single opening. Details and what would settle it:
 `opening-replay-port-plan-2026-10-01.md`.
+
+### The attack state's length: the camera stays on the attacker (2026-10-01)
+
+User report: the camera cut to the defender's hit before the attacker's
+animation and effects had played. Cause: the port started the hit camera
+when the host reported the impact; in Stadium the defender's hit record
+cannot play before the attack record's event timer is 0 (84135778).
+
+US asm for 84114804 (its tail 841146D4(actor, move - 1)), 841154F8,
+84114BF4; fork C for 84114A04.
+
+- 84114804 ends by copying the attacker's motion row for the move
+  (841146D4): +0x619 (hit frame), +0x61A (length), +0x61B and the rest. The
+  port had left the copy out as "not camera"; it now does it.
+- 84114A04, after the program: Fly's +0x7F4 bit 3; the counter 0, or the
+  hit frame when it is negative; substate 0; +0x61A and +0x619 less +0x61B;
+  the timer 600.
+- 841154F8 runs 84114BF4 (841153DC for Rest, 0x9C) while the substate is 0
+  and 841133EC is clear. Camera parts: the frame after the hit frame, on
+  shot 4, FOV goal 60; at the hit frame the jolt stops, then Earthquake /
+  Fissure jolt 45 and Magnitude / Flail / Frustration / Return jolt 55; the
+  end at frame +0x61A, or when the animation finishes (8003EC34) if +0x61A
+  is 0: +0x7F4 loses bits 0 and 3, substate 4, 84111BEC (the timer 0).
+- Checked against the ROM in the VM: 84114A04 + 841154F8 frame by frame
+  with the real motion records, 300 rounds (every fifth with length 0);
+  five mutations fail it. Lengths with the real rows: median about 80
+  frames, 23 to about 210.
+- Controller: `attack` runs `attackFrame` each tick (the host's clip end is
+  8003EC34); a hit or dodge on the other side reported meanwhile is held
+  (`holdHit`) and played when the attack ends, starting with its state at
+  frame 0 (as the record does), instead of lined up with the host's impact.
+  Any other camera event drops the wait. The host still plays the
+  defender's hit clip and the HP drain at its own impact, which can fall
+  inside the attacker's shot; that is host timing, not the camera.
+
+
+## The record gate: hosts wait for Stadium's current record (2026-10-01)
+
+Source: 84135778 (US asm, pret `c0e10f2`), the record loop described in
+opening-replay-port-plan-2026-10-01.md: the next queued record is copied in
+only when the current one's timer (+6) is 0, its new-event flag (+2) is 0,
+the HP-bar frames are 0 and the text gate is clear.
+
+Port (`StadiumCamera:busy`, `Scene:stadiumPresentationBusy`):
+- busy while the record timer is above 0 (every family that sets it clears
+  it at its end), or a family the port tracks without a timer is still
+  playing: the attack (`attacking`), the send-out (`sendingOut`), timed
+  states (drag-out, substitute) and runs (hit follow-up, wake, ...).
+- not busy for the idle cycle's timer (`idleTimer`; a new family resets the
+  timer to 0, as a new record starts with its own), the battle's opening and
+  arena intro (they wait on the hosts' send-outs themselves), the victory
+  camera, or a pending first mover (its side is known only once the host
+  runs that action; the 0x5A and first-mover timers cover the turn start).
+- The state machine (the "director") now runs with either CAMERA option;
+  only the camera pose needs STADIUM (`stadiumDirectorActive` versus
+  `stadiumCameraActive`). Without the director, the attacker's clip stands
+  in. Every hold ends after 8 s (`Scene.PRESENTATION_HOLD_LIMIT`).
+- Gen 2 holds `BattleState:advanceQueue` and resumes it from Scene:update.
+  Gen 1 holds `updateQueue` only before a new row; Red's HP drain and wait
+  rows pass (a hit waits for its HP bar). The hosts' own HP bars and text
+  gates stay theirs.
+Matches the assembly's rule by reading; not visually confirmed.

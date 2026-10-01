@@ -185,4 +185,90 @@ do
   ok(recalled==nil,"other trainer lines do not")
 end
 
+-- Red's stat lines and Rage's line -> Stadium's 0x41 / 0x42 entries
+do
+  local S=Gen1.Scene
+  local got={}
+  local fake=setmetatable({stadiumCameraEntry=function(_,id,side) got[#got+1]={"cam",id,side} end,
+    battleFx={signalEffect=function(_,id,side) got[#got+1]={"fx",id,side} end},
+    stadiumCameraSelfHit=function() end,stadiumCameraTurnCheck=function() end},{__index=S})
+  local b={player={name="MANKEY"},enemy={name="ODDISH"},
+    romText=function(_,label,fmt,...) return string.format(fmt,...) end}
+  package.loaded["src.core.Strings"]=setmetatable({},{__call=function(_,fmt,...) return string.format(fmt,...) end})
+  package.loaded["src.battle.EffectRegistry"]={displayName=function(x) return x==b.enemy and "Enemy "..x.name or x.name end}
+  fake.stadiumPresentedMove={side="player",moveId=96}
+  S.stadiumCameraTurnText(fake,b,{text="MANKEY's\nATTACK rose!"})
+  ok(#got==2 and got[1][2]==0xFC and got[1][3]=="player" and got[2][1]=="fx" and got[2][2]==0xFC,
+    "Meditate's ATTACK rose -> 0xFC on the user")
+  got={}
+  S.stadiumCameraTurnText(fake,b,{text="Enemy ODDISH's\nATTACK\ngreatly rose!"})
+  ok(#got==0,"a raised foe stat signals nothing")
+  fake.stadiumPresentedMove={side="enemy",moveId=45}
+  S.stadiumCameraTurnText(fake,b,{text="MANKEY's\nATTACK fell!"})
+  ok(#got==2 and got[1][2]==0xFD and got[1][3]=="player","Growl's ATTACK fell -> 0xFD on the target")
+  got={}
+  fake.stadiumPresentedMove={side="player",moveId=99}
+  S.stadiumCameraTurnText(fake,b,{text="MANKEY's\nRAGE is building!"})
+  ok(#got==2 and got[1][2]==0xFC and got[1][3]=="player","Rage building -> 0xFC on the raging mon")
+  got={}
+  S.stadiumCameraTurnText(fake,b,{text="MANKEY's\nattack missed!"})
+  ok(#got==0,"other lines do not match")
+  package.loaded["src.core.Strings"]=nil;package.loaded["src.battle.EffectRegistry"]=nil
+end
+
+-- USER-REQUESTED EXTENSION: "used <MOVE>!" waits for A/B before "It doesn't
+-- affect ..." (the used line is an auto row queued earlier in the action)
+do
+  local S=Gen1.Scene
+  local romText=function(_,label,fmt,...) return string.format(fmt,...) end
+  local used={text="PIKACHU used\nTHUNDERBOLT!",auto=true,autoDelay=0}
+  local b={romText=romText,queue={used,{wait=30},{text="It doesn't affect\nEnemy GEODUDE!"}},nextInsert=3}
+  S.noEffectPrompt(b,"It doesn't affect\nEnemy GEODUDE!")
+  ok(used.auto==nil,"the used line becomes an A/B prompt before the no-effect line")
+  local other={text="PIKACHU used\nTHUNDERBOLT!",auto=true}
+  local b2={romText=romText,queue={other,{text="Enemy GEODUDE's\nATTACK fell!"}},nextInsert=2}
+  S.noEffectPrompt(b2,"Enemy GEODUDE's\nATTACK fell!")
+  ok(other.auto==true,"other lines leave the used line automatic")
+end
+
+-- A battler's shadow follows its model's opacity: the send-out (0x122, P311
+-- mode 5) keeps the model at opacity 0 until age 97, so no shadow until then.
+do
+  local S=Gen1.Scene
+  local colors={player={opacity=0}}
+  local fake=setmetatable({battleFx={modelColors=function() return colors end}},{__index=S})
+  ok(S.battlerOpacity(fake,"player",{})<S.SHADOW_MIN_OPACITY,"a model still inside the ball casts no shadow")
+  colors.player.opacity=255
+  ok(S.battlerOpacity(fake,"player",{})>=S.SHADOW_MIN_OPACITY,"once it is out, it does")
+  ok(S.battlerOpacity(fake,"player",{modelAlphaByte=0x40})<S.SHADOW_MIN_OPACITY,"a faded model (materialAlpha) casts none")
+  ok(S.battlerOpacity(setmetatable({},{__index=S}),"enemy",{})==1,"no effects: fully visible")
+end
+
+-- USER-REQUESTED EXTENSION: a missed / no-effect move still shows its
+-- attempt: the attacker's clip, the camera's attack and the move bank with
+-- the missed result (1, so the effect is cut at the hit frame)
+do
+  local S=Gen1.Scene
+  local attacked,camera,played
+  local fake=setmetatable({actors={player={attack=function(_,id) attacked=id end},enemy={}},
+    stadiumCameraAttack=function(_,side,id) camera={side,id} end,
+    battleFx={playMoveAndImpact=function(_,id,side,_,result) played={id,side,result} end}},{__index=S})
+  ok(S.stadiumPresentAttempt(fake,"player",101) and attacked==101,"the attacker plays its attack clip")
+  ok(camera and camera[1]=="player" and camera[2]==101,"the camera films the attempt")
+  ok(played and played[1]==101 and played[3]==1,"the move bank plays with the missed result")
+  -- Red: the cancelled row's placeholder is armed only by a miss / no-effect line
+  local romText=function(_,label,fmt,...) return string.format(fmt,...) end
+  local placeholder={fn=function() end,stadiumAttempt={anim="NIGHT_SHADE",attackerIsPlayer=true}}
+  local b={romText=romText,stadiumAttemptRow=placeholder,data={moves={NIGHT_SHADE={index=101}}}}
+  local before=placeholder.fn
+  S.armAttempt(b,"Enemy UNOWN's\nATTACK fell!")
+  ok(placeholder.fn==before and b.stadiumAttemptRow==placeholder,"other lines leave the placeholder empty")
+  S.armAttempt(b,"It doesn't affect\nEnemy UNOWN!")
+  ok(placeholder.fn~=before and b.stadiumAttemptRow==nil,"a no-effect line arms the attempt")
+  local p2={fn=before,stadiumAttempt={anim="NIGHT_SHADE",attackerIsPlayer=true}}
+  local b2={romText=romText,stadiumAttemptRow=p2,data=b.data}
+  S.armAttempt(b2,"GENGAR's\nattack missed!")
+  ok(p2.fn~=before,"a miss line arms it too")
+end
+
 print(("%d checks passed (Stadium 2 Gen 1 battle FX integration)"):format(checks))

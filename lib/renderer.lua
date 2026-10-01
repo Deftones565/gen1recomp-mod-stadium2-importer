@@ -478,9 +478,28 @@ uniform float n64CombinerCycles;
 uniform float n64CombinerCoverage;
 uniform float primitiveLodFraction;
 uniform float n64NoiseSeed;
+uniform vec2 primaryWrapMode;
+uniform vec2 secondaryWrapMode;
+uniform float boundedUVEnabled;
 // RDP combiner NOISE (colour input A, selector 7): one grey value per pixel,
 // new every frame. Filled in effect() before the combiner runs.
 vec3 n64Noise = vec3(0.0);
+// The full shader's coordinate folding (without its manual filter): mirror+clamp
+// (wrap code 3) has no LÖVE sampler equivalent and must always be folded
+// here (mirrored decals such as Koffing's eyes, mouth and crossbones sample
+// one half of their texture); other modes only on bounded-UV targets.
+float mobileFoldCoordinate(STADIUM_FLOAT float value, float mode) {
+  if (mode < 0.5) return clamp(value, 0.0, 1.0);
+  if (mode < 1.5) return mod(value, 1.0);
+  if (mode > 2.5) return clamp(1.0-abs(value-1.0), 0.0, 1.0);
+  STADIUM_FLOAT float mirrored = mod(value, 2.0);
+  return mirrored <= 1.0 ? mirrored : 2.0 - mirrored;
+}
+STADIUM_FLOAT vec2 mobileWrapUV(STADIUM_FLOAT vec2 uv, vec2 mode) {
+  if (boundedUVEnabled > 0.5 || mode.x > 2.5 || mode.y > 2.5)
+    uv = vec2(mobileFoldCoordinate(uv.x, mode.x), mobileFoldCoordinate(uv.y, mode.y));
+  return uv;
+}
 uniform vec4 n64ColorCycle0;
 uniform vec4 n64AlphaCycle0;
 uniform vec4 n64ColorCycle1;
@@ -550,11 +569,11 @@ void effect() {
     vGeneratedUV,textureGenEnabled);
   STADIUM_FLOAT vec2 secondaryUV=mix(VaryingTexCoord.st*secondaryCoordinateScale,
     vGeneratedUV,textureGenEnabled);
-  vec4 texel0=Texel(MainTex,uv+fxScroll.xy);
+  vec4 texel0=Texel(MainTex,mobileWrapUV(uv+fxScroll.xy,primaryWrapMode));
   vec4 texel1=texel0;
   vec4 texel=texel0;
   if (secondaryEnabled > 0.5) {
-    vec4 other=Texel(secondaryTexture,secondaryUV+fxScroll.zw);
+    vec4 other=Texel(secondaryTexture,mobileWrapUV(secondaryUV+fxScroll.zw,secondaryWrapMode));
     texel1=other;
     texel=vec4(mix(texel.rgb,other.rgb,secondaryMix),texel.a);
   }
@@ -2110,6 +2129,11 @@ local function callbackRecord(model, site)
   end
 end
 
+local function battleFxLayout(model)
+  return type(model) == "table" and model.battleFx == true
+    and model.battleFxCompiledLayout == true
+end
+
 function Renderer:callbackOwnsTexture(prim)
   if not prim or not prim.callbackOffset then return false end
   if prim.callbackTextureRequired then return true end
@@ -2117,6 +2141,7 @@ function Renderer:callbackOwnsTexture(prim)
   if not record then return false end
   if record.descriptor == 0x81000038 then return true end
   if record.descriptor == 0x81000050 then return true end
+  if record.descriptor == 0x81000138 and battleFxLayout(self.model) then return true end
   if record.descriptor == DualTexture.DESCRIPTOR then
     -- Every triangle drawn while the 0x48 builder is active shows its
     -- generated material. Local eye/tongue draws carry no callback offset;
@@ -2127,8 +2152,14 @@ function Renderer:callbackOwnsTexture(prim)
 end
 
 function Renderer:callbackUsesMaterialFx(prim)
-  if not prim or prim.decal or not prim.callbackOffset then return false end
+  if not prim or not prim.callbackOffset then return false end
   local record = callbackRecord(self.model, prim.callbackOffset)
+  -- Battle-FX graph layouts (resource exports compiled at load, 0x138 mode
+  -- 0, func_8100337C -> 810024E0) take both tiles, their sizes and their
+  -- per-frame scroll from the callback, decal or not (Absorb's sheet, shape
+  -- 244, is a decal-mode draw).
+  if record and record.descriptor == 0x81000138 and battleFxLayout(self.model) then return true end
+  if prim.decal then return false end
   -- Authored eye UVs remain fixed, but the ROM callback still supplies the
   -- color combiner and independently scrolling secondary slime tile.
   if not record then return false end

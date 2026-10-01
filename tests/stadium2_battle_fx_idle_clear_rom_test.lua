@@ -115,4 +115,13 @@ Scene.updateBattleFx(s,1/30)
 ok(calls==2,"the next turn's menu clears again")
 Scene.stadiumCameraSendOut(s,"enemy")
 ok(calls==3,"a later send-out clears (8411BB04)")
+-- 84118C08: a status-family event (residual, stat change, heal, drain heal,
+-- trap, sandstorm hit) clears before its own effect; 84119630's weather
+-- start/end entries do not.
+Scene.stadiumCameraEntry(s,0x101,"player")
+ok(calls==4,"a residual (poison) event clears (84118C08)")
+Scene.stadiumCameraEntry(s,0x114,"enemy")
+ok(calls==5,"a drain heal clears before it plays")
+Scene.stadiumCameraEntry(s,0x107,"player")
+ok(calls==5,"rain's turn entry (84119630) does not clear")
 print(checks.." checks passed (battle FX idle clear vs ROM)")

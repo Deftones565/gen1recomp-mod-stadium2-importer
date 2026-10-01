@@ -2830,10 +2830,10 @@ local ATTACK_KINDS = { [0x39] = 0x0A, [0x42] = 0x04, [0x45] = 0x08, [0x60] = 0x0
   [0x61] = 0x06, [0x68] = 0x07, [0x7F] = 0x0E, [0xB9] = 0x19, [0xE5] = 0x13,
   [0x6B] = 0x09, [0xBB] = 0x1A, [0xC2] = 0x18 }
 
--- 84114804(actor), camera part: the attacker's shot from its move and the
--- actor kind (+0x61F). Skipped while +0x7EC bit 0 is set. (Its tail,
--- 841146D4, copies the move's dispatch-row bytes for the model animation
--- layer and is not part of the camera.)
+-- 84114804(actor): the attacker's shot from its move and the actor kind
+-- (+0x61F), then 841146D4 copies its motion row for the move (move - 1):
+-- the hit frame +0x619 and the attack's length +0x61A the attack state
+-- times its end with. Skipped while +0x7EC bit 0 is set.
 function Native:attackShot(actor)
   local m = self.mem
   if bit.band(m:u16(actor + 0x7EC), 1) ~= 0 then return end
@@ -2844,6 +2844,7 @@ function Native:attackShot(actor)
     kind = 0x0C
   end
   m:setU8(actor + 0x61F, kind or 0xFF)
+  self:copyMotionRow(actor, move - 1)
 end
 
 -- 84114A04(actor), camera part (fork C): after 84114804, load the attack
@@ -2855,14 +2856,63 @@ function Native:attackState(actor)
   local m = self.mem
   self:attackShot(actor)
   local ctrl = m:u32(Native.CONTROLLER0)
-  if m:s16(ctrl + 0x98) == 0x21 then return end
   local move = m:u8(actor + 0x618)
-  if move == 0x13 then
-    m:setU16(ctrl + 0x98, 14)
-    self:setProgram(actor, 5)
-  else
-    self:setProgram(actor, ATTACK_PROGRAMS[move] or 0)
+  if m:s16(ctrl + 0x98) ~= 0x21 then
+    if move == 0x13 then
+      m:setU16(ctrl + 0x98, 14)
+      self:setProgram(actor, 5)
+    else
+      self:setProgram(actor, ATTACK_PROGRAMS[move] or 0)
+    end
   end
+  -- the rest of 84114A04 (fork C): Fly's +0x7F4 bit 3; the frame counter
+  -- from 0, or from a negative hit frame (+0x619); substate 0; the length
+  -- and hit frame less +0x61B; the event timer 600
+  if move == 0x13 then m:setU16(actor + 0x7F4, bit.bor(m:u16(actor + 0x7F4), 8)) end
+  m:setU16(actor + 0x7E8, 0)
+  local hitFrame = m:s8(actor + 0x619)
+  if hitFrame < 0 then m:setU16(actor + 0x7E8, hitFrame % 0x10000) end
+  m:setU8(actor + 0x7F6, 0)
+  local start = m:u8(actor + 0x61B)
+  m:setU8(actor + 0x61A, (m:u8(actor + 0x61A) - start) % 0x100)
+  m:setU8(actor + 0x619, (m:s8(actor + 0x619) - start) % 0x100)
+  self:setTimer(600)
+end
+
+-- 84114BF4 (US asm, run by 841154F8 while the substate is 0; Rest, 0x9C,
+-- runs 841153DC instead), camera part, on the attacker's frame counter: the
+-- frame after the hit frame, on shot 4, the FOV goal 60; at the hit frame
+-- (+0x619) the jolt stops (8410B578(0)), then Earthquake
+-- (0x59) / Fissure (0x5A) jolt 45 and Magnitude (0xDE), Flail (0xAF),
+-- Frustration (0xDA) / Return (0xD8) jolt 55; the attack ends at frame
+-- +0x61A, or when the attacker's animation has finished (8003EC34,
+-- `finished`) if +0x61A is 0: +0x7F4 loses bits 0 and 3, substate 4,
+-- 84111BEC (the counter 0, the timer 0, the kind reset). Returns true once
+-- it has ended.
+Native.ATTACK_JOLT = { [0x59] = 45, [0x5A] = 45, [0xDE] = 55, [0xAF] = 55, [0xDA] = 55, [0xD8] = 55 }
+function Native:attackFrame(actor, finished)
+  local m = self.mem
+  if m:u8(actor + 0x7F6) ~= 0 then return true end
+  local move = m:u8(actor + 0x618)
+  local ctrl = m:u32(Native.CONTROLLER0)
+  -- the frame after the hit frame, on shot 4: FOV goal 60
+  if m:s8(actor + 0x619) + 1 == m:s16(actor + 0x7E8) and m:s16(ctrl + 0x98) == 4 then
+    m:setF32(ctrl + 0x88, 60)
+  end
+  if m:s8(actor + 0x619) == m:s16(actor + 0x7E8) then
+    self:setJolt(0)
+    if Native.ATTACK_JOLT[move] then self:setJolt(Native.ATTACK_JOLT[move]) end
+  end
+  local length = m:u8(actor + 0x61A)
+  local done
+  if length == 0 then done = finished else done = m:s16(actor + 0x7E8) == length end
+  if not done then return false end
+  m:setU16(actor + 0x7F4, bit.band(m:u16(actor + 0x7F4), 0xFFF6))
+  m:setU8(actor + 0x7F6, 4)
+  m:setU16(actor + 0x7E8, 0)
+  self:setTimer(0)
+  self:kindReset(actor)
+  return true
 end
 
 -- 84116BC0(actor): the defender's own motion row for the received move

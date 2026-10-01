@@ -33,6 +33,32 @@ Stadium shows for them:
   261) and signals entry 0x100 on the user. Implemented: entry 0x100 at the
   hit frame; the sleep pose follows from the presented sleep status.
 
+## Meditate (kind 0xD) (2026-10-01)
+
+Source: US asm `fragment79_38EFE0/func_84122AB8.s` (GLOBAL_ASM in the fork)
+and fork C for 84122A78 (michiiik/pokestadiumgs, the commit recorded in
+battle-camera.md for this span); constants read from the ROM: D_84189CB8
+0.4, D_84189CBC 0.01, D_84189CC0 0.8. Case labels 8412400C (start) and
+841241B0 (update) in 84123F60 / 84124104 call them.
+
+- Start 84122A78: +0x5FC = 0x16C, +0x5FE (phase) = 0, +0x600 (speed) = 0,
+  +0x60C (amplitude) = 0.4, +0x5E4 / +0x5F0 = the X scale, +0x5F4 / +0x5F8 =
+  Y / Z scale, stage +0x624 = 0.
+- Update 84122AB8, stage 0: if 0 <= +0x5FC <= 0x8000 it gains 0x2D; speed =
+  trunc(SINS(+0x5FC) * 182 * 15); if 0 <= phase <= 0x4000 phase += speed;
+  s = SINS(phase) * amplitude; scale = (base - s, base + s, base - s) (tall
+  and thin). Once phase >= 0x4000: speed 0x1554, stage 1.
+- Stage 1: phase += speed; if SINS(phase) * amplitude <= 0.01 then speed +=
+  0x444 and amplitude *= 0.8; the same formula sets the scale; once the
+  amplitude is <= 0.01 the scale is the base on all three axes.
+- Port: `Special` kind 13, `Actor.nativeAxisScale`, applied by
+  `Scene:modelMatrix` after the battler's uniform scale (the floor offset
+  uses the Y factor so the feet stay on the ground). The base is the
+  battler's own scale (1.0 relative). Test:
+  `tests/stadium2_meditate_rom_test.lua` runs both routines in the VM for
+  240 ticks and matches the Lua tick by tick. Matches ROM execution; not
+  visually confirmed.
+
 ## Agility (kind 6) and Double Team (kind 7)
 
 Decoded 2026-09-25 from the US assembly (fork C `7fc529e5` for the helpers

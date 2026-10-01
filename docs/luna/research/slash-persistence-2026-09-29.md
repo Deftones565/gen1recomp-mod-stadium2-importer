@@ -202,9 +202,15 @@ Sources: US asm (pret `c0e10f2`) for 841003AC, 841054D4, 841092B8,
   turn start), at every send-out after the first turn (the opening's
   send-outs clear at the opening's wipe instead, from the STADIUM camera's
   substate 1 -> 2), independent of the camera mode except where noted.
-- Not wired yet: the clears at status / residual events (84118C08), full
-  paralysis (84119630), 84118DD4's frame 0x47 and the send-out codes in the
-  dispatcher, and 84111C6C's non-forced variant.
+- 2026-10-01: the status-event clear is wired. 84118C08 (family 9 setup,
+  after the 84113430 asset gate) calls 84111C1C before dispatching the
+  event; `Scene:stadiumCameraEntry` (both hosts' family-9 funnel) now runs
+  `battleFxClear` first, except for the weather start/end entries 0x106,
+  0x107, 0x113, 0x11F, 0x120, 0x121, which come from 84119630 (codes
+  0x30-0x35). 84119630 clears only for code 0x36, at its state frame 0x33.
+- Not wired yet: full paralysis (84119630, frame 0x33), 84118DD4's frame
+  0x47, the send-out codes in the dispatcher, and 84111C6C's non-forced
+  variant.
 - Test: `tests/stadium2_battle_fx_idle_clear_rom_test.lua` (real ROM
   catalog: the four slashes are alive at tick 150 and gone after the clear;
   the adapter's Dig signal; the scene's once-per-turn and send-out rules).

@@ -121,6 +121,13 @@ check(mobileShader:find("paperNoise",1,true)==nil
     and mobileShader:find("sample3",1,true)==nil
     and mobileShader:find("sunMap",1,true)==nil,
   "Android shader avoids large noise hashes, manual filtering and model shadow sampling")
+-- mirror+clamp (wrap code 3) has no LÖVE sampler mode: the Android shader
+-- must fold it like the full shader does (Koffing's mirrored eye, mouth and
+-- crossbones decals broke on mobile only)
+check(mobileShader:find("mobileWrapUV(uv+fxScroll.xy,primaryWrapMode)",1,true)~=nil
+    and mobileShader:find("mobileWrapUV(secondaryUV+fxScroll.zw,secondaryWrapMode)",1,true)~=nil
+    and mobileShader:find("if (mode > 2.5) return clamp(1.0-abs(value-1.0), 0.0, 1.0);",1,true)~=nil,
+  "Android shader folds mirror+clamp texture coordinates for both textures")
 check(mobileShader:find("uniform float celShadingEnabled;",1,true)~=nil
     and mobileShader:find("if (celShadingEnabled*lightingEnabled > 0.001)",1,true)~=nil,
   "Android shader honors the live watercolor manga choice")

@@ -17,8 +17,9 @@ Actor.__index = Actor
 -- (84124104) every later frame of the attack state. Kind 9 (Minimize) is
 -- 84122998: uniform scale Math_StepToF(scale, 0.8, 0.01, 0.01). Kinds 6
 -- (Agility) and 7 (Double Team) move the battler and draw two translucent
--- copies (lib/battle_special_moves.lua). Other kinds (4/8/0xA/0xC/0xD/0xE/
--- 0x13/0x18/0x19/0x1A) are not decoded yet and do nothing here.
+-- copies; kind 0xD (Meditate) wobbles its per-axis scale
+-- (lib/battle_special_moves.lua). Other kinds (4/8/0xA/0xC/0xE/0x13/0x18/
+-- 0x19/0x1A) are not decoded yet and do nothing here.
 Actor.SPECIAL_KINDS = Special.KINDS
 Actor.MINIMIZE_TARGET, Actor.MINIMIZE_STEP = 0.8, 0.01
 
@@ -95,7 +96,7 @@ function Actor.fxEnabled()
 end
 
 function Actor:clearNative()
-  self.nativeOffset,self.afterimages=nil,nil
+  self.nativeOffset,self.afterimages,self.nativeAxisScale=nil,nil,nil
   self.modelAlphaByte=255
 end
 
@@ -365,13 +366,15 @@ function Actor:stepSpecial(dt)
     special.clock=special.clock-1
     special.ticks=special.ticks+1
     if special.ticks>=special.at and (special.kind==Special.AGILITY
-        or special.kind==Special.DOUBLE_TEAM) then
+        or special.kind==Special.DOUBLE_TEAM or special.kind==Special.MEDITATE) then
       if special.native==nil then special.native=self:startNative(special.kind) or false end
       if special.native then
         Special.step(special.native)
         self.nativeOffset=special.native.offset
         self.afterimages=special.native.afterimages
         self.modelAlphaByte=special.native.alpha or 255
+        -- Meditate's per-axis scale (relative to the battler's own)
+        self.nativeAxisScale=special.native.axisScale
       end
     elseif special.ticks>=special.at and special.kind==9 then
       local s=self.sizeScale or 1

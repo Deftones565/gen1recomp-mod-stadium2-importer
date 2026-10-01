@@ -236,5 +236,63 @@ local S=Gen2.Scene
 ok(S.stadiumDragCode(nil,{mon={status="sleep"}})==0x2F,"a sleeping Pokemon dragged out is 0x2F")
 ok(S.stadiumDragCode(nil,{mon={status="freeze"}})==0x2E,"a frozen Pokemon dragged out is 0x2E")
 ok(S.stadiumDragCode(nil,{mon={status="poison"}})==0x2D and S.stadiumDragCode(nil,{mon={}})==0x2D,"otherwise 0x2D")
+-- Family 25 (dragged out): 0x12C on the dragged-in Pokemon at once (its
+-- fade-in and the global alpha gate Whirlwind/Roar wait on), then 0x100
+-- (asleep) / 0xFE (frozen) on the 12th tick; never the send-out 0x122.
+do
+  local sent={}
+  local fake=setmetatable({battleFx={signalEffect=function(_,id,side) sent[#sent+1]={id,side} end}},{__index=S})
+  S.stadiumDragInFx(fake,"enemy",0x2F)
+  ok(#sent==1 and sent[1][1]==0x12C and sent[1][2]=="enemy","a drag-in signals 0x12C on the new Pokemon")
+  for i=1,11 do S.stepDragInFx(fake,1/30) end
+  ok(#sent==1,"its status entry waits for the 12th tick")
+  S.stepDragInFx(fake,1/30)
+  ok(#sent==2 and sent[2][1]==0x100 and sent[2][2]=="enemy","an asleep drag-in plays 0x100 on tick 12")
+  sent={}
+  S.stadiumDragInFx(fake,"player",0x2D)
+  for i=1,20 do S.stepDragInFx(fake,1/30) end
+  ok(#sent==1 and sent[1][1]==0x12C,"an ordinary drag-in has no status entry")
+end
+
+-- USER-REQUESTED EXTENSION: Gold's move line waits for A/B when the next
+-- line is "It doesn't affect ..." (messageTimer > 0 is its prompt)
+do
+  local screen={message="GEODUDE used TACKLE!",messageTimer=0,
+    queue={{kind="message",text="It doesn't affect GASTLY..."}}}
+  S.noEffectPrompt(screen)
+  ok(screen.messageTimer>0,"the used line waits for A/B before the no-effect line")
+  local plain={message="GEODUDE used TACKLE!",messageTimer=0,
+    queue={{kind="damage",side="enemy"},{kind="message",text="It's super effective!"}}}
+  S.noEffectPrompt(plain)
+  ok(plain.messageTimer==0,"an ordinary hit stays automatic")
+  local later={message="GEODUDE used TACKLE!",messageTimer=0,
+    queue={{kind="move",side="enemy",text="GASTLY used LICK!"},{kind="message",text="It doesn't affect GEODUDE..."}}}
+  S.noEffectPrompt(later)
+  ok(later.messageTimer==0,"a later move's no-effect line does not hold this one")
+end
+
+-- 84135778: the next event waits while Stadium's current record plays (the
+-- director's busy state, or the attacker's clip without it), then resumes.
+do
+  local advanced=0
+  local screen={advanceQueue=function() advanced=advanced+1 end}
+  local busy=true
+  local cam={busy=function() return busy end}
+  local fake=setmetatable({stadiumDirectorActive=true,stadiumCamera=cam,
+    actors={player={context="idle"},enemy={context="idle"}}},{__index=S})
+  ok(S.stadiumPresentationBusy(fake),"the director's busy record holds the queue")
+  fake.heldAdvance=screen
+  S.resumeHeldAdvance(fake,1/30)
+  ok(advanced==0 and fake.heldAdvance==screen,"a held advance waits for the record")
+  busy=false
+  S.resumeHeldAdvance(fake,1/30)
+  ok(advanced==1 and fake.heldAdvance==nil,"and runs once it has finished")
+  fake.stadiumDirectorActive=false
+  fake.actors.enemy.context="attack"
+  ok(S.stadiumPresentationBusy(fake),"without the director the attacker's clip holds it")
+  fake.heldAdvance=screen
+  S.resumeHeldAdvance(fake,S.PRESENTATION_HOLD_LIMIT)
+  ok(advanced==2,"a hold never outlasts the limit")
+end
 Importer.betaBattleFxEnabled=oldEnabled
 print(("%d checks passed (Gen 2 battle FX presentation integration)"):format(checks))
