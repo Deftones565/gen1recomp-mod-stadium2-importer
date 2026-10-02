@@ -33,11 +33,9 @@ ok(#reactions == 1 and reactions[1].target == "enemy" and reactions[1].source ==
   and reactions[1].moveId == 1, "the defender (opposite side) reacts to a player move")
 adapter:impact(1, "enemy")
 ok(reactions[2].target == "player", "the player reacts to an enemy move")
-local timing = false
-for _, message in ipairs(warnings) do
-  if message:find("starts with the impact", 1, true) then timing = true end
-end
-ok(timing, "the approximate reaction timing is reported")
+-- an impact from the defender's own hit state (the scene played its clip)
+ok(adapter:impact(1, "player", nil, false) == "impact" and #reactions == 2,
+  "an impact after the defender's start plays no second reaction")
 
 ok(adapter:impact(1, "player", 6) == "none" and #reactions == 2,
   "result 6 (no hit-frame call) plays no reaction")

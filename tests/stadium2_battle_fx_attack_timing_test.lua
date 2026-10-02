@@ -36,13 +36,15 @@ local def = dispatch({[33] = {def = 5}})
 local t = assert(Sequence.attackTiming(atk, 33, {defenderDispatch = def}))
 ok(t.clipStart == 4 and t.preRoll == 0, "clip starts at byte 6, no pre-roll")
 ok(t.route == 16, "move route at hit - start (84114BF4 rebases +0x619)")
-ok(t.release == 16, "defender released at the hit frame")
-ok(t.impact == 21, "impact at release + defender byte 7")
+ok(t.release == 16, "84112564 (text / HP start) at the hit frame")
+ok(t.attackEnd == 56, "the attack ends at byte 0x0A rebased (60 - 4)")
+ok(t.impact == 62, "earliest impact: attack end + 1 + defender byte 7 (84135778)")
 
 -- Second frame close to the hit: released at counter 0.
 t = Sequence.attackTiming(dispatch({[33] = {start = 0, hit = 20, second = 30}}), 33,
   {defenderDispatch = def})
-ok(t.release == 0 and t.impact == 5, "second - 30 < hit releases at counter 0")
+ok(t.release == 0 and t.attackEnd == 30 and t.impact == 36,
+  "second - 30 < hit: text at counter 0; the impact still follows the attack end")
 
 -- Negative hit frame: counter starts at the hit, idle pre-roll, route at 0.
 t = Sequence.attackTiming(dispatch({[33] = {start = 0, hit = -6, second = 0}}), 33)
@@ -64,8 +66,8 @@ local wd = dispatch({[110] = {hit = 8}})
 ok(Sequence.attackTiming(wd, 110, {species = 8}).soundOnly, "Wartortle's Withdraw plays only the sound")
 ok(not Sequence.attackTiming(wd, 110, {species = 1}).soundOnly, "other species play the route")
 local fs = dispatch({[193] = {hit = 8, second = 100}})
-ok(Sequence.attackTiming(fs, 193, {defenderDispatch = dispatch({[193] = {def = 9}})}).impact == 8,
-  "Foresight's defender hit frame is 0 (84117744)")
+ok(Sequence.attackTiming(fs, 193, {defenderDispatch = dispatch({[193] = {def = 9}})}).impact == 101,
+  "Foresight's defender hit frame is 0 (84117744): impact right after the attack end")
 ok(Sequence.attackTiming(dispatch({[185] = {start = 0, hit = 12}}), 185).special == 0,
   "Feint Attack starts its routine at counter 0")
 
@@ -94,8 +96,21 @@ end
 adapter:finish() -- host animation ended after 0 frames
 stepTo(16)
 ok(#triggered == 1 and triggered[1].moveId == 33, "route starts at tick 16")
-stepTo(21)
-ok(#impacts == 1 and impacts[1] == 21, "impact at tick 21")
+-- the defender's hit state starts (the camera's held hit at the attack end)
+stepTo(57)
+ok(#impacts == 0, "no impact before the defender's hit state")
+ok(adapter:defenderStarted("enemy"), "the defender's start schedules the impact")
+stepTo(62)
+ok(#impacts == 1 and impacts[1] == 62, "impact at the defender's byte 7 (5) after its start")
+stepTo(62 + Adapter.HIT_GRACE + 5)
+ok(#impacts == 1, "the fallback is dropped once the defender has started")
+-- no host hit (e.g. a status move): the fallback at the native estimate
+impacts = {}
+local base = player.runtime.frame
+adapter:playMoveAndImpact(33, "player", attacker, 0, defender)
+stepTo(base + 62 + Adapter.HIT_GRACE)
+ok(#impacts == 1 and impacts[1] == base + 62 + Adapter.HIT_GRACE,
+  "without a host hit the impact falls back to attack end + 1 + byte 7 + grace")
 adapter.impact = realImpact
 
 -- Actor: clip seeks byte 6; a negative hit holds idle first.
@@ -119,5 +134,52 @@ ok(a.pendingClip ~= nil, "still waiting after 2 of 3 ticks")
 a:stepPendingClip(1 / 30)
 ok(a.pendingClip == nil and moves[#moves] == 34 and seeks[#seeks] == 2,
   "then the clip starts at byte 6")
+
+-- No clip in the species' table (8003F2C4 leaves the animation unchanged):
+-- the pose stays, no generic clip, and the attack lasts the row's length
+-- (byte 0x0A), or until the playing animation's last frame when that is 0.
+local played = {}
+local idleRig = {model = {fxDispatch = dispatch({[35] = {start = 0, hit = 10, second = 40},
+    [36] = {start = 0, hit = 10, second = 0}}), anims = {{frames = 20}}},
+  animIndex = 1, frame = 3,
+  setMove = function() return false end,
+  setContext = function(_, name) played[#played + 1] = name; return true end,
+  step = function() end, setHandlerRuntime = function() end}
+local h = Actor.new("player")
+h.renderer = idleRig
+h.play = function(_, name) played[#played + 1] = name; return true end
+h.applyRest = function() end
+ok(h:attack(35) and h.context == "attack" and #played == 0,
+  "no clip for the move: the attack runs without a generic clip")
+for _ = 1, 39 do h:update(1 / 30) end
+ok(h.context == "attack", "still attacking before the row's length")
+h:update(1 / 30)
+ok(h.context == "idle", "the attack ends at the row's length (byte 0x0A)")
+h.context = "idle"
+h:attack(36)
+idleRig.frame = 18
+h:update(1 / 30)
+ok(h.context == "attack", "length 0: holds until the animation's last frame")
+idleRig.frame = 19
+h:update(1 / 30)
+ok(h.context == "idle", "length 0: ends at the animation's last frame (8003EC34)")
+local bare = Actor.new("player")
+local generic = {}
+bare.renderer = {model = {}, setMove = function() return false end}
+bare.play = function(_, name) generic[#generic + 1] = name; return true end
+bare:attack(35)
+ok(generic[1] == "attack", "without the move's Stadium row the generic clip stands in")
+
+-- 841149A0: a move's attack state clears the battle effects first
+-- (84111C44 -> 841089D8(1)), restoring both battlers' opacity
+do
+  local Scene=require(prefix .. "battle_scene")
+  local order={}
+  local scene=setmetatable({battleFx={clearAll=function() order[#order+1]="clear" end},
+    stadiumDirectorActive=true,
+    stadiumCamera={attack=function() order[#order+1]="camera" end}},{__index=Scene})
+  scene:stadiumCameraAttack("player",143)
+  ok(order[1]=="clear" and order[2]=="camera","a move's start clears earlier effects before its own")
+end
 
 print(("stadium2_battle_fx_attack_timing_test: %d checks passed"):format(checks))

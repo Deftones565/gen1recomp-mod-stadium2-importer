@@ -437,7 +437,10 @@ function Motion.init(particle, options)
   end
   state.lifetime = initialLifetime(particle, scaleEntry)
   -- 84102338: material+4 is an exact byte-age termination comparison.
-  -- Descriptor bit 1 selects a separate hide transition, not termination.
+  -- With descriptor bit 1 (0x2) the same age instead sets object flag 0x80
+  -- (84102320), which stops the age (841054D4 skips its increment): the
+  -- particle holds there, drawn (84103394's exclusion mask 0x102800 has no
+  -- 0x80), until a release clears it (84108A10 / 84108AF8 / 84108CE8).
   local endAge=particle.material and tonumber(particle.material.nativeEndAge)
   local flags=tonumber(particle.event and particle.event.flags) or 0
   local mode=particle.event and particle.event.mode
@@ -466,7 +469,7 @@ function Motion.init(particle, options)
   if endAge and endAge>0 and endAge<=255 and math.floor(flags/2)%2==0 then
     state.nativeMaterialEndAge=endAge
   elseif endAge and endAge>=0 and endAge<=255 and math.floor(flags/2)%2==1 then
-    state.nativeHideAge=endAge
+    state.nativeFreezeAge=endAge
   end
   state.authoredLifetime = scaleEntry and tonumber(scaleEntry.lifetime) or nil
   if state.lifetime == nil and state.nativeMaterialEndAge == nil then
@@ -688,6 +691,8 @@ local function tick(state, delta, options, inPlace)
       out.nativeHoldCountdown=out.nativeHoldCountdown-1
     end
     if out.nativeHoldCountdown==0 then out.nativeHold=false end
+  elseif out.nativeAgeFrozen then
+    -- object flag 0x80: 841054D4 does not age the particle
   elseif out.nativeAgeEndpoint and out.lifetime == nil then
     out.age = (out.age + delta) % 256
   else
@@ -1059,7 +1064,7 @@ local function tick(state, delta, options, inPlace)
   if out.lifetime==nil and out.nativeMaterialEndAge and out.age==out.nativeMaterialEndAge then
     out.alive=false
   end
-  if out.nativeHideAge and out.age==out.nativeHideAge then out.nativeHidden=true end
+  if out.nativeFreezeAge and out.age==out.nativeFreezeAge then out.nativeAgeFrozen=true end
 
   -- 0x8410009C observes age == 0xff after the category update.  It is an
   -- exact byte equality, not a >= comparison, and object flag 1 (descriptor

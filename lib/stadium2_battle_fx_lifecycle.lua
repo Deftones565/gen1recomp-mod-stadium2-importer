@@ -887,6 +887,20 @@ function Manager:close()
   self.released = true
 end
 
+-- 84159FA8 on the running terrain grid (Surf's water): the height and
+-- slope under Stadium (x, z), or nil when no grid is running.
+function Manager:terrainHeightAt(x, z)
+  for _, instance in pairs(self.instances or {}) do
+    local grid = instance.terrainGrid
+    if grid and grid.mem then
+      local Native = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_terrain_grid_native")
+      local ok, height, slope = pcall(Native.heightAt, grid.mem, x, z)
+      if ok and height then return height, slope end
+    end
+  end
+  return nil
+end
+
 Lifecycle.Manager = Manager
 Lifecycle.newManager = Lifecycle.new
 

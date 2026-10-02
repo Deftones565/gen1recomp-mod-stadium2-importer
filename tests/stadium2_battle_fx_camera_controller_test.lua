@@ -1,3 +1,4 @@
+local bit=require("bit")
 package.path="./?.lua;./?/init.lua;"..package.path
 -- The STADIUM camera controller end to end on the ported camera: battle
 -- start (the split-screen arena intro), an attack (84114A04: the move's
@@ -344,7 +345,10 @@ ok(mem:u32(0x85000000+0x10)==0x84110718 and mem:u32(0x85000000+4)==0x85002000,"B
 ok(camera.cam.missing==nil,"Transform and Beat Up run only ported handlers")
 
 -- woke up (family 19) and confused (family 20)
-mem:setU16(0x85003000+0x22,0) -- the enemy's flags: bit 2 clear
+-- the record's flags come from the scene (StadiumCamera:writeRecordFlags)
+local enemyFlags=0
+scene.stadiumRecordFlags=function(_,side) return side=="enemy" and enemyFlags or 0 end
+enemyFlags=0 -- the enemy's flags: bit 2 clear
 camera:turnCheck(scene,"enemy",0x1D)
 ok(mem:u16(0x85003000+4)==0x1D,"woke up is event 0x1D")
 ok(mem:u32(0x85002000+0x678)==0x84193E18,"the enemy's species offset row is at D_84193DF8 + 0x20")
@@ -354,10 +358,10 @@ for i=0,6 do if mem:u32(0x85000000+8+i*8)==0x8410E8E4 then found=true end end
 ok(found,"program 7 (8410E8E4) loads for the woken side")
 camera:update(scene,1/30)
 ok(camera:pose().fov==80,"program 7 sets FOV 80")
-mem:setU16(0x85003000+0x22,4)
+enemyFlags=4
 camera:turnCheck(scene,"enemy",0x1D)
 ok(mem:u16(0x85000000+0x98)==0 and mem:u32(0x85000000+0x10)==0x84110718,"a woken side with flag bit 2 takes shot 0 and program 0")
-mem:setU16(0x85003000+0x22,2)
+enemyFlags=2
 mem:setU8(0x85002000+0x61F,5)
 camera:turnCheck(scene,"enemy",0x26)
 ok(mem:u16(0x85003000+4)==0x26 and mem:u16(0x85000000+0x98)==0x24,"confused with flag bit 1 is event 0x26, shot 0x24")
@@ -365,7 +369,7 @@ for _=1,29 do camera:update(scene,1/30) end
 ok(mem:u8(0x85002000+0x61F)==5,"the confused kind holds for 29 ticks")
 camera:update(scene,1/30)
 ok(mem:u8(0x85002000+0x61F)==0xFF,"841206D0 resets the kind on the 30th tick")
-mem:setU16(0x85003000+0x22,0)
+enemyFlags=0
 camera:turnCheck(scene,"enemy",0x26)
 ok(mem:u16(0x85000000+0x98)==0,"confused without flag bit 1 takes shot 0")
 -- an undrawable pose (program 7 on a species whose offset word is out of
@@ -834,5 +838,121 @@ do
   fake.victory={actor=1}
   timer=0x154
   ok(StadiumCamera.busy(fake)==false,"the victory camera does not")
+end
+-- the GeoCamera's up vector (+0xC0) rolls the view (Seismic Toss, 84121B18)
+do
+  local pose=camera:pose()
+  local level=Camera.arenaFrame(640,480,{scale=0.05,groundY=0,stadiumPose=pose})
+  local rolled={eye=pose.eye,focus=pose.focus,fov=pose.fov,viewport=pose.viewport,up={-1,0,0}}
+  local turned=Camera.arenaFrame(640,480,{scale=0.05,groundY=0,stadiumPose=rolled})
+  ok(level.view[6]>0.5 and math.abs(turned.view[6])<0.5,"a rolled up vector turns the view (up row)")
+end
+-- Shot resets on the battlers: 8411EF2C (status visibility), 84120700 and
+-- the record's flags (StadiumCamera:writeRecordFlags / actorReset)
+do
+  local P,E=0x85001000,0x85002000
+  local resets={}
+  scene.stadiumActorReset=function(_,side,lift) resets[#resets+1]={side,lift} end
+  camera:statusVisibility(P)
+  ok(camera:actorShown("player") and not camera:actorShown("enemy"),"8411EF2C shows the shot's battler and hides the other")
+  enemyFlags=2
+  camera:sync(scene)
+  camera:actorReset(E)
+  ok(resets[#resets][1]=="enemy" and resets[#resets][2]==true,"84120700: the record's flying bit lifts the battler")
+  enemyFlags=0
+  camera:sync(scene)
+  mem:setU16(E+0x7F4,8)
+  camera:actorReset(E)
+  ok(resets[#resets][2]==true,"84120700: Fly's attack bit (+0x7F4 bit 3) lifts it too")
+  mem:setU16(E+0x7F4,0)
+  camera:actorReset(E)
+  ok(resets[#resets][2]==false,"84120700: neither, it is home")
+  camera:statusVisibility(E)
+  enemyFlags=4
+  camera:sync(scene)
+  camera:actorReset(E)
+  ok(not camera:actorShown("enemy"),"84120700: underground (bit 2) hides it")
+  local species=mem:u16(E+0x1A)
+  mem:setU16(E+0x1A,0x32)
+  camera:statusVisibility(E)
+  camera:actorReset(E)
+  ok(camera:actorShown("enemy"),"Diglett stays shown underground")
+  mem:setU16(E+0x1A,species)
+  enemyFlags=2
+  camera:chargeTurn(scene,"enemy",0x1A)
+  ok(bit.band(mem:u16(0x85003000+0x22),2)==0,"the charge turn's own record has no flying bit (8412C47C)")
+  enemyFlags=0
+  scene.stadiumActorReset=nil
+end
+-- Stadium's visibility over the hosts' (8003A2C8 draws only nodes with +1
+-- bit 0; the hosts' visualState wrapper)
+do
+  local Gen2=require("mods.STADIUM2_IMPORTER.lib.gen2_battle")
+  local Gen1=require("mods.STADIUM2_IMPORTER.lib.gen1_battle")
+  for _,G in ipairs({Gen1,Gen2}) do
+    local host="pokemon"
+    local shownFlag=false
+    local view=setmetatable({actors={player={context="idle"}},stadiumDirectorActive=true,
+      stadiumCamera={actorShown=function() return shownFlag end},
+      hostVisualState=function() return host end},{__index=G.Scene})
+    ok(view:visualState("player")=="hidden","a battler Stadium hides is not drawn")
+    shownFlag=true
+    ok(view:visualState("player")=="pokemon","a battler Stadium shows is drawn")
+    host="hidden"
+    ok(view:visualState("player")=="pokemon","the host's own sprite hiding does not hide it")
+    host="substitute"
+    ok(view:visualState("player")=="substitute","Stadium's shown doll stays the doll")
+    host="empty"
+    ok(view:visualState("player")=="empty","an empty slot stays empty")
+    host="pokemon"; shownFlag=false; view.actors.player.context="faint"
+    ok(view:visualState("player")=="pokemon","a fainting battler follows the host")
+    view.actors.player.context="idle"; view.stadiumDirectorActive=false
+    ok(view:visualState("player")=="pokemon","without the director the host decides")
+  end
+  -- the send-out: hidden at 8411BB04, shown when 8411BCC8 runs
+  local saved=camera.openingPhase
+  camera.openingPhase=nil
+  camera:sendOut(scene,"player")
+  ok(not camera:actorShown("player"),"8411BB04 hides the battler being sent out")
+  camera:update(scene,1/30)
+  ok(camera:actorShown("player"),"8411BCC8 shows it once its state runs")
+  camera.openingPhase=saved
+end
+-- family 17's length (84119CF0 / 84119F24): the handoff (code 7) holds the
+-- record 0x25 ticks, ends the state at frame 0x23 and shows the other
+-- battler there; the turn check's own codes run 0x3C frames
+do
+  local P,E=0x85001000,0x85002000
+  camera:statusVisibility(E) -- the enemy's shot: the player hidden
+  camera:turnCheck(scene,"enemy",7)
+  ok(mem:u16(0x85003000+6)==0x25,"the handoff's record timer is 0x25")
+  for _=1,0x22 do camera:update(scene,1/30) end
+  ok(not camera:actorShown("player") and camera.runs[E]~=nil,"before frame 0x23 the other battler stays hidden")
+  camera:update(scene,1/30)
+  ok(camera:actorShown("player") and camera.runs[E]==nil and mem:u16(0x85003000+6)==0,
+    "frame 0x23: the other battler shown and the state (and its timer) ends")
+  camera:turnCheck(scene,"enemy",4)
+  ok(mem:u16(0x85003000+6)==0x3E,"a turn-check code's timer is 0x3E")
+  for _=1,0x3B do camera:update(scene,1/30) end
+  ok(camera.runs[E]~=nil,"it runs until frame 0x3C")
+  camera:update(scene,1/30)
+  ok(camera.runs[E]==nil,"and ends there")
+end
+-- Gen 1's round (841343FC): the first action names the first side, the
+-- other side's action gets the handoff unless a side fainted
+do
+  local Gen1=require("mods.STADIUM2_IMPORTER.lib.gen1_battle")
+  local round=setmetatable({battle={phase="messages"}},{__index=Gen1.Scene})
+  local function battler(hp,status) return {mon={hp=hp,status=status}} end
+  local p,e=battler(20),battler(15)
+  ok(round:stadiumRoundAction("player",p,e)==nil,"the round's first action")
+  ok(round:stadiumRoundAction("enemy",e,p)==7,"the second side's action gets code 7")
+  ok(round:stadiumRoundAction("enemy",e,p)==nil,"once per round")
+  round.battle.phase="menu"
+  ok(round:stadiumRoundAction("player",p,e)==nil,"a command opens a new round")
+  round.battle.phase="messages"
+  ok(round:stadiumRoundAction("enemy",battler(15,"SLP"),p)==8,"asleep: code 8")
+  round.battle.phase="menu"; round:stadiumRoundAction("enemy",e,p); round.battle.phase="messages"
+  ok(round:stadiumRoundAction("player",p,battler(0))==nil,"no handoff after a faint")
 end
 print(checks.." checks passed (STADIUM camera controller)")

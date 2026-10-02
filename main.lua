@@ -4,7 +4,7 @@
 -- previous version's modules back from require. Evict them when the build
 -- changed; within one build the cached modules (and their caches) are kept.
 -- MOD_BUILD must match manifest.json's version (stadium2_independence_test).
-local MOD_BUILD = "0.24.1"
+local MOD_BUILD = "0.25.0"
 do
   local PREFIX = "mods.STADIUM2_IMPORTER."
   local STAMP = PREFIX .. "__build"

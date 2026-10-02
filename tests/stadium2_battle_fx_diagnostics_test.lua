@@ -38,7 +38,11 @@ local ribbon=Lifecycle.new();assert(ribbon:spawn(23,{effectId=1}))
 local hidden=Motion.init({event={flags=2},material={nativeEndAge=16}})
 assert(not has(hidden.diagnostics,"unsupported-native-hide-transition"))
 for i=1,16 do hidden=Motion.step(hidden,1) end
-assert(hidden.nativeHidden and hidden.alive)
+-- descriptor bit 0x2: the endpoint freezes the age (84102320 sets object
+-- flag 0x80, 841054D4 skips the increment); the particle stays drawn
+assert(hidden.nativeAgeFrozen and hidden.alive and not hidden.nativeHidden and hidden.age==16)
+hidden=Motion.step(hidden,1)
+assert(hidden.age==16 and hidden.alive,'a frozen age does not advance')
 assert(#Packets.build({particles={{nativeHidden=true,event={mode=7}}}}).screenPackets==0,
   'hidden particles never create draw packets')
 local expiry=Motion.init({event={flags=0},material={nativeEndAge=16}})

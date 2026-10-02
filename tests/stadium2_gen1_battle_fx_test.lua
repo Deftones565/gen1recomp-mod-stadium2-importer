@@ -271,4 +271,30 @@ do
   ok(p2.fn~=before,"a miss line arms it too")
 end
 
+-- The defender's hit record (84135778 / 84118138): a host hit asks for it;
+-- its start plays the hit clip and reports to the effects (impact at byte 7)
+do
+  local S=Gen1.Scene
+  local clips,started,camera,flinches={},{},{},0
+  local fake=setmetatable({actors={enemy={hit=function(_,id) flinches=flinches+1;clips[#clips+1]=id end},player={}},
+    stadiumLastMove={side="player",move=33},
+    battleFx={defenderStarted=function(_,side) started[#started+1]=side end}},{__index=S})
+  S.stadiumDefenderHit(fake,"enemy")
+  ok(clips[1]==33 and started[1]=="enemy","without the director the hit state starts at the host's hit")
+  clips,started={},{}
+  fake.stadiumDirectorActive=true
+  fake.stadiumCamera={hit=function(_,_,side,id) camera[#camera+1]={side,id} end}
+  S.stadiumDefenderHit(fake,"enemy")
+  ok(#camera==1 and camera[1][1]=="enemy" and camera[1][2]==33 and #clips==0 and #started==0,
+    "with the director the camera takes the hit; the clip waits for its state")
+  S.stadiumDefenderStarted(fake,"enemy",33,false)
+  ok(clips[1]==33 and started[1]=="enemy","the camera's hit state start plays the clip and the impact")
+  S.stadiumDefenderStarted(fake,"enemy",33,true)
+  ok(#clips==1 and started[2]=="enemy","a dodge reports its start but plays no hit clip")
+  fake.stadiumLastMove=nil
+  local before=flinches
+  S.stadiumDefenderHit(fake,"enemy")
+  ok(flinches==before+1 and #camera==1,"an unnamed hit still flinches, without a camera hit")
+end
+
 print(("%d checks passed (Stadium 2 Gen 1 battle FX integration)"):format(checks))

@@ -768,12 +768,14 @@ local function perspective(fovy, aspect, near, far, shiftX, shiftY)
   }
 end
 
-local function lookAt(ex, ey, ez, tx, ty, tz)
+-- (upx, upy, upz): optional up vector (default 0, 1, 0); the STADIUM
+-- camera passes its GeoCamera's (+0xC0), which some shots roll.
+local function lookAt(ex, ey, ez, tx, ty, tz, upx, upy, upz)
   local fx, fy, fz = tx - ex, ty - ey, tz - ez
   local fl = sqrt(fx * fx + fy * fy + fz * fz)
   if fl == 0 then fl = 1 end
   fx, fy, fz = fx / fl, fy / fl, fz / fl
-  local ux, uy, uz = 0, 1, 0
+  local ux, uy, uz = upx or 0, upy or 1, upz or 0
   local sx, sy, sz = fy * uz - fz * uy, fz * ux - fx * uz, fx * uy - fy * ux
   local sl = sqrt(sx * sx + sy * sy + sz * sz)
   if sl == 0 then sx, sy, sz, sl = 1, 0, 0, 1 end

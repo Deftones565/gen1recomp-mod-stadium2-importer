@@ -268,17 +268,29 @@ function Sequence.attackTiming(attackerDispatch, moveId, options)
   local species = tonumber(options.species)
   local soundOnly = Sequence.SOUND_ONLY_SPECIES[moveId]
   out.soundOnly = soundOnly and species and soundOnly[species] or false
+  -- `release` is 84112564's frame: record +1 bit 0, which starts the
+  -- record's text (84137778) and HP bars (84136D9C). It does not load the
+  -- defender's record (battle-timeline-audit-2026-10-01.md).
   local k = Sequence.RELEASE_OFFSETS[moveId]
   local release
   if k then release = rebSecond < rebHit + k and rebHit or rebHit + k
   else release = (rebSecond - 30 < rebHit) and 0 or rebHit end
   out.release = tick(release)
+  -- 84114BF4 ends the attack (and clears the record timer) at +0x61A, or
+  -- when its clip ends when that is 0 (nil here: the clip decides).
+  out.attackEnd = rebSecond ~= 0 and tick(rebSecond) or nil
   out.special = Sequence.COUNTER_ZERO_SPECIALS[moveId] and tick(0) or out.route
   local defender = options.defenderDispatch
-  if type(defender) == "string" and out.release then
+  if type(defender) == "string" then
+    -- 84116BC0: the defender's own row byte 7 (Foresight: 0), counted from
+    -- its hit state's start; 84135778 loads that record only after the
+    -- attack has ended, so the earliest native impact is attackEnd + 1 +
+    -- this (`impact`, when the attack end is known).
     local defHit = moveId == Sequence.FORESIGHT and 0 or s8(defender:byte(base + 7 + 1) or 0)
-    if defender:byte(base + 7 + 1) and defHit >= 0 then out.impact = out.release + defHit end
-    out.defenderHit = defHit
+    if defender:byte(base + 7 + 1) and defHit >= 0 then
+      out.defenderHit = defHit
+      if out.attackEnd then out.impact = out.attackEnd + 1 + defHit end
+    end
   end
   return out
 end

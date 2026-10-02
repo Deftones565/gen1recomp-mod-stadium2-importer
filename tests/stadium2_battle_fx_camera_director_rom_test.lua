@@ -844,6 +844,10 @@ for round=1,300 do
     if vm:byte(actor+off)~=cam.mem:u8(actor+off) then error(("FAIL attack setup round %d move %X byte +%X ROM %02X Lua %02X"):format(round,move,off,vm:byte(actor+off),cam.mem:u8(actor+off)),0) end
   end
   if vm:read(REC+6,2)~=cam.mem:u16(REC+6) then error(("FAIL attack setup round %d timer"):format(round),0) end
+  -- the behaviour kinds (84123F60 / 84124104) are stubbed in the VM here and
+  -- have their own oracle (stadium2_behaviour_kinds_rom_test.lua): no kind
+  -- on either side, so the camera port's kind 8 roll stays out of this round
+  for _,m in ipairs({vm,cam.mem}) do m:write(actor+0x61F,0xFF,1) end
   -- every fifth round a row length of 0: the end waits for the animation
   if round%5==0 then for _,m in ipairs({vm,cam.mem}) do m:write(actor+0x61A,0,1) end end
   local ended=false

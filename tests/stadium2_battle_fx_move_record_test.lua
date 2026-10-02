@@ -37,6 +37,7 @@ Adapter.clearHits()
 Adapter.recordHit({side="enemy",moveId=173,effectiveness=10})
 local a,p=fixture()
 a:playMoveAndImpact(173,"player",actor,nil,actor,{sourceStatus=3})
+a:defenderStarted("enemy") -- the host's hit: the defender's hit state starts
 run(a)
 ok(#p.events==2,"Snore plays its route and impact ("..#p.events..")")
 for _,e in ipairs(p.events) do
@@ -58,10 +59,12 @@ ok(State.condition(168,p.events[1].state,9)==1,"a reported steal (0x20) takes br
 -- Curse: the route needs 0x80 (84114BF4); the impact plays either way
 a,p=fixture()
 a:playMoveAndImpact(174,"player",actor,nil,actor,{})
+a:defenderStarted("enemy") -- (in battle: the fallback, with no host hit)
 run(a)
 ok(#p.events==1 and p.events[1].impact,"the stat Curse plays no route, only the impact")
 a,p=fixture()
 a:playMoveAndImpact(174,"player",actor,nil,actor,{resultBits=Sequence.RESULT_CURSE_GHOST})
+a:defenderStarted("enemy")
 run(a)
 ok(#p.events==2 and not p.events[1].impact and p.events[1].state.resultFlags==0x80,
   "a Ghost Curse (0x80) plays its route")

@@ -178,6 +178,16 @@ Endpoint zero and mode-0 visibility require full caller/draw traces before
 assigning a visible duration to those entries. The age-freeze discrepancy
 is directly proven; do not turn this catalog list into visual confirmation.
 
+Fixed 2026-10-02: Motion sets `nativeAgeFrozen` at the endpoint (object
+flag 0x80) and skips the age increment while it is set; nothing hides the
+particle. The releases clear it (`Runtime:releaseHeld` 84108A10,
+`releaseStatusEnded` 84108AF8, `releaseHeldButDust` 84108CE8). Probe (the
+viewer's preview runtime, 600 ticks): entries 254 (0x13D) and 256 (0x12)
+held and frozen until released, then end at byte age 0xFF; 226 frozen,
+not held (ends at the next 841089D8 clear); 301 (0xD3) held, frozen and
+0x8000 (ended by its release). Tests: diagnostics, surf_material_rom (the
+VM's flag 0x80 now compared with the freeze), status_particles.
+
 ## T07: Magnitude's announcement and animation use different FX ownership
 
 Host `src/battle/gen2/Battle.lua`'s EFFECT_MAGNITUDE branch marks its move

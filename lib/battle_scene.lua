@@ -60,6 +60,17 @@ local function rotateY(angle)
   return {c,0,s,0,0,1,0,0,-s,0,c,0,0,0,0,1}
 end
 
+-- The display object's X rotation (+0x1E, binary angle) as 8003614C builds
+-- it (ROM execution: translate * Ry * Rx * Rz, then 80036C6C scales the
+-- model first); the identity without one.
+local function tiltX(actor,image)
+  local angle=not image and actor.nativeTilt
+  if not angle or angle==0 then return nil end
+  local a=angle*math.pi/0x8000
+  local c,s=math.cos(a),math.sin(a)
+  return {1,0,0,0,0,c,-s,0,0,s,c,0,0,0,0,1}
+end
+
 local function hasDynamicObjectHandler(actor)
   local records=actor and actor.renderer and actor.renderer.model
     and actor.renderer.model.handlers and actor.renderer.model.handlers.records
@@ -182,6 +193,13 @@ function Scene:updateBattleFx(dt)
   end
   local ok,result=pcall(battleFx.update,battleFx,dt)
   if not ok and self.warn then pcall(self.warn,tostring(result)) end
+  -- Surf's battler rides the running terrain grid (84122A0C / 84159FA8)
+  for _,side in ipairs({"player","enemy"}) do
+    local actor=self.actors and self.actors[side]
+    if actor and not actor.terrainHeightAt and type(battleFx.terrainHeightAt)=="function" then
+      actor.terrainHeightAt=function(x,z) return battleFx:terrainHeightAt(x,z) end
+    end
+  end
   return ok and result or nil
 end
 
@@ -456,10 +474,42 @@ function Scene:stadiumPresentationBusy()
 end
 
 -- A move starts (the attack state): Stadium's attack shot on the attacker.
+-- 841149A0 (BattleAnim_Dispatch_015, the attack state's first function,
+-- fork C 15201a6) clears the battle effects first (84111C44 -> 841089D8(1)),
+-- which also returns both battlers to full opacity and no fog (841003AC):
+-- a battler an earlier effect faded out (Sky Attack, Rollout) is back when
+-- the next move starts. The hosts call this before the move's own effect.
 function Scene:stadiumCameraAttack(side,moveId)
+  self:battleFxClear()
   self.stadiumLastMove={side=side,move=tonumber(moveId)}
   if self.stadiumDirectorActive and self.stadiumCamera then
     pcall(self.stadiumCamera.attack,self.stadiumCamera,self,side,moveId)
+  end
+end
+
+-- The status-shape operations on a battler's battle FX particles
+-- (84108AF8 / 84108CE8 / 84108E00 / 84108F88), from Stadium's camera states.
+function Scene:stadiumStatusParticles(side,op,...)
+  local fx=self.battleFx
+  if fx and type(fx[op])=="function" then
+    local ok,err=pcall(fx[op],fx,side,...)
+    if not ok and self.warn then pcall(self.warn,"battle FX "..tostring(op)..": "..tostring(err)) end
+  end
+end
+
+-- A sleep / frozen visual started on a side (Adapter.onStatusEntry).
+function Scene:stadiumStatusEntry(side,entry)
+  local cam=self.stadiumCamera
+  if cam and cam.statusEntry then pcall(cam.statusEntry,cam,side,entry) end
+end
+
+-- 841343FC's handoff (84124BA0): after the first side's action, when
+-- nobody has fainted, the second side gets event 7 (8 asleep, 9 frozen)
+-- before its own action; family 17's camera (StadiumCamera:turnCheck).
+-- The hosts tag the second side's first event and present this first.
+function Scene:stadiumHandoff(side,code)
+  if self.stadiumDirectorActive and self.stadiumCamera then
+    pcall(self.stadiumCamera.turnCheck,self.stadiumCamera,self,side,code)
   end
 end
 
@@ -612,14 +662,79 @@ function Scene:stadiumHitResult(side,moveId)
   return okT and tonumber(result) or nil
 end
 
--- The host's own impact while MOVE EFFECTS is off (with it on, the FX
--- adapter's onImpact reports the Stadium impact instead): the hit camera on
--- `side` for the move last presented by the other side.
-function Scene:stadiumHostImpact(side)
-  if self.battleFx then return end
-  local last=self.stadiumLastMove
-  if not (last and last.move and last.side~=side) then return end
-  self:stadiumCameraHit(side,last.move)
+-- The host's hit on `side` (Gen 1 applyHitFx, Gen 2's damage event; or the
+-- battle FX's fallback impact for a move the host reports no hit for): the
+-- defender's hit record (event 0x0A). With the director it is the camera's
+-- hit, held until the attack has ended (84135778), which then reports the
+-- state's start; without it the state starts now.
+function Scene:stadiumDefenderHit(side,moveId)
+  if moveId==nil then
+    local last=self.stadiumLastMove
+    moveId=last and last.move and last.side~=side and last.move or nil
+  end
+  -- no presented move to name (the hit's move is unknown): the hit clip only
+  if moveId==nil then return self:stadiumDefenderStarted(side,nil,false) end
+  if self.stadiumDirectorActive and self.stadiumCamera then
+    self:stadiumCameraHit(side,moveId)
+  else
+    self:stadiumDefenderStarted(side,moveId,false)
+  end
+end
+
+-- Which actor takes a hit on `side` (a gen shows its Substitute doll).
+function Scene:stadiumHitActor(side)
+  return self.actors and self.actors[side]
+end
+
+-- The defender's hit / dodge state starts (84118138 counter 0): its hit clip
+-- (context 254, 84112158(0xFE)) now, and the move's impact at its row byte
+-- 7 (Adapter:defenderStarted). A dodge plays no hit clip.
+function Scene:stadiumDefenderStarted(side,moveId,missed)
+  -- the record's code when this hit put the target to sleep (0x0C: the
+  -- sleep effect 84128EC0 queues it after "fell asleep") or froze it
+  -- (0x0E: 8412955C rewrites the hit record); each host knows (nil: an
+  -- ordinary hit)
+  local inflicted=not missed and type(self.stadiumHitInflicts)=="function"
+    and self:stadiumHitInflicts(side,moveId) or nil
+  local actor=not missed and self:stadiumHitActor(side) or nil
+  if actor then
+    if inflicted=="sleep" and actor.fallAsleep then pcall(actor.fallAsleep,actor,moveId)
+    elseif actor.hit then pcall(actor.hit,actor,moveId) end
+  end
+  local fx=self.battleFx
+  if fx and type(fx.defenderStarted)=="function" then pcall(fx.defenderStarted,fx,side) end
+  -- 84116F7C: Whirlwind (0x12) / Roar (0x2E) release the target's held
+  -- particles (84108A10) as its record starts (not on a dodge)
+  local move=tonumber(moveId)
+  if not missed and (move==0x12 or move==0x2E) then self:stadiumStatusParticles(side,"releaseHeld") end
+  if fx and inflicted=="thaw" and type(fx.scheduleCall)=="function" then
+    -- 8411854C (code 0x0F: a frozen target thawed by the hit) releases them
+    -- at its hit frame
+    local own=self.actors and self.actors[side]
+    local at=own and own.defenderHitFrame and own:defenderHitFrame(moveId) or 0
+    pcall(fx.scheduleCall,fx,side,at,function() self:stadiumStatusParticles(side,"releaseHeld") end)
+  end
+  if fx and inflicted and type(fx.scheduleSignal)=="function" then
+    if inflicted=="sleep" then
+      -- 8411862C at its hit frame: entry 0x100 (the Z's) on the target
+      local own=self.actors and self.actors[side]
+      local at=own and own.defenderHitFrame and own:defenderHitFrame(moveId) or 0
+      pcall(fx.scheduleSignal,fx,0x100,side,at)
+    elseif inflicted=="freeze" then
+      -- 84118138: entry 0xFE (the ice) at frame 8; at frame 9 hidden again
+      -- (84108E00 mode 1) when the record says flying or underground
+      pcall(fx.scheduleSignal,fx,0xFE,side,8)
+      if type(fx.scheduleCall)=="function" then
+        pcall(fx.scheduleCall,fx,side,9,function()
+          local cam=self.stadiumCamera
+          if cam and cam.sideRecordStatus then
+            local _,flags=cam:sideRecordStatus(side)
+            if flags and (math.floor(flags/2)%4)~=0 then self:stadiumStatusParticles(side,"hideStatusShape",1) end
+          end
+        end)
+      end
+    end
+  end
 end
 
 -- The length in frames of an actor's model animation for a context (e.g.
@@ -710,6 +825,76 @@ end
 -- animation timeline. Apply in world space so scaling cannot cancel it.
 function Scene:picElevation() return 0 end
 
+-- Stadium's Fly / Dig charge state (Actor:startNativeCharge). The host's
+-- charge as presented: "fly", "dig" or nil (each host overrides).
+function Scene:hostCharging() return nil end
+
+-- The host's Substitute as presented (each host overrides).
+function Scene:hostSubstitute() return false end
+
+-- The record's battler flags the hosts can report (see
+-- StadiumCamera:writeRecordFlags): bit 0 Substitute, bit 1 flying, bit 2
+-- underground.
+function Scene:stadiumRecordFlags(side)
+  local flags=0
+  if self:hostSubstitute(side) then flags=flags+1 end
+  local charge=self:hostCharging(side)
+  if charge=="fly" then flags=flags+2 elseif charge=="dig" then flags=flags+4 end
+  return flags
+end
+
+-- With Stadium's camera director running, the battlers' pose follows its
+-- shot resets: 8411EFE4 (home) and 84120700 (home, scale 1, Fly's height),
+-- as in the ROM, where a behaviour kind's position, facing and scale stay
+-- after the attack (841206D0 only clears flags) until the next of these.
+function Scene:stadiumActorHome(side)
+  local actor=self.actors and self.actors[side]
+  if actor and actor.nativeHome then actor:nativeHome() end
+end
+function Scene:stadiumActorReset(side, lift)
+  local actor=self.actors and self.actors[side]
+  if actor and actor.nativeReset then actor:nativeReset(lift) end
+end
+
+-- Without the director (no Stadium camera machine) there are no shot
+-- resets: Fly / Dig end when the host no longer has the charge and the
+-- actor is not attacking (a degraded path, not native).
+function Scene:stepNativeCharge(side)
+  local actor=self.actors and self.actors[side]
+  if not actor then return end
+  actor.reposeDriven=self.stadiumDirectorActive==true
+  local charge=actor.nativeCharge
+  if actor.reposeDriven then
+    -- Fly ends at the first reset without the height once its rise is over
+    if charge and charge.kind=="fly" and charge.risen and charge.landed then
+      actor.nativeCharge=nil
+    end
+    -- Dig's attack ends when Stadium shows the battler again
+    if charge and charge.kind=="dig" and charge.attack and actor.context~="attack" then
+      local cam=self.stadiumCamera
+      if cam and cam.actorShown and cam:actorShown(side) then actor.nativeCharge=nil end
+    end
+    return
+  end
+  if not charge then actor.nativeLift=nil;return end
+  if actor.context=="attack" then return end
+  if self:hostCharging(side)==charge.kind then return end
+  actor.nativeCharge,actor.nativeLift=nil,nil
+end
+
+-- The model's visibility while that state runs. With the director: Stadium's
+-- own (+1 bit 0: 8411EF2C at each shot, 84120700, Dig's sink 8411EE74 and
+-- its attack reset 84120D34); without it: shown while rising or sinking and
+-- held up, hidden once sunk and through the Dig attack. Nil otherwise.
+function Scene:nativeChargeVisibility(side)
+  local actor=self.actors and self.actors[side]
+  local charge=actor and actor.nativeCharge
+  if not charge then return nil end
+  local cam=self.stadiumDirectorActive and self.stadiumCamera
+  if cam and cam.actorShown then return cam:actorShown(side) and "pokemon" or "hidden" end
+  return (charge.hidden or charge.attack) and "hidden" or "pokemon"
+end
+
 -- 8411EFE4: the battler's origin height (+0x28) is +0x650, the species'
 -- battle profile +0x08 (84112704), in Stadium units; most species have 0,
 -- flying and floating ones hover (Fearow 100, Gastly 110). Nil without a
@@ -735,14 +920,19 @@ function Scene:modelMatrix(side,actor,image)
     local size=image and image.scale or actor:scale()
     local k=self.arenaScale*size*self:picScale(side)
     local slot,yaw=StadiumBattleLayout.slot(side,actor.dex)
-    -- Native per-move sway (Agility) or afterimage position, Stadium units.
-    local o=image and image.offset or actor.nativeOffset or {0,0,0}
+    -- a behaviour kind's own facing (+0x20), binary angle
+    if not image and actor.nativeYaw then yaw=actor.nativeYaw*math.pi/0x8000 end
+    -- Native per-move sway (Agility) or afterimage position, Stadium units;
+    -- Fly's held height (Actor.nativeLift).
+    local o=image and image.offset or actor.nativeOffset
+      or (actor.nativeLift and {0,actor.nativeLift,0}) or {0,0,0}
     -- Stadium model bounds and field vertices use the same source units.
     -- Fragment 79 authors X/Z and facing globally for every field. Ground the
     -- extracted model's real floor to reproduce its model-derived Y offset.
     local axes=axisScale(actor,image)
     local ky=axes and k*axes[6] or k
-    local model=mul(rotateY(yaw),scale(k))
+    local tilt=tiltX(actor,image)
+    local model=mul(tilt and mul(rotateY(yaw),tilt) or rotateY(yaw),scale(k))
     if axes then model=mul(model,axes) end
     -- 8411EFE4: the model's origin at the profile height (Stadium units);
     -- without a profile, its lowest point on the floor
@@ -752,7 +942,7 @@ function Scene:modelMatrix(side,actor,image)
     return mul(translate((slot[1]+o[1])*self.arenaScale,
         y+o[2]*self.arenaScale+elevation*metrics.height*self.arenaScale,
         (slot[3]+o[3])*self.arenaScale),
-      model),yaw
+      model),yaw,tilt and actor.nativeTilt*math.pi/0x8000 or 0
   end
   if self:stadiumCustomScene() then
     -- the arena's placement and proportions, in the scene's Stadium space
@@ -760,18 +950,21 @@ function Scene:modelMatrix(side,actor,image)
     local size=image and image.scale or actor:scale()
     local k=sp.scale*size*self:picScale(side)
     local slot,yaw=StadiumBattleLayout.slot(side,actor.dex)
-    local o=image and image.offset or actor.nativeOffset or {0,0,0}
+    if not image and actor.nativeYaw then yaw=actor.nativeYaw*math.pi/0x8000 end
+    local o=image and image.offset or actor.nativeOffset
+      or (actor.nativeLift and {0,actor.nativeLift,0}) or {0,0,0}
     -- 8411EFE4's origin height, as in the arena (see above)
     local origin=Scene.nativeOriginHeight(actor)
     local at=self:stadiumToWorld({slot[1]+o[1],(origin or 0)+o[2],slot[3]+o[3]})
     local turn=yaw+sp.theta
     local axes=axisScale(actor,image)
     local ky=axes and k*axes[6] or k
-    local model=mul(rotateY(turn),scale(k))
+    local tilt=tiltX(actor,image)
+    local model=mul(tilt and mul(rotateY(turn),tilt) or rotateY(turn),scale(k))
     if axes then model=mul(model,axes) end
     local y=origin and at[2] or at[2]-metrics.floor*ky
     return mul(translate(at[1],y+elevation*metrics.height*sp.scale,at[3]),
-      model),turn
+      model),turn,tilt and actor.nativeTilt*math.pi/0x8000 or 0
   end
   local worldHeight=clamp(14*math.sqrt(metrics.height/52.25),5,18)
   local k=worldHeight/metrics.height*actor:scale()*self:picScale(side)
@@ -1069,7 +1262,7 @@ function Scene:render(requestedWidth,requestedHeight)
           local function drawModel(matrix,alphaByte)
             return actor.renderer:drawScene(pass,matrix,{
               viewProjection=vp,viewMatrix=frame.view,
-              normalMatrix=Renderer.normalMatrix(entry[2],0,false),
+              normalMatrix=Renderer.normalMatrix(entry[2],entry[3] or 0,false),
               bindTorchLighting=natureActive and environmentScene.bindTorchLighting or nil,
               sceneWatercolor=natureActive,
               lightDir=self.environment.light,ambient=self.environment.ambient,

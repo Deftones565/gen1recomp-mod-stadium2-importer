@@ -37,8 +37,9 @@ for _,record in ipairs(catalog.programs[330].records) do
         motion=Motion.step(motion,1)
         material=Material.step(material,{age=tick})
         assert(motion.alive==(vm:read(p+0x92,1)~=0),'native material termination')
-        assert((motion.nativeHidden==true)==(math.floor(vm:read(p+0x14,4)/0x80)%2==1),
-          'native hide flag without particle termination')
+        -- object flag 0x80 (84102320): the age freeze, not termination
+        assert((motion.nativeAgeFrozen==true)==(math.floor(vm:read(p+0x14,4)/0x80)%2==1),
+          'native age-freeze flag without particle termination')
         assert(material.nativeAlpha==vm:read(p+0x87,1),'native alpha ramp')
         for _,entry in ipairs({{'primaryColor',0x84},{'secondaryColor',0x8B}}) do
           local rgba=material[entry[1]]

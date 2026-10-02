@@ -181,12 +181,13 @@ function Scene.new(battle,context)
   self.battleFx=newBattleFx()
   if self.battleFx then
     -- The defender plays its own hit clip (context 254) at the impact.
+    -- A fallback impact (a move Gold reports no hit for) is the defender's
+    -- hit record as a host hit would be (Scene:stadiumDefenderHit).
     self.battleFx.onImpact=function(target,_,moveId)
-      self:stadiumCameraHit(target,moveId)
-      local actor=self.actors and self.actors[target]
-      if not actor or not actor.hit then return false,"no defender actor" end
-      return actor:hit(moveId)
+      self:stadiumDefenderHit(target,moveId)
+      return true
     end
+    self.battleFx.onStatusEntry=function(side,entry) self:stadiumStatusEntry(side,entry) end
   end
   self.battleFxUpdateError=nil
   return self
@@ -283,6 +284,50 @@ local function chargeKind(volatile)
   return nil
 end
 
+-- The HP Stadium's record carries (84134A6C: the displayed HP): the HP
+-- bar as shown.
+function Scene:stadiumRecordHp(side)
+  local shown=self.screen and self.screen.shownHp and self.screen.shownHp[side]
+  return tonumber(shown)
+end
+
+-- Whether the move now presented put `side` to sleep or froze it (Stadium's
+-- 0x0C / 0x0E record): Gold resolves the turn first, so its status event
+-- for that side is still queued before the next move.
+function Scene:stadiumHitInflicts(side)
+  local queue=self.screen and self.screen.queue
+  for index,event in ipairs(queue or {}) do
+    if index>1 and event.kind=="move" then break end
+    if event.kind=="status" and event.side==side
+        and (event.status=="sleep" or event.status=="freeze") then
+      return event.status
+    end
+  end
+  return nil
+end
+
+-- The record's status byte (84134A6C copies the battle mon's +0x24): the
+-- presented one (the event snapshot), else the live one.
+function Scene:stadiumRecordStatus(side)
+  local presented=self.presentedVolatile and self.presentedVolatile[side]
+  if presented and presented.statusByte~=nil then return presented.statusByte end
+  local actor=self.actors and self.actors[side]
+  return statusByte(actor and actor.mon) or 0
+end
+
+-- The Substitute as presented (the event snapshot, Scene:handleEvent).
+function Scene:hostSubstitute(side)
+  return self.substituteActive and self.substituteActive[side] == true or false
+end
+
+-- The charge as presented (the event snapshot's chargeMove; live state
+-- before any event has been presented).
+function Scene:hostCharging(side)
+  local presented=self.presentedVolatile and self.presentedVolatile[side]
+  local kind=chargeKind(presented or self:volatileFor(side))
+  return kind=="flying" and "fly" or kind=="underground" and "dig" or nil
+end
+
 -- Condition for the Stadium resting pose (battle_rest_pose.lua), from what
 -- has been presented: the vanish state once its departing animation has
 -- finished, and the presented major status.
@@ -309,7 +354,7 @@ function Scene:restVisible(side)
   return (condition.flying or condition.underground) and not pose.hidden
 end
 
-function Scene:visualState(side, screen)
+function Scene:hostVisualState(side, screen)
   screen=screen or self.screen
   if not self:ownsSlot(side,screen) then return "trainer" end
   if not screen then return "empty" end
@@ -420,6 +465,31 @@ function Scene:visualActor(side,screen)
     error(("Gen 2 %s Pokemon renderer unavailable"):format(side),0)
   end
   return nil,state
+end
+
+-- Stadium's own visibility over the host's, once the host's bookkeeping has
+-- run. With the camera director: the battler's +1 bit 0 as Stadium sets it
+-- (8411EF2C at each shot, 84120700, the send-out, the opening, Dig...); the
+-- host still decides an empty slot, a trainer and a fainting Pokemon.
+-- Without it: Stadium's Fly / Dig visibility (Scene:nativeChargeVisibility).
+function Scene:visualState(...)
+  local state=self:hostVisualState(...)
+  if state=="pokemon" or state=="hidden" or state=="substitute" then
+    local side=...
+    local actor=self.actors and self.actors[side]
+    if not (actor and actor.context=="faint") then
+      local cam=self.stadiumDirectorActive and self.stadiumCamera
+      if cam and cam.actorShown then
+        if not cam:actorShown(side) then return "hidden" end
+        return state=="hidden" and "pokemon" or state
+      end
+      if state~="substitute" then
+        local native=self:nativeChargeVisibility(side)
+        if native then return native end
+      end
+    end
+  end
+  return state
 end
 
 -- `covered` answers whether the native battle pic is replaced.  Drawing the
@@ -537,12 +607,11 @@ function Scene:handleEvent(event)
     local actor = self.actors[side]
     -- Explicit anim fields describe residual effects or silent HP costs,
     -- not a direct impact. Zero-damage bookkeeping must not flinch either.
-    -- With battle FX on, the hit clip plays at the Stadium impact instead
-    -- (the adapter's onImpact hook), so it is not replayed here.
-    if actor and not self.battleFx and event.anim==nil and (tonumber(event.amount) or 0)>0
+    -- A move's hit is the defender's hit record: camera, hit clip, impact
+    -- (Scene:stadiumDefenderHit), with or without battle FX.
+    if actor and event.anim==nil and (tonumber(event.amount) or 0)>0
         and not self.substituteActive[side] then
-      self:stadiumHostImpact(side)
-      actor:hit()
+      self:stadiumDefenderHit(side)
     end
   elseif event.kind == "status" and side then
     self.presentedStatus[side] = event.status
@@ -979,6 +1048,7 @@ function Scene:update(dt)
   self:updateStadiumCamera(dt)
   for _,which in ipairs({"player","enemy"}) do
     local actor=self.actors[which]
+    self:stepNativeCharge(which)
     if actor.setRest then actor:setRest(self:restCondition(which)) end
   end
   self.actors.player:update(dt)
@@ -1005,7 +1075,74 @@ local function installScreenHooks()
   if emit then
     function Battle:emit(event,...)
       if session and session.battle==self then session:recordEvent(event) end
+      -- the handoff armed by the second side's action start (below) goes on
+      -- the first event that action emits
+      local handoff=self.stadium2HandoffNext
+      if handoff and type(event)=="table" then
+        self.stadium2HandoffNext=nil
+        event.stadiumHandoff=handoff
+      end
       return emit(self,event,...)
+    end
+  end
+
+  -- 841343FC (US asm), the turn body: the side acting first (a switch or an
+  -- item always first, else the turn order) takes its whole action (84133ACC
+  -- / 84133F10, with its after-move damage 84131AF8); unless that left a
+  -- side fainted, 84124BA0 then queues event 7 (8 asleep, 9 frozen) on the
+  -- other side before its action. Gold's engine runs the same order
+  -- (runTurn): each side's action starts at its switch (Battle:switch /
+  -- switchEnemy), item (enemyUseItem; a player's item is used before the
+  -- turn) or move (canAct); resolveFaints reports a faint. When both sides
+  -- switch, Stadium picks the first at random (84125080); the host's order
+  -- (the player's switch first) stands.
+  local function handoffActionStart(battle,side)
+    local turn=battle.stadium2Handoff
+    if not turn or turn.done or (side~="player" and side~="enemy") then return end
+    if not turn.first then turn.first=side;return end
+    if side==turn.first then return end
+    turn.done=true
+    if turn.fainted or battle.over then return end
+    local mon=battle[side]
+    local status=mon and mon.status
+    battle.stadium2HandoffNext={side=side,code=status=="sleep" and 8 or status=="freeze" and 9 or 7}
+  end
+  local function wrapTurn(name,playerAction)
+    local original=Battle[name]
+    if not original then return end
+    Battle[name]=function(self,...)
+      local action=playerAction(...)
+      self.stadium2Handoff={first=(type(action)=="table" and action.kind=="item") and "player" or nil}
+      self.stadium2HandoffNext=nil
+      local result=original(self,...)
+      self.stadium2Handoff,self.stadium2HandoffNext=nil,nil
+      return result
+    end
+  end
+  wrapTurn("takeTurn",function(action) return action end)
+  wrapTurn("takeLinkTurn",function(playerAction) return playerAction end)
+  for name,side in pairs({switch="player",switchEnemy="enemy",enemyUseItem="enemy"}) do
+    local original=Battle[name]
+    if original then
+      Battle[name]=function(self,...)
+        handoffActionStart(self,side)
+        return original(self,...)
+      end
+    end
+  end
+  local canAct=Battle.canAct
+  if canAct then
+    function Battle:canAct(mon,...)
+      handoffActionStart(self,mon==self.player and "player" or mon==self.enemy and "enemy" or nil)
+      return canAct(self,mon,...)
+    end
+  end
+  local resolveFaints=Battle.resolveFaints
+  if resolveFaints then
+    function Battle:resolveFaints(...)
+      local fainted=resolveFaints(self,...)
+      if fainted and self.stadium2Handoff then self.stadium2Handoff.fainted=true end
+      return fainted
     end
   end
 
@@ -1281,6 +1418,17 @@ local function installScreenHooks()
     if scene and scene:stadiumPresentationBusy() then
       scene.heldAdvance = self
       return
+    end
+    -- 84124BA0's handoff record plays before the second side's action
+    -- (tagged by Battle:emit), which waits for it like any record
+    local handoff = event and event.stadiumHandoff
+    if scene and handoff and not event.stadiumHandoffShown then
+      event.stadiumHandoffShown = true
+      scene:stadiumHandoff(handoff.side, handoff.code)
+      if scene:stadiumPresentationBusy() then
+        scene.heldAdvance = self
+        return
+      end
     end
     local after = event and (event.kind == "send" or event.kind == "sendout"
       or event.kind == "transform")

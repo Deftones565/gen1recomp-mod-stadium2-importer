@@ -935,6 +935,8 @@ function Runtime:releaseHeld(ownerSide)
         local held = math.floor(flags / 0x20000000) % 2 == 1 and not particle.nativeReleased
         if held then
           particle.nativeReleased = true
+          -- flags 0x10080: no longer held, and its age runs again (0x80)
+          if particle._motionState then particle._motionState.nativeAgeFrozen = nil end
           count = count + 1
           if math.floor(flags / 0x08000000) % 2 == 0 then kept[#kept + 1] = particle
           else particle.nativeDropped = true end
@@ -945,6 +947,97 @@ function Runtime:releaseHeld(ownerSide)
       effect.particles = kept
     end
   end
+  return count
+end
+
+-- The owner's live held particles (object flag 0x10000), with each one's
+-- material shape (descriptor +0x14 -> +0).
+function Runtime:_ownedParticles(ownerSide, visit, heldOnly)
+  for _, id in ipairs(self.effectOrder) do
+    local effect = self.effects[id]
+    local owner = effect and (effect.context.nativeOwnerSide or effect.sourceSide)
+    if effect and owner == ownerSide then
+      for _, particle in ipairs(effect.particles) do
+        local flags = tonumber(particle.event and particle.event.flags) or 0
+        local held = math.floor(flags / 0x20000000) % 2 == 1 and not particle.nativeReleased
+        if particle.active ~= false and (held or not heldOnly) then
+          if visit(particle, tonumber(particle.shapeId), flags, held) == false then return end
+        end
+      end
+    end
+  end
+end
+
+-- The release of 84108AF8 / 84108CE8 on one held particle: flags 0x10080
+-- cleared (no longer held, its age runs again); with object flag 0x8000
+-- (descriptor 0x08000000) also 84100348 (ended) and the linked renderer's
+-- bit 0 cleared (no longer drawn).
+local function releaseStatus(particle, flags)
+  particle.nativeReleased = true
+  if particle._motionState then particle._motionState.nativeAgeFrozen = nil end
+  if math.floor(flags / 0x08000000) % 2 == 1 then
+    particle.nativeStatusHidden = true
+    particle.active = false
+    particle.nativeDropped = true
+  end
+end
+
+-- 84108AF8(owner) (US asm): the owner's held particles that no longer match
+-- its status are released; kept: shape 0x12 while asleep (record status &
+-- 7), 0x13D while frozen (status == 0x20), 0xD3 while underground (record
+-- flags bit 2). `status` = {asleep, frozen, underground}.
+function Runtime:releaseStatusEnded(ownerSide, status)
+  self:touch()
+  if self.released then return 0 end
+  status = type(status) == "table" and status or {}
+  local count = 0
+  self:_ownedParticles(ownerSide, function(particle, shape, flags)
+    local keep = (status.asleep and shape == 0x12) or (status.frozen and shape == 0x13D)
+      or (status.underground and shape == 0xD3)
+    if not keep then releaseStatus(particle, flags); count = count + 1 end
+  end, true)
+  return count
+end
+
+-- 84108CE8(owner) (US asm): every held particle of the owner but shape 0xD3
+-- is released (the wake-up, 84119908 / 84119AB4; the defrost, 84119F24).
+function Runtime:releaseHeldButDust(ownerSide)
+  self:touch()
+  if self.released then return 0 end
+  local count = 0
+  self:_ownedParticles(ownerSide, function(particle, shape, flags)
+    if shape ~= 0xD3 then releaseStatus(particle, flags); count = count + 1 end
+  end, true)
+  return count
+end
+
+-- 84108E00(owner, mode) (US asm) hides the owner's status shape: mode 0
+-- 0xD3, 1 0x13D (linked renderer bit 0), 2 0x12 (object flag 0x100000);
+-- every match. 84108F88(owner, mode) shows it again; mode 2 stops at its
+-- first match.
+local STATUS_SHAPES = {[0] = 0xD3, [1] = 0x13D, [2] = 0x12}
+function Runtime:hideStatusShape(ownerSide, mode)
+  self:touch()
+  local shape = STATUS_SHAPES[tonumber(mode)]
+  if self.released or not shape then return 0 end
+  local count = 0
+  self:_ownedParticles(ownerSide, function(particle, particleShape)
+    if particleShape == shape then particle.nativeStatusHidden = true; count = count + 1 end
+  end)
+  return count
+end
+function Runtime:showStatusShape(ownerSide, mode)
+  self:touch()
+  local shape = STATUS_SHAPES[tonumber(mode)]
+  if self.released or not shape then return 0 end
+  local count = 0
+  self:_ownedParticles(ownerSide, function(particle, particleShape)
+    if particleShape == shape and not particle.nativeDropped then
+      particle.nativeStatusHidden = nil
+      count = count + 1
+      if tonumber(mode) == 2 then return false end
+    end
+  end)
   return count
 end
 

@@ -120,5 +120,18 @@ origin; native lowest point = ground + floor, the port's = 0.
 - Gen 2's picElevation (the host's Fly / Dig pic motion) lifts the model in
   model-height units; Stadium's own Fly / Dig states move the actor
   (camera port: flyUpState / flyRiseFrame). Not compared yet.
+  Ported (same day, battle FX on): Stadium's Fly rise (200 above the
+  origin height, held through the Fly attack) and Dig's spin and sink
+  replace the hosts' pic motion; see battle-special-moves.md. With battle
+  FX off, Gen 1's pic lift (3 model heights, not native) and Gen 2's
+  ground-level flying pose remain.
 - Transform: 8411EFE4 reads the slot species from +0x1A; the port uses the
   shown Pokemon's species. Not compared yet.
+  Compared (same day): matches by reading. +0x1A is the display object's
+  modelId, the species of the loaded model; Transform (dispatch 0x99,
+  fork C 15201a6) reloads the model through 84112FD0 with +0x65C, the
+  copied species. Both hosts reload the actor with the copied species
+  (gen2_battle.lua "transform" event, gen1_battle.lua transformSprites),
+  and `Actor:load` stores it as `actor.dex`, which `Layout.slot` reads.
+  So a transformed Ditto stands where the copied species stands (Onix at
+  225, Steelix at 325...), as in Stadium.

@@ -46,6 +46,14 @@ local autoCapture = os.getenv("STADIUM2_VISUAL_AUTOCAPTURE")
 local autoCaptureFrames = 0
 local autoCaptureAt = math.max(1,
   math.floor(tonumber(os.getenv("STADIUM2_VISUAL_AUTOCAPTURE_FRAME")) or 8))
+-- STADIUM2_VISUAL_AUTOCAPTURE_FRAMES="30,60,90" with a path containing %d:
+-- one capture per listed render frame (named by the FX tick), then quit.
+local autoCaptureList = {}
+for value in tostring(os.getenv("STADIUM2_VISUAL_AUTOCAPTURE_FRAMES") or ""):gmatch("%d+") do
+  autoCaptureList[tonumber(value)] = true
+end
+local autoCaptureLast = 0
+for value in pairs(autoCaptureList) do autoCaptureLast = math.max(autoCaptureLast, value) end
 local autoKeys = os.getenv("STADIUM2_VISUAL_AUTOKEYS")
 local autoKeysApplied = false
 local autoKeysWaited = 0
@@ -1424,7 +1432,20 @@ function love.update(dt)
     screenshotTimer = screenshotTimer - dt
     if screenshotTimer <= 0 then screenshotMessage = nil end
   end
-  if autoCapture and not importing and scene and not loadError then
+  if autoCapture and autoCaptureLast > 0 and not importing and scene and not loadError then
+    autoCaptureFrames = autoCaptureFrames + 1
+    if autoCaptureList[autoCaptureFrames] then
+      local tick = math.floor(battleFx.frame or 0)
+      local path = autoCapture:format(tick)
+      love.graphics.captureScreenshot(function(imageData)
+        local encoded=imageData:encode("png")
+        local file=assert(io.open(path,"wb"))
+        file:write(encoded:getString());file:close()
+      end)
+    elseif autoCaptureFrames >= autoCaptureLast + 2 then
+      love.event.quit()
+    end
+  elseif autoCapture and not importing and scene and not loadError then
     autoCaptureFrames = autoCaptureFrames + 1
     if autoCaptureFrames == autoCaptureAt then
       if autoCapture:sub(1,1)=="/" then

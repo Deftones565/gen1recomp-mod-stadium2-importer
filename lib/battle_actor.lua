@@ -8,6 +8,7 @@ local RestPose = require("mods.STADIUM2_IMPORTER.lib.battle_rest_pose")
 local Sequence = require("mods.STADIUM2_IMPORTER.lib.stadium2_battle_fx_sequence")
 local Special = require("mods.STADIUM2_IMPORTER.lib.battle_special_moves")
 local Dispatch = require("mods.STADIUM2_IMPORTER.lib.animation_dispatch")
+local Pack = require("mods.STADIUM2_IMPORTER.lib.pack")
 
 local Actor = {}
 Actor.__index = Actor
@@ -75,6 +76,7 @@ function Actor:release()
   self.renderer=nil
   self.mon,self.dex,self.variant,self.form=nil,nil,nil,nil
   self.context,self.callbackFrame="idle",0
+  self.nativeCharge,self.nativeLift,self.heldAttack=nil,nil,nil
   self.grow=nil
   self.flash=0
   self.faintFinished=false
@@ -96,8 +98,52 @@ function Actor.fxEnabled()
 end
 
 function Actor:clearNative()
-  self.nativeOffset,self.afterimages,self.nativeAxisScale=nil,nil,nil
+  self.nativeOffset,self.afterimages,self.nativeAxisScale,self.nativeYaw,self.nativeTilt=nil,nil,nil,nil,nil
   self.modelAlphaByte=255
+end
+
+-- A state's end. With the camera director's shot resets running
+-- (`reposeDriven`, Scene:stepNativeCharge), the ROM keeps a behaviour kind's
+-- position, facing and scale until the next 8411EFE4 / 84120700
+-- (Actor:nativeHome / nativeReset); only the copies end (841206D0 clears
+-- both copy slots) and the alpha returns to 0xFF (84114BF4 at the attack's
+-- end for Faint Attack / Double Team, the kinds that change it). Without
+-- the director everything clears here.
+function Actor:endNative()
+  if not self.reposeDriven then return self:clearNative() end
+  self.afterimages=nil
+  self.modelAlphaByte=255
+end
+
+-- 8411EFE4: the home pose: position (a kind's displacement and Fly's
+-- height), the side's facing, rotation X / Z 0. A running kind continues
+-- from home, as its routines move the actor's own position.
+function Actor:nativeHome()
+  self.nativeLift=nil
+  self.nativeOffset,self.nativeYaw,self.nativeTilt=nil,nil,nil
+  local native=self.special and self.special.native
+  if native and type(native.offset)=="table" then
+    native.offset[1],native.offset[2],native.offset[3]=0,0,0
+  end
+end
+
+-- 84120700: the home pose, scale 1 (+0x30), and 200 above the origin when
+-- `lift` (the record's flying bit or Fly's attack bit). A risen Fly ends
+-- at its first reset without the height.
+function Actor:nativeReset(lift)
+  self:nativeHome()
+  self.sizeScale=1
+  self.nativeAxisScale=nil
+  local native=self.special and self.special.native
+  if native and type(native.axisScale)=="table" then
+    native.axisScale[1],native.axisScale[2],native.axisScale[3]=1,1,1
+  end
+  if lift then
+    self.nativeLift=Special.FLY_TOP
+  else
+    local charge=self.nativeCharge
+    if charge and charge.kind=="fly" and charge.risen then charge.landed=true end
+  end
 end
 
 -- ROM trig tables (D_80087E50/D_80088E50) for the native routines; tests
@@ -111,8 +157,17 @@ end
 function Actor:startNative(kind)
   local model=self.renderer and self.renderer.model
   local profile=Dispatch.battleProfile(model and model.fxBattleProfile)
+  local Layout=require("mods.STADIUM2_IMPORTER.lib.stadium_battle_layout")
+  local slot=Layout.slot(self.side,self.dex)
+  local actor=self
   local state,err=Special.new({kind=kind,yaw=Special.facing(self.side),
-    trig=self:nativeTrig(),bodyHeight=profile and profile.bodyHeight})
+    trig=self:nativeTrig(),bodyHeight=profile and profile.bodyHeight,
+    groundY=profile and profile.groundY,centerY=profile and profile.centerY,
+    slotX=slot and slot[1],
+    -- Surf's water height (the scene sets actor.terrainHeightAt)
+    terrainHeightAt=function(x,z)
+      if type(actor.terrainHeightAt)=="function" then return actor.terrainHeightAt(x,z) end
+    end})
   if not state and self.warn then
     pcall(self.warn,("%s species %s: %s; move shown without it")
       :format(self.label,tostring(self.dex),tostring(err)))
@@ -162,6 +217,96 @@ end
 -- asleep). Applied while the actor is idle; see battle_rest_pose.lua.
 function Actor:setRest(condition)
   self.rest=type(condition)=="table" and condition or nil
+  -- Stadium's own Fly / Dig state decides the pose once it has risen or sunk
+  local charge=self.nativeCharge
+  if charge and (charge.risen or charge.hidden) then
+    local merged={}
+    for k,v in pairs(self.rest or {}) do merged[k]=v end
+    if charge.risen then merged.flying=true end
+    if charge.kind=="dig" then merged.underground=true end
+    self.rest=merged
+  end
+end
+
+-- Stadium's Fly and Dig charge turns (battle FX option), from the charge
+-- row 841155B0 / 84115940 load (rows 0x100 / 0x102):
+-- Fly (841155E8, Dispatch_045): the row's clip from frame 0 (84111DB4 0);
+--   kind 3 from the row's hit frame (+0x619, byte 0x0B); the clip's end
+--   loops context 0x106 (262); at 200 above the origin height the kind ends
+--   with the battler held there (841206D0 does not re-place it).
+-- Dig (84115A64, 84115B34): the playing animation until the tick after
+--   frame 0x19, then the row's clip from frame 0 and, except for Diglett /
+--   Dugtrio (0x32 / 0x33), kind 5 (spin, sink); the clip loops (84115988)
+--   until the battler is below -3 x +0x648, when it is hidden (8411EE74).
+--   Diglett / Dugtrio play the clip to its end (84115A24).
+-- 84120700 then keeps the height (record +0x12 bit 1, or +0x7F4 bit 3 in
+-- the Fly attack) or hides (bit 2) at every re-pose; the scene ends the
+-- state when the host no longer has the charge (Scene:stepNativeCharge).
+Actor.CHARGE_FLY,Actor.CHARGE_DIG=256,258
+Actor.DIG_CLIP_TICK=0x1A
+local function chargeHitFrame(model,entry)
+  local bytes=model and model.fxDispatch
+  local value=type(bytes)=="string" and bytes:byte(entry*20+0x0B+1) or nil
+  if not value then return nil end
+  return value>=0x80 and value-0x100 or value
+end
+function Actor:startNativeCharge(entry)
+  local model=self.renderer and self.renderer.model
+  if entry==Actor.CHARGE_FLY then
+    local hit=chargeHitFrame(model,entry)
+    if not hit then return false end
+    self.nativeCharge={kind="fly",entry=entry}
+    self.special={kind=Special.FLY,at=math.max(0,hit),clock=0,ticks=0,charge=true}
+    return true
+  end
+  if entry==Actor.CHARGE_DIG then
+    local digger=self.dex==50 or self.dex==51
+    self.nativeCharge={kind="dig",entry=entry,digger=digger,wait=0,pending=true}
+    -- 84115B34: kind start in substate 1 (tick 0x1A), its first update in
+    -- substate 2; Special.step runs both, so from tick 0x1B
+    self.special=not digger and {kind=Special.DIG,at=Actor.DIG_CLIP_TICK+1,clock=0,ticks=0,charge=true} or nil
+    return true
+  end
+  return false
+end
+
+-- The charge turn's per-tick part (see Actor:startNativeCharge). Returns
+-- true when the charge has finished its animation (the attack state ends).
+function Actor:stepNativeCharge(dt)
+  local charge=self.nativeCharge
+  if not charge or self.context~="attack" then return false end
+  local renderer=self.renderer
+  if charge.pending then
+    charge.wait=charge.wait+(tonumber(dt) or 0)*30
+    if charge.wait>=Actor.DIG_CLIP_TICK then
+      charge.pending=false
+      if renderer:setContext(("rom_context_%d"):format(charge.entry),not charge.digger) then
+        renderer.finished=false
+      end
+    end
+    return false
+  end
+  local special=self.special
+  local native=special and special.native
+  if charge.kind=="fly" then
+    if renderer.finished then
+      renderer:setContext("rom_context_262",true);renderer.finished=false
+    end
+    if native and Special.flyRisen(native) then
+      charge.risen=true
+      self.nativeLift=Special.FLY_TOP
+      self.special=nil
+      return true
+    end
+    return false
+  end
+  if charge.digger then return renderer.finished end
+  if native and Special.digSunk(native) then
+    charge.hidden=true
+    self.special=nil
+    return true
+  end
+  return false
 end
 
 -- 841139D0 as re-run by the idle state every frame: pick the pose for the
@@ -213,6 +358,8 @@ function Actor:load(data, mon, forcedDex)
   else renderer,err=Importer.newRenderer(dex,variant,options) end
 
   self.mon,self.dex,self.variant,self.form=mon,dex,variant,form
+  -- a new Pokemon (or model) starts without a Fly / Dig state
+  self.nativeCharge,self.nativeLift,self.heldAttack=nil,nil,nil
   if not renderer then
     self.failedFor=mon
     self.failedForm=form
@@ -248,16 +395,37 @@ function Actor:attack(moveIndex, strict)
     return false,("species %s has no animation for move %s")
       :format(tostring(self.dex),tostring(moveIndex))
   end
+  local model=self.renderer.model
+  local timing=Sequence.attackTiming(model and model.fxDispatch,moveIndex,{species=self.dex})
+  -- 84114BF4 -> 84111D64 -> 8003F2C4 with the row's body selector (lb
+  -- +0x616): a selector outside the species' animation table leaves the
+  -- animation unchanged. The attack still runs (see Actor.stepHeldAttack).
+  -- No ROM row uses 0xFF (-1, which would clear the animation). Without
+  -- the move's Stadium row the generic attack clip stands in (not native).
+  local held=not ok and timing~=nil
+  if held then ok=true end
   if not ok then ok=self:play("attack",false) end
   if ok then
     self.context="attack"
+    self.attackMove=tonumber(moveIndex)
+    -- Dig's attack turn (family 15): with the director, Stadium's visibility
+    -- decides (84120D34 hides the attacker unless Diglett / Dugtrio; a later
+    -- shot shows it, Scene:stepNativeCharge); without it the host brings
+    -- the battler back. Fly's height stays through its attack (84120700
+    -- with +0x7F4 bit 3).
+    local charge=self.nativeCharge
+    if charge and charge.kind=="dig" then
+      if self.reposeDriven and self.attackMove==91 then charge.attack,charge.hidden=true,nil
+      else self.nativeCharge=nil end
+    elseif charge and not charge.risen then
+      self.nativeCharge=nil
+    end
     -- 84114804 -> 841146D4 loads the move's row (+61C/+61D markers).
     self.nativeMarkerRow=tonumber(moveIndex) and tonumber(moveIndex)-1 or nil
     self.nativeScaleSource=self.nativeMarkerRow and {row=self.nativeMarkerRow,byte=0xF} or nil
-    self:clearNative()
+    self:endNative()
     self.pendingClip=nil
-    local model=self.renderer.model
-    local timing=Sequence.attackTiming(model and model.fxDispatch,moveIndex,{species=self.dex})
+    self.heldAttack=held and {ends=timing.attackEnd,clock=0} or nil
     if moveClip and timing then
       if timing.preRoll>0 then
         -- 84114A04/841120AC: a negative hit frame holds the idle pose until
@@ -271,11 +439,32 @@ function Actor:attack(moveIndex, strict)
     end
     -- Stadium's per-move routines belong to the battle FX option; with it
     -- off the host keeps its own presentation (e.g. Gold's Minimize).
-    local kind=Actor.fxEnabled() and Actor.SPECIAL_KINDS[tonumber(moveIndex)]
+    local kind=Actor.fxEnabled() and Special.kindFor(moveIndex,self.dex)
     local at=kind and timing and timing.special
     self.special=at and {kind=kind,at=at,clock=0,ticks=0} or nil
   end
   return ok
+end
+
+-- An attack whose clip 8003F2C4 left unchanged (see Actor:attack). 84114BF4
+-- ends it at the row's length (+0x61A, byte 0x0A) when that is set, or,
+-- when it is 0, once 8003EC34 reports the playing animation at its last
+-- frame (frame >= length - 1). Returns true when the attack has ended.
+function Actor:stepHeldAttack(dt)
+  local held=self.heldAttack
+  if not held then return false end
+  if self.context~="attack" then self.heldAttack=nil;return false end
+  held.clock=held.clock+(tonumber(dt) or 0)*30
+  local done
+  if held.ends then
+    done=held.clock>=held.ends
+  else
+    local renderer=self.renderer
+    local anim=renderer.model and renderer.model.anims and renderer.model.anims[renderer.animIndex]
+    done=not anim or (renderer.frame or 0)>=(anim.frames or 1)-1
+  end
+  if done then self.heldAttack=nil end
+  return done
 end
 
 -- Idle pre-roll of a negative hit frame (see Actor:attack).
@@ -290,6 +479,44 @@ function Actor:stepPendingClip(dt)
     self.renderer:seekFrame(pending.start)
   end
   self.renderer.finished=false
+end
+
+-- The defender's hit frame for a move: its own dispatch row's byte 7
+-- (84117CAC); 0 for a negative byte, nil without the row.
+function Actor:defenderHitFrame(moveId)
+  local model=self.renderer and self.renderer.model
+  local bytes=model and model.fxDispatch
+  local index=tonumber(moveId)
+  if type(bytes)~="string" or not index or index<1 then return nil end
+  local b=bytes:byte((index-1)*20+8)
+  return b and (b>=0x80 and 0 or b) or nil
+end
+
+-- Event 0x0C, 8411862C (fork C 15201a6): the target falls asleep: no hit
+-- clip at the state's start; at its hit frame (the row's byte 7) the
+-- fall-asleep clip 0x105 (context 261).
+function Actor:fallAsleep(moveId)
+  if not self.renderer then return false,"actor has no model" end
+  if self.pendingFaint or self.context=="faint" then return false,"actor is fainting" end
+  self.context="hit"
+  self.nativeMarkerRow=254
+  self:endNative()
+  self.special=nil
+  self.pendingStatusClip={name="rom_context_261",at=self:defenderHitFrame(moveId) or 0,clock=0}
+  return true
+end
+
+function Actor:stepPendingStatusClip(dt)
+  local pending=self.pendingStatusClip
+  if not pending then return end
+  if self.context~="hit" then self.pendingStatusClip=nil;return end
+  pending.clock=pending.clock+(tonumber(dt) or 0)*30
+  if pending.clock<pending.at then return end
+  self.pendingStatusClip=nil
+  if self.renderer:setContext(pending.name,false) then self.renderer.finished=false
+  elseif self.warn then
+    pcall(self.warn,("species %s has no %s clip"):format(tostring(self.dex),pending.name))
+  end
 end
 
 -- Context 254: the species' own hit clip, played once with no generic
@@ -310,6 +537,18 @@ function Actor:hit(moveId)
   self.nativeMarkerRow=254
   self.nativeScaleSource=tonumber(moveId) and {row=tonumber(moveId)-1,byte=0x13} or nil
   self.renderer.finished=false
+  -- 84116BC0's defender kind (Stomp / Body Slam: 15), started by the hit
+  -- state at its own row's byte 7 (8411845C) and stepped while it lasts
+  self:endNative()
+  local kind=Actor.fxEnabled() and Special.DEFENDER_KINDS[tonumber(moveId)]
+  local model=self.renderer.model
+  local bytes=model and model.fxDispatch
+  local at
+  if kind and type(bytes)=="string" then
+    local b=bytes:byte((tonumber(moveId)-1)*20+8)
+    at=b and (b>=0x80 and 0 or b) or nil
+  end
+  self.special=at and {kind=kind,at=at,clock=0,ticks=0,context="hit"} or nil
   return true
 end
 
@@ -319,11 +558,25 @@ function Actor:charge(entry, startFrame)
   if not self.renderer then return false,"actor has no model" end
   if self.pendingFaint or self.context=="faint" then return false,"actor is fainting" end
   local name=("rom_context_%d"):format(tonumber(entry) or 0)
-  local ok=self.renderer.setContext and self.renderer:setContext(name,false) or false
-  if not ok then return false,("species %s has no %s clip"):format(tostring(self.dex),name) end
-  if (tonumber(startFrame) or 0)>0 and self.renderer.seekFrame then
-    self.renderer:seekFrame(startFrame)
+  local native=Actor.fxEnabled() and (entry==Actor.CHARGE_FLY or entry==Actor.CHARGE_DIG)
+  self:endNative()
+  self.nativeCharge=nil
+  if not self.reposeDriven then self.nativeLift=nil end
+  if native and entry==Actor.CHARGE_DIG then
+    -- 84115B34 starts the clip on the tick after frame 0x19
+    if not (self.renderer.setContext and Pack.contextIndex(self.renderer.model,name)) then
+      return false,("species %s has no %s clip"):format(tostring(self.dex),name)
+    end
+  else
+    local ok=self.renderer.setContext and self.renderer:setContext(name,false) or false
+    if not ok then return false,("species %s has no %s clip"):format(tostring(self.dex),name) end
+    -- Fly starts at frame 0 (84111DB4(actor, 0)); other rows at byte 6
+    if not native and (tonumber(startFrame) or 0)>0 and self.renderer.seekFrame then
+      self.renderer:seekFrame(startFrame)
+    end
   end
+  self.special=nil
+  if native then self:startNativeCharge(entry) end
   self.context="attack"
   self.nativeMarkerRow=tonumber(entry) -- 841146D4 with the charge row
   self.nativeScaleSource=self.nativeMarkerRow and {row=self.nativeMarkerRow,byte=0xF} or nil
@@ -360,13 +613,12 @@ end
 function Actor:stepSpecial(dt)
   local special=self.special
   if not special then return end
-  if self.context~="attack" then self.special=nil;self:clearNative();return end
+  if self.context~=(special.context or "attack") then self.special=nil;self:endNative();return end
   special.clock=special.clock+(tonumber(dt) or 0)*30
   while special.clock>=1 do
     special.clock=special.clock-1
     special.ticks=special.ticks+1
-    if special.ticks>=special.at and (special.kind==Special.AGILITY
-        or special.kind==Special.DOUBLE_TEAM or special.kind==Special.MEDITATE) then
+    if special.ticks>=special.at and Special.ROUTINES[special.kind] then
       if special.native==nil then special.native=self:startNative(special.kind) or false end
       if special.native then
         Special.step(special.native)
@@ -375,6 +627,9 @@ function Actor:stepSpecial(dt)
         self.modelAlphaByte=special.native.alpha or 255
         -- Meditate's per-axis scale (relative to the battler's own)
         self.nativeAxisScale=special.native.axisScale
+        -- a kind's own facing (+0x20, binary angle): Submission's spin
+        self.nativeYaw=special.native.nativeYaw
+        self.nativeTilt=special.native.surfTilt
       end
     elseif special.ticks>=special.at and special.kind==9 then
       local s=self.sizeScale or 1
@@ -408,17 +663,22 @@ function Actor:update(dt)
     dynamicObjectGastlyAlternate=self.variant=="shiny",
   },true)
   self:stepPendingClip(dt)
+  self:stepPendingStatusClip(dt)
   self:stepSpecial(dt)
   if self.context=="idle" then self:applyRest() end
   -- A held resting pose (frozen, Diglett underground) does not advance.
   self.renderer:step(self.context=="idle" and self.restHold and 0 or dt)
-  if self.renderer.finished then
+  local attackEnded
+  if self.heldAttack then attackEnded=self:stepHeldAttack(dt)
+  elseif self.nativeCharge and self.context=="attack" then attackEnded=self:stepNativeCharge(dt)
+  else attackEnded=self.renderer.finished end
+  if attackEnded then
     if self.context=="faint" then
       self.faintFinished=true
     elseif self.context~="idle" then
       self.context="idle"
       self.special=nil
-      self:clearNative()
+      self:endNative()
       self.restKey,self.restHold=nil,nil
       self:applyRest()
     end

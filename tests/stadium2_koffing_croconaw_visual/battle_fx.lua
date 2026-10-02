@@ -70,7 +70,7 @@ function Preview:start(moveId, side, alternate, sceneContext)
         local shape
         shape, modelError=Resources.shapeFromResolved(resources, shapeId, animationId)
         if shape then model, modelError=Resources.modelFromShape(shape,
-          ("stadium2_move_%03d_shape_%03d"):format(id, shapeId)) end
+          ("stadium2_move_%s_shape_%s"):format(tostring(id), tostring(shapeId))) end
       else
         model, modelError=options.importer.battleFxShapeModel(id, shapeId, animationId)
       end

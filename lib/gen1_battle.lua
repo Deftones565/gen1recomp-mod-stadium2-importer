@@ -132,13 +132,13 @@ function Scene.new(battle,context)
   -- importer mock from an older host is intentionally a no-op.
   local battleFx,battleFxError=BattleFxAdapter.new(Importer,{warn=warn})
   if battleFx then self.battleFx=battleFx
-    -- The defender plays its own hit clip (context 254) at the impact.
+    -- A fallback impact (a move Red reports no hit for) is the defender's
+    -- hit record as a host hit would be (Scene:stadiumDefenderHit).
     battleFx.onImpact=function(target,_,moveId)
-      self:stadiumCameraHit(target,moveId)
-      local actor=self.actors and self.actors[target]
-      if not actor or not actor.hit then return false,"no defender actor" end
-      return actor:hit(moveId)
+      self:stadiumDefenderHit(target,moveId)
+      return true
     end
+    battleFx.onStatusEntry=function(side,entry) self:stadiumStatusEntry(side,entry) end
   elseif battleFxError then warn("Gen 1 battle FX unavailable: "..tostring(battleFxError)) end
   return self
 end
@@ -196,6 +196,23 @@ end
 function Scene:stadiumAwaitingCommand()
   local battle=self.battle
   return battle~=nil and (battle.phase=="menu" or battle.phase=="moveSelect")
+end
+
+-- 841343FC's round (Gen 1): the first action after a command names the
+-- first side; the other side's action then gets the handoff code (7, 8
+-- asleep, 9 frozen) unless either battler has fainted. Returns the code
+-- when `side` is that second action, else nil. The round resets at the
+-- next command.
+function Scene:stadiumRoundAction(side,user,target)
+  if self:stadiumAwaitingCommand() then self.stadiumRound=nil end
+  local round=self.stadiumRound
+  if not round then self.stadiumRound={first=side};return nil end
+  if round.done or side==round.first then return nil end
+  round.done=true
+  local function standing(b) return b and b.mon and (b.mon.hp or 0)>0 and not b.fainted end
+  if not (standing(user) and standing(target)) then return nil end
+  local status=user.mon.status
+  return status=="SLP" and 8 or status=="FRZ" and 9 or 7
 end
 
 -- Red's stat-change lines (MoveEffects changeStage: "X's / STAT rose!",
@@ -626,7 +643,7 @@ function Scene:restCondition(side)
   return condition
 end
 
-function Scene:visualState(side)
+function Scene:hostVisualState(side)
   local battle,b=self.battle,self:shownBattler(side)
   if not self:ownsSlot(side) then return "native" end
   if not b then return "empty" end
@@ -659,6 +676,80 @@ function Scene:visualActor(side)
   return nil,state
 end
 
+-- Stadium's own visibility over the host's, once the host's bookkeeping has
+-- run. With the camera director: the battler's +1 bit 0 as Stadium sets it
+-- (8411EF2C at each shot, 84120700, the send-out, the opening, Dig...); the
+-- host still decides an empty slot, a trainer and a fainting Pokemon.
+-- Without it: Stadium's Fly / Dig visibility (Scene:nativeChargeVisibility).
+function Scene:visualState(...)
+  local state=self:hostVisualState(...)
+  if state=="pokemon" or state=="hidden" or state=="substitute" then
+    local side=...
+    local actor=self.actors and self.actors[side]
+    if not (actor and actor.context=="faint") then
+      local cam=self.stadiumDirectorActive and self.stadiumCamera
+      if cam and cam.actorShown then
+        if not cam:actorShown(side) then return "hidden" end
+        return state=="hidden" and "pokemon" or state
+      end
+      if state~="substitute" then
+        local native=self:nativeChargeVisibility(side)
+        if native then return native end
+      end
+    end
+  end
+  return state
+end
+
+-- The HP Stadium's record carries (84134A6C: the displayed HP): the HP
+-- bar as shown.
+function Scene:stadiumRecordHp(side)
+  local b=self:shownBattler(side)
+  return b and tonumber(b.shownHP) or nil
+end
+
+-- The record's status byte in Gen 2's layout (84134A6C copies the battle
+-- mon's +0x24): sleep turns in bits 0-2, poison 0x08, burn 0x10, freeze
+-- 0x20, paralysis 0x40, as Red presents it.
+local GEN1_STATUS_BITS={PSN=0x08,BRN=0x10,FRZ=0x20,PAR=0x40}
+function Scene:stadiumRecordStatus(side)
+  local b=self:shownBattler(side)
+  local mon=b and b.mon
+  if not mon or not mon.status then return 0 end
+  if mon.status=="SLP" then
+    -- Red counts sleep on the battler (BattleState sleepTurns); every
+    -- consumer here tests bits 0-2 for non-zero
+    local turns=math.floor(tonumber(b.sleepTurns) or 0)%8
+    return turns>0 and turns or 1
+  end
+  return GEN1_STATUS_BITS[mon.status] or 0
+end
+
+-- Whether the current action put `side` to sleep or froze it (Stadium's
+-- 0x0C / 0x0E record): Red applies a move's status as it runs, so the
+-- target's status differs from its value at the action's start.
+function Scene:stadiumHitInflicts(side)
+  local before=self.stadiumStatusBefore
+  local b=self:shownBattler(side)
+  local now=b and b.mon and b.mon.status
+  if not before or before[side]==now then return nil end
+  -- "Fire defrosted ...!" (CheckDefrost): Stadium's 0x0F record
+  if before[side]=="FRZ" and now==nil then return "thaw" end
+  return now=="SLP" and "sleep" or now=="FRZ" and "freeze" or nil
+end
+
+-- The Substitute the battler has, as the host shows it.
+function Scene:hostSubstitute(side)
+  return self:substituteVisible(side) and true or false
+end
+
+-- The charge (Fly / Dig) the battler holds, as the host has it.
+function Scene:hostCharging(side)
+  local b=self:shownBattler(side)
+  local id=b and b.invulnerable and type(b.charging)=="table" and b.charging.id
+  return id=="FLY" and "fly" or id=="DIG" and "dig" or nil
+end
+
 function Scene:picScale(side)
   local grow=self:hostGrow(side)
   if grow then return clamp(grow,0,1) end
@@ -670,6 +761,9 @@ function Scene:picScale(side)
 end
 
 function Scene:picElevation(side)
+  -- Stadium's own Fly / Dig motion replaces the host's pic lift
+  local actor=self.actors and self.actors[side]
+  if actor and actor.nativeCharge then return 0 end
   local b=self:shownBattler(side)
   local pf=b and self.battle.picFx and self.battle.picFx[b]
   if not pf then return 0 end
@@ -762,6 +856,8 @@ end
 
 function Scene:update(dt)
   self:sync()
+  -- a command opens a new round (Scene:stadiumRoundAction)
+  if self:stadiumAwaitingCommand() then self.stadiumRound=nil end
   self:syncPresentationState()
   self:stepArena(dt)
   Camera.stickOrbit(self.stickX,dt)
@@ -770,6 +866,7 @@ function Scene:update(dt)
   self:updateStadiumCamera(dt)
   for _,which in ipairs({"player","enemy"}) do
     local actor=self.actors[which]
+    self:stepNativeCharge(which)
     if actor.setRest then actor:setRest(self:restCondition(which)) end
   end
   self.actors.player:update(dt)
@@ -1040,11 +1137,13 @@ local function installHooks()
       if scene and hit and hit.blink then
         local side=hit.blink==self.player and "player" or hit.blink==self.enemy and "enemy"
         if side then
-          local actor
-          if scene:substituteVisible(side) then actor=scene:ensureSubstitute(side)
-          else actor=scene.actors[side] end
-          if actor then actor:hit() end
-          if not scene:substituteVisible(side) then scene:stadiumHostImpact(side) end
+          if scene:substituteVisible(side) then
+            local doll=scene:ensureSubstitute(side)
+            if doll then doll:hit() end
+          else
+            -- the defender's hit record: camera, hit clip, impact
+            scene:stadiumDefenderHit(side)
+          end
         end
       end
       return unpack(result,1,result.n)
@@ -1188,9 +1287,44 @@ local function installHooks()
         local status=user.mon and user.mon.status
         scene.stadiumWithdrawn={asleep=status=="SLP",frozen=status=="FRZ"}
       end
+      -- 84124BA0's handoff (Scene:stadiumHandoff) before the second side's
+      -- action of the round, unless a side has fainted; the action waits
+      -- behind its record (the updateQueue gate below)
+      local side=user==self.player and "player" or user==self.enemy and "enemy" or nil
+      -- the target's status as the action starts (Scene:stadiumHitInflicts)
+      if scene and side then
+        scene.stadiumStatusBefore={[side]=user.mon and user.mon.status,
+          [side=="player" and "enemy" or "player"]=target and target.mon and target.mon.status}
+      end
+      local code=scene and side and scene:stadiumRoundAction(side,user,target)
+      if code then
+        scene:stadiumHandoff(side,code)
+        local rest=pack(...)
+        self:actNext(function() executeAction(self,user,target,action,unpack(rest,1,rest.n)) end)
+        return
+      end
       return executeAction(self,user,target,action,...)
     end
   end
+
+  -- The player's actions that are not moves: a switch, an item, a run, a
+  -- ball, a scared turn (the round's first action: 841343FC puts a switch or
+  -- an item first).
+  local function playerActs(name,when)
+    local original=BattleState[name]
+    if not original then return end
+    BattleState[name]=function(self,...)
+      local scene=active(self)
+      if scene and (not when or when(self,...)) then scene:stadiumRoundAction("player") end
+      return original(self,...)
+    end
+  end
+  playerActs("resolveSwitch")
+  playerActs("itemUsed")
+  playerActs("tryRun")
+  playerActs("throwBall")
+  playerActs("chooseMenu",function(self,choice) return choice=="fight" and self.ghost
+    and self.phase=="menu" end)
 
   -- Transform leaves Gen 1's mon.species unchanged. Follow the sprite that
   -- the host commits at its animation/queued-action boundary instead of

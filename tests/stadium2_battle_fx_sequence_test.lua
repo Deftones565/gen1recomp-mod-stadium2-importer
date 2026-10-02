@@ -228,43 +228,27 @@ ok(#effectFor(keepEntry).particles == 0, "released particles are no longer exemp
 ok(#effectFor(otherOwner).particles > 0, "the other owner's held particles survive both")
 
 -- Attack-state timeline (Sequence.attackTiming, 84114BF4): the move route
--- starts at the attacker's rebased hit frame. With no defender row the
--- impact falls back to that same frame, so both banks start together.
+-- starts at the attacker's rebased hit frame; the impact waits for the
+-- defender's hit state (Adapter:defenderStarted, 84135778 / 84118138) and
+-- follows it by the defender row's byte 7. Row 2 has byte 0x0A = 0 (the
+-- attack ends with its clip) and no clip here, so there is no fallback.
 local attacker = {renderer = {model = {fxDispatch = bytes}}}
-adapter:playMoveAndImpact(2, "player", attacker)
+adapter:playMoveAndImpact(2, "player", attacker, nil, attacker)
 local startFrame = runtime.frame
 local pendingBefore = (runtime.nextEffectId - 1)
 adapter:update(13 / 30)
-ok((runtime.nextEffectId - 1) == pendingBefore, "route and impact wait for the hit frame")
+ok((runtime.nextEffectId - 1) == pendingBefore, "the route waits for the hit frame")
 adapter:update(1 / 30)
-ok(runtime.frame - startFrame == 14 and (runtime.nextEffectId - 1) == pendingBefore + 2,
-  "without a defender row, route and impact start at the attacker's hit frame")
+ok(runtime.frame - startFrame == 14 and (runtime.nextEffectId - 1) == pendingBefore + 1,
+  "the route starts at the attacker's hit frame, alone")
 local warned = false
 for _, message in ipairs(warnings) do
-  if message:find("defender row unavailable", 1, true) then warned = true end
+  if message:find("attack length unavailable", 1, true) then warned = true end
 end
-ok(warned, "the fallback impact timing is reported")
--- With a defender row, the impact comes from the defender's own row.
-local timed = assert(Sequence.attackTiming(bytes, 2, {defenderDispatch = bytes}))
-ok(timed.route == 14 and timed.impact ~= nil, "a defender row yields its own impact frame")
-adapter:update(4)
-adapter:playMoveAndImpact(2, "player", attacker, nil, attacker)
-startFrame, pendingBefore = runtime.frame, (runtime.nextEffectId - 1)
-local seen = {}
-for _ = 1, math.max(timed.route, timed.impact) + 1 do
-  adapter:update(1 / 30)
-  seen[runtime.frame - startFrame] = (runtime.nextEffectId - 1) - pendingBefore
-end
--- Each bank starts on the update that reaches its tick (tick 0: the first).
-local function started(tick)
-  local at = math.max(1, tick)
-  return (seen[at] or 0) - (seen[at - 1] or 0)
-end
-local routeAt, impactAt = math.max(1, timed.route), math.max(1, timed.impact)
-ok(started(timed.route) == (routeAt == impactAt and 2 or 1),
-  "the move route starts at the attacker's hit frame")
-ok(started(timed.impact) == (routeAt == impactAt and 2 or 1),
-  "the impact starts at the defender row's frame, independently of the route")
+ok(warned, "an impact without a fallback is reported")
+ok(adapter:defenderStarted("enemy"), "the defender's hit state arms the impact")
+adapter:update(1 / 30)
+ok((runtime.nextEffectId - 1) == pendingBefore + 2, "the impact follows at the defender's byte 7 (0)")
 adapter:playMoveAndImpact(2, "player", {renderer = {model = {}}})
 local missing = false
 for _, message in ipairs(warnings) do

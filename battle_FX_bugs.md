@@ -14,6 +14,63 @@ Extension (2026-10-01, user-requested option 1, NOT native to Stadium 2):
   affect ..." (native: no effect is a miss to Stadium's engine).
 - Needs your retest.
 
+FX fix (2026-10-01, Pokemon motions for more moves, after v0.24.1, local session):
+- Stadium 2 moves the Pokemon itself for some moves. Now in: Withdraw
+  (draws into itself; not for Squirtle, Wartortle, Blastoise), Belly Drum
+  (squash and stretch), Waterfall (rises 90 units), Surf (rides the water
+  height of the Surf wave), Destiny Bond (stretches tall and thin), and
+  the Pokemon hit by Stomp or Body Slam (squashed flat, bounces back).
+  Each matches the ROM's code frame by frame.
+- Also in now: Submission (spins three times and stops facing forward),
+  Rapid Spin (spins the other way, stretches and hops), Faint Attack (fades
+  to half while two half-see-through copies slide out to each side), and
+  Seismic Toss, which rolls the STADIUM camera upside down. Rolling camera
+  shots in general now roll on screen too.
+- Surf now also tilts the Pokemon with the slope of the wave it rides.
+- Fly: the Pokemon now rises into the air as in Stadium 2 and stays up
+  there in its flying pose until it attacks. Dig: it spins and sinks into
+  the ground, then disappears (Diglett and Dugtrio stay in their hole).
+  Battle effects option only. The Pokemon's height and size now follow
+  Stadium 2's camera shots: Fly comes back down at the first shot after
+  its attack; after Dig's attack the Pokemon stays out of sight until a
+  shot shows it again.
+- Sleep Z's and frozen ice (after Rest, or a drag-in of a sleeping or
+  frozen Pokemon) now stay for as long as the status lasts, follow the
+  Pokemon's visibility, and go when it wakes up or thaws, as in Stadium 2
+  (they used to vanish after about 8 seconds). They now also start when a
+  move puts a Pokemon to sleep (it plays its falling-asleep animation) or
+  freezes it, and when a sleeping or frozen Pokemon is sent out; a Fire
+  hit that thaws (Gen 1) clears the ice.
+- Between the two Pokemon's actions in a turn, Stadium 2's short handoff
+  shot of the Pokemon about to act now plays (about 1.2 s), as in Stadium
+  2; the "fast asleep" / "frozen solid" style shots now last their Stadium
+  length (2 s); the port set no length for them before.
+- Which Pokemon is drawn now follows Stadium 2 (2026-10-02): a shot of one
+  Pokemon hides the other, a Pokemon being sent out appears when its
+  send-out starts, an underground one stays hidden. See
+  docs/luna/research/battler-visibility-2026-10-02.md. Per-move motions (Waterfall, Minimize...) now keep their
+  pose until the next shot, as in Stadium 2.
+- Sky Attack, Rollout: the Pokemon that used them (they make it vanish)
+  now comes back when the next move starts, as in Stadium 2; before, it
+  stayed invisible until the end of the turn.
+- Moves a species has no animation for in Stadium 2 (Hidden Power for
+  every species, and many others) no longer play a stand-in attack: the
+  Pokemon keeps its pose for the move's length, as in Stadium 2.
+- Needs your retest.
+
+Battle fix (2026-10-01, the hit effect played before the camera got there, after v0.24.1, local session):
+- Cause: the mod timed a move's hit effect and the hit Pokemon's flinch
+  from a moment early in the attack (about 2 seconds early on average). In
+  Stadium 2 they belong to the hit Pokemon's own turn, which starts only
+  when the attacker's move has ended (84135778), so the camera, which
+  stays on the attacker until then, never saw them.
+- Fix: the hit Pokemon's flinch starts when the camera cuts to it, and the
+  hit effect follows at that Pokemon's own hit frame. Every hit of a
+  multi-hit move does the same. Moves the game reports no hit for (status
+  moves) use Stadium's timing estimate instead. Both gens, with or without
+  move effects.
+- Needs your retest.
+
 Battle fix (2026-10-01, Pokemon height and Steelix's spot, after v0.24.0, local session):
 - Flying and floating Pokemon (Fearow, Gastly, Haunter, Koffing,
   Butterfree, Zubat, Magnemite...) stood on the floor. Stadium 2 places

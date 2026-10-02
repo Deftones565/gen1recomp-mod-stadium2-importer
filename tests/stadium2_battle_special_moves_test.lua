@@ -32,7 +32,7 @@ ok(Special.facing("player")==0x4000 and Special.facing("enemy")==-0x4000,
 
 ok(Special.new({kind=6})==nil,"missing trig tables are reported, not guessed")
 ok(Special.new({kind=7,trig=trig})==nil,"Double Team without a profile is reported")
-ok(Special.new({kind=4,trig=trig})==nil,"undecoded kinds are rejected")
+ok(Special.new({kind=0x11,trig=trig})==nil,"undecoded kinds are rejected")
 
 -- Agility on the player's side: sways along Z only, ramps to 50 and back.
 local a=Special.new({kind=6,trig=trig,yaw=Special.facing("player")})
@@ -99,6 +99,30 @@ actor.special={kind=7,at=1,clock=0,ticks=0}
 actor:stepSpecial(1/30)
 ok(warned and warned:find("battle profile",1,true) and actor.afterimages==nil,
   "Double Team without the species profile warns and draws nothing extra")
+-- The defender of Stomp (23) / Body Slam (34): kind 15 from its hit state's
+-- frame = its own row's byte 7, while the hit clip lasts.
+do
+  Actor.forceFx=true
+  local row=string.rep("\0",20)
+  local stompRow=row:sub(1,7)..string.char(2)..row:sub(9)
+  local dispatch=string.rep(row,22)..stompRow..string.rep(row,250)
+  local target=Actor.new("enemy")
+  target.renderer={model={fxDispatch=dispatch},setContext=function() return true end}
+  ok(target:hit(23) and target.special and target.special.kind==15 and target.special.at==2,
+    "Stomp's target gets the squash from its byte 7 (2)")
+  target:stepSpecial(1/30)
+  ok(target.nativeAxisScale==nil,"nothing before its hit frame")
+  target:stepSpecial(1/30)
+  ok(target.nativeAxisScale and target.nativeAxisScale[2]~=1,"the squash starts on the hit frame")
+  target.context="idle"
+  target:stepSpecial(1/30)
+  ok(target.nativeAxisScale==nil,"the hit clip's end clears it")
+  local other=Actor.new("enemy")
+  other.renderer={model={fxDispatch=dispatch},setContext=function() return true end}
+  other:hit(33)
+  ok(other.special==nil,"other moves' targets are not squashed")
+  Actor.forceFx=nil
+end
 Actor.trigTables=nil
 
 -- Scene: offsets are Stadium units scaled like the slot.
@@ -116,5 +140,142 @@ local image=Scene.modelMatrix(host,"player",mon,{offset={0,0,0},scale=1})
 diff=0
 for i=1,16 do diff=diff+math.abs(image[i]-base[i]) end
 ok(near(diff,0),"afterimage uses its own offset")
+
+-- Fly and Dig's charge turns (Actor:startNativeCharge): rows 0x100 / 0x102
+do
+  Actor.forceFx=true
+  Actor.trigTables=trig
+  local Pack=require("mods.STADIUM2_IMPORTER.lib.pack")
+  local function f32be(v)
+    local ffi=require("ffi")
+    local u=ffi.new("union { float f; uint8_t b[4]; }")
+    u.f=v
+    return string.char(u.b[3],u.b[2],u.b[1],u.b[0])
+  end
+  local function profile(body,ground,center)
+    local b={}
+    for i=1,0x30 do b[i]="\0" end
+    local function put(o,v) local s4=f32be(v) for i=1,4 do b[o+i]=s4:sub(i,i) end end
+    put(4,body);put(8,ground);put(0x14,center)
+    return table.concat(b)
+  end
+  local row=string.rep("\0",20)
+  local flyRow=row:sub(1,11)..string.char(5)..row:sub(13)
+  local dispatch=string.rep(row,256)..flyRow..row..row..string.rep(row,12)
+  local function rig(dex,center)
+    local calls={}
+    local contexts={}
+    for i=1,#Pack.CONTEXTS do contexts[i]=0 end
+    local r={model={fxDispatch=dispatch,fxBattleProfile=profile(40,0,center),
+        anims={{frames=20}},context=contexts},
+      frame=0,animIndex=1,finished=false,calls=calls,
+      setContext=function(self,name,loop) calls[#calls+1]={name,loop};self.finished=false;return true end,
+      seekFrame=function(self,f) calls[#calls+1]={"seek",f} end,
+      step=function() end,setHandlerRuntime=function() end,setMove=function() return false end,
+      worldMetrics=function() return {height=20,floor=0,radius=5} end}
+    local a=Actor.new("player")
+    a.renderer=r;a.dex=dex
+    return a,r
+  end
+  -- Fly
+  local fly,r=rig(18,30)
+  ok(fly:charge(256,7) and r.calls[1][1]=="rom_context_256" and r.calls[2]==nil,
+    "Fly plays row 0x100 from frame 0 (84111DB4 0), not row byte 6")
+  for _=1,4 do fly:update(1/30) end
+  ok(fly.nativeOffset==nil,"Fly has not risen before the row's hit frame")
+  fly:update(1/30)
+  ok(fly.nativeOffset and fly.nativeOffset[2]>0,"Fly rises from the row's hit frame (kind 3)")
+  r.finished=true
+  fly:update(1/30)
+  ok(r.calls[#r.calls][1]=="rom_context_262" and r.calls[#r.calls][2]==true and fly.context=="attack",
+    "the charge clip's end loops context 0x106 while it rises")
+  for _=1,200 do if fly.context=="attack" then fly:update(1/30) end end
+  ok(fly.context=="idle" and fly.nativeLift==Special.FLY_TOP and fly.nativeCharge.risen,
+    "Fly is held 200 above its origin")
+  local host="fly"
+  local scene=setmetatable({actors={player=fly},hostCharging=function() return host end},{__index=Scene})
+  scene:stepNativeCharge("player")
+  ok(fly.nativeLift==Special.FLY_TOP and scene:nativeChargeVisibility("player")=="pokemon",
+    "held and shown while the host has the charge")
+  fly:setRest({})
+  ok(fly.rest.flying==true,"the flying rest pose while held up")
+  host=nil
+  fly.context="attack"
+  scene:stepNativeCharge("player")
+  ok(fly.nativeLift==Special.FLY_TOP,"held through the Fly attack")
+  fly.context="idle"
+  scene:stepNativeCharge("player")
+  ok(fly.nativeLift==nil and fly.nativeCharge==nil,"home once the attack has ended")
+  -- Dig
+  local dig,d=rig(27,20)
+  ok(dig:charge(258,0) and #d.calls==0,"Dig keeps the playing animation at first")
+  for _=1,0x19 do dig:update(1/30) end
+  ok(#d.calls==0,"until the tick after frame 0x19")
+  dig:update(1/30)
+  ok(d.calls[1][1]=="rom_context_258" and d.calls[1][2]==true,"then the dig clip, looping (84115988)")
+  for _=1,400 do if dig.context=="attack" then dig:update(1/30) end end
+  local digScene=setmetatable({actors={player=dig},hostCharging=function() return "dig" end},{__index=Scene})
+  ok(dig.nativeCharge and dig.nativeCharge.hidden and digScene:nativeChargeVisibility("player")=="hidden",
+    "Dig sinks below -3 x centre and is hidden (8411EE74)")
+  ok(dig:attack(91)~=nil and dig.nativeCharge==nil,"its attack turn ends the hidden state")
+  -- Diglett: no kind, the clip to its end
+  local diglett,g=rig(50,10)
+  diglett:charge(258,0)
+  for _=1,0x1A do diglett:update(1/30) end
+  ok(g.calls[1][2]==false and diglett.special==nil,"Diglett plays the dig clip once, no sink")
+  g.finished=true
+  diglett:update(1/30)
+  ok(diglett.context=="idle" and not diglett.nativeCharge.hidden,"and stays shown (its dig pose)")
+  -- With the camera director's shot resets (reposeDriven)
+  local shown=true
+  local cam={actorShown=function() return shown end}
+  local director=setmetatable({actors={},stadiumDirectorActive=true,stadiumCamera=cam,
+    hostCharging=function() return nil end},{__index=Scene})
+  local flier=rig(18,30)
+  director.actors.player=flier
+  director:stepNativeCharge("player")
+  ok(flier.reposeDriven==true,"the director drives the battler's pose")
+  flier:charge(256,0)
+  for _=1,300 do if flier.context=="attack" then flier:update(1/30) end end
+  ok(flier.nativeCharge.risen and flier.nativeOffset[2]==Special.FLY_TOP,
+    "Fly's height stays after its state ends (841206D0 keeps the position)")
+  director:stadiumActorReset("player",true)
+  ok(flier.nativeLift==Special.FLY_TOP and flier.nativeOffset==nil,"84120700 with the flying bit: 200 up")
+  director:stepNativeCharge("player")
+  ok(flier.nativeCharge~=nil,"the Fly state holds while it is lifted")
+  director:stadiumActorReset("player",false)
+  director:stepNativeCharge("player")
+  ok(flier.nativeLift==nil and flier.nativeCharge==nil,"the first reset without it brings it home")
+  -- a kind's pose stays until the next home (Waterfall)
+  local fall=rig(130,30)
+  director.actors.player=fall
+  director:stepNativeCharge("player")
+  fall.context="attack"
+  fall.special={kind=Special.WATERFALL,at=1,clock=0,ticks=0}
+  for _=1,10 do fall:stepSpecial(1/30) end
+  fall.renderer.finished=true
+  fall:update(1/30)
+  ok(fall.context=="idle" and fall.nativeOffset and fall.nativeOffset[2]>0,
+    "after the attack the kind's position stays (no reset yet)")
+  director:stadiumActorHome("player")
+  ok(fall.nativeOffset==nil,"8411EFE4 brings it home")
+  -- Dig's attack: hidden until Stadium shows the battler again
+  local digger=rig(27,20)
+  director.actors.player=digger
+  director:stepNativeCharge("player")
+  digger:charge(258,0)
+  for _=1,400 do if digger.context=="attack" then digger:update(1/30) end end
+  digger:attack(91)
+  shown=false
+  ok(digger.nativeCharge.attack and director:nativeChargeVisibility("player")=="hidden",
+    "Dig's attack: Stadium's visibility (84120D34 hides the attacker)")
+  digger.context="idle"
+  director:stepNativeCharge("player")
+  ok(digger.nativeCharge~=nil,"still hidden while Stadium hides it")
+  shown=true
+  director:stepNativeCharge("player")
+  ok(digger.nativeCharge==nil,"the state ends when a shot shows it")
+  Actor.forceFx=nil
+end
 
 print(("stadium2_battle_special_moves_test: %d checks passed"):format(checks))

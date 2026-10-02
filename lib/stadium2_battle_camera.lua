@@ -140,6 +140,12 @@ function StadiumCamera.new(opts)
       return nil
     end,
     random = function() return self:random() end,
+    -- 8411EF2C, 8411EFE4, 84120700: the battlers' visibility (+1 bit 0) and
+    -- pose at each shot's reset (see StadiumCamera:statusVisibility)
+    onStatusVisibility = function(address) self:statusVisibility(address) end,
+    onActorHome = function(address) self:actorHome(address) end,
+    onActorReset = function(address) self:actorReset(address) end,
+    onActorHidden = function(address) self:statusShapesHidden(address) end,
   })
   if not cam then return nil, err end
   self.cam = cam
@@ -266,10 +272,167 @@ function StadiumCamera:sync(scene)
       m:setF32(address + 0x24, slot[1]); m:setF32(address + 0x2C, slot[3])
       m:setF32(address + 0x28, m:f32(address + 0x650)) -- 8411EFE4
       m:setU16(address + 0x20, math.floor(yaw * 0x10000 / (2 * math.pi) + 0.5) % 0x10000)
+      -- 84134A6C's record HP is the displayed one (the battle mon's HP
+      -- less the bar's pending change, +0x38): the scene's shown HP bar
       local mon = actor.mon
       local hp = mon and tonumber(mon.hp) or 1
+      if scene and type(scene.stadiumRecordHp) == "function" then
+        local okH, shown = pcall(scene.stadiumRecordHp, scene, side)
+        if okH and tonumber(shown) then hp = tonumber(shown) end
+      end
       m:setU16(RECORD + (side == "player" and 0 or 1) * 16 + 0xE, math.max(0, math.floor(hp)) % 0x10000)
     end
+  end
+  self:writeRecordFlags(scene)
+end
+
+-- The battle record's per-battler flags (+0x12 / +0x22), as 84134A6C
+-- builds them: bit 0 Substitute (substatus4 bit 4), bit 1 flying and bit 2
+-- underground (substatus3 bits 6 / 5), bit 3 minimized (battle mon +0x2A,
+-- set by Minimize's evasion raise, 84125CF8), bits 4-6 the weather. The
+-- hosts report Substitute and the charge (Scene:stadiumRecordFlags); the
+-- engines keep no minimized flag and nothing here reads the weather bits,
+-- so those stay 0. 8412C47C builds the charge turn's own record (0x1A /
+-- 0x1B) before it sets the flying / underground bit.
+function StadiumCamera:writeRecordFlags(scene)
+  local m = self.cam.mem
+  for side, index in pairs({ player = 0, enemy = 1 }) do
+    local flags = 0
+    if scene and type(scene.stadiumRecordFlags) == "function" then
+      local ok, value = pcall(scene.stadiumRecordFlags, scene, side)
+      if ok and tonumber(value) then flags = tonumber(value) end
+    end
+    local code = m:u16(RECORD + 4)
+    if self.chargeRecordSide == side and (code == 0x1A or code == 0x1B) then
+      flags = bit.band(flags, bit.bnot(6))
+    end
+    m:setU16(RECORD + index * 16 + 0x12, flags)
+    -- +0x10: the battle mon's status byte (asleep: its turns in bits 0-2;
+    -- 0x20 frozen), as the host presents it
+    local status = 0
+    if scene and type(scene.stadiumRecordStatus) == "function" then
+      local ok, value = pcall(scene.stadiumRecordStatus, scene, side)
+      if ok and tonumber(value) then status = tonumber(value) % 0x10000 end
+    end
+    m:setU16(RECORD + index * 16 + 0x10, status)
+  end
+end
+
+-- The battler's status particles in the battle FX (Scene:stadiumStatusParticles).
+function StadiumCamera:statusOp(address, op, ...)
+  local side, scene = SIDE_OF[address], self.scene
+  if side and scene and type(scene.stadiumStatusParticles) == "function" then
+    pcall(scene.stadiumStatusParticles, scene, side, op, ...)
+  end
+end
+
+-- The record's status (+0x10) and flags (+0x12) for an actor.
+function StadiumCamera:recordStatus(address)
+  local m = self.cam.mem
+  local index = address == ACTOR.player and 0 or 1
+  return m:u16(RECORD + index * 16 + 0x10), m:u16(RECORD + index * 16 + 0x12)
+end
+
+function StadiumCamera:sideRecordStatus(side)
+  local address = ACTOR[side]
+  if not address then return nil end
+  return self:recordStatus(address)
+end
+
+-- 8411EE74's status part: asleep (status & 7) hides shape 0x12 (84108E00
+-- mode 2), frozen (0x20) shape 0x13D (mode 1).
+function StadiumCamera:statusShapesHidden(address)
+  local status = self:recordStatus(address)
+  if bit.band(status, 7) ~= 0 then self:statusOp(address, "hideStatusShape", 2) end
+  if status == 0x20 then self:statusOp(address, "hideStatusShape", 1) end
+end
+
+-- 841136E8(actor) (fork C): the status visuals the actor shows (+0x7F4 bit
+-- 0x10 underground, 0x20 frozen, 0x40 asleep) end with their condition in
+-- the record (flags bit 2; status 0x20; status & 7), each releasing the
+-- particles that no longer match (84108AF8).
+function StadiumCamera:statusEnded(address)
+  local m = self.cam.mem
+  local status, flags = self:recordStatus(address)
+  local keep = { asleep = bit.band(status, 7) ~= 0, frozen = status == 0x20,
+    underground = bit.band(flags, 4) ~= 0 }
+  local bits = m:u16(address + 0x7F4)
+  for _, rule in ipairs({ { 0x10, not keep.underground }, { 0x20, not keep.frozen }, { 0x40, not keep.asleep } }) do
+    if bit.band(bits, rule[1]) ~= 0 and rule[2] then
+      bits = bit.band(bits, bit.bnot(rule[1]))
+      m:setU16(address + 0x7F4, bits)
+      self:statusOp(address, "releaseStatusEnded", keep)
+    end
+  end
+end
+
+-- An entry that starts a status visual on the actor: 0x100 (asleep) sets
+-- +0x7F4 bit 0x40, 0xFE (frozen) 0x20, as the states that signal them do
+-- (841153DC / 8411862C; 84118138 / 841182E0; the drag-in).
+function StadiumCamera:statusEntry(side, entry)
+  local address = ACTOR[side]
+  if not address then return end
+  local bit_ = entry == 0x100 and 0x40 or entry == 0xFE and 0x20 or nil
+  if bit_ then
+    local m = self.cam.mem
+    m:setU16(address + 0x7F4, bit.bor(m:u16(address + 0x7F4), bit_))
+  end
+end
+
+-- 8411EF2C(actor): the shot's actor shown (8411EF08), the other hidden
+-- (8411EE74), in the camera's actor structs (+1 bit 0).
+function StadiumCamera:statusVisibility(address)
+  local m = self.cam.mem
+  local other = address == ACTOR.player and ACTOR.enemy or ACTOR.player
+  m:setU8(address + 1, bit.bor(m:u8(address + 1), 1))
+  self.cam:hideActor(other)
+end
+
+-- Whether Stadium shows the side's battler (+1 bit 0).
+function StadiumCamera:actorShown(side)
+  local address = ACTOR[side]
+  return address ~= nil and bit.band(self.cam.mem:u8(address + 1), 1) ~= 0
+end
+
+-- 8411EFE4 (the home pose) for the scene's battler.
+function StadiumCamera:actorHome(address)
+  local scene, side = self.scene, SIDE_OF[address]
+  if side and scene and type(scene.stadiumActorHome) == "function" then
+    pcall(scene.stadiumActorHome, scene, side)
+  end
+end
+
+-- 84120700(actor) (US asm): the home pose (8411EFE4), scale 1, origin + 200
+-- when the record's flags have bit 1 or +0x7F4 bit 3 (Fly's attack), hidden
+-- (8411EE74) for bit 2 unless Diglett / Dugtrio (0x32 / 0x33), +0x1C = 0,
+-- hidden for +0x7F4 bit 2 and when the record's HP (+0xE) is 0. The status
+-- particle calls (84108F88 / 84108E00, 84112290) are not ported here (see
+-- parity-2026-09-27-runtime.md).
+function StadiumCamera:actorReset(address)
+  local m = self.cam.mem
+  local side = SIDE_OF[address]
+  if not side then return end
+  local index = side == "player" and 0 or 1
+  local flags = m:u16(RECORD + index * 16 + 0x12)
+  local bits = m:u16(address + 0x7F4)
+  local lift = bit.band(flags, 2) ~= 0 or bit.band(bits, 8) ~= 0
+  local function hide() self.cam:hideActor(address) end
+  local species = m:s16(address + 0x1A)
+  if bit.band(flags, 4) ~= 0 and species ~= 0x32 and species ~= 0x33 then hide() end
+  -- the status particles shown again (84108F88), not on the doll (0xFC)
+  local status = m:u16(RECORD + index * 16 + 0x10)
+  if bit.band(status, 7) ~= 0 and species ~= 0xFC then self:statusOp(address, "showStatusShape", 2) end
+  if status == 0x20 and species ~= 0xFC then self:statusOp(address, "showStatusShape", 1) end
+  if bit.band(bits, 4) ~= 0 then hide() end
+  if m:u16(RECORD + index * 16 + 0xE) == 0 then hide() end
+  -- and hidden again with a hidden battler (84108E00)
+  if bit.band(m:u8(address + 1), 1) == 0 then
+    if bit.band(status, 7) ~= 0 then self:statusOp(address, "hideStatusShape", 2) end
+    if status == 0x20 then self:statusOp(address, "hideStatusShape", 1) end
+  end
+  local scene = self.scene
+  if scene and type(scene.stadiumActorReset) == "function" then
+    pcall(scene.stadiumActorReset, scene, side, lift)
   end
 end
 
@@ -442,11 +605,25 @@ local function clipEnded(scene, side)
 end
 StadiumCamera.clipEnded = clipEnded
 
--- Fly's height check (841156D0: 200 above home): the host's Fly vanish has
+-- Fly's height check (841156D0: 200 above home): the actor's own rise
+-- (Actor:startNativeCharge, battle FX on), else the host's Fly vanish has
 -- finished its departure (restCondition's `flying`).
 local function flownUp(scene, side)
+  local actor = scene and scene.actors and scene.actors[side]
+  local charge = actor and actor.nativeCharge
+  if charge and charge.kind == "fly" then return charge.risen == true end
   local okC, c = pcall(function() return scene and scene.restCondition and scene:restCondition(side) end)
   return okC and type(c) == "table" and c.flying == true
+end
+
+-- Dig's sunk check (84115988: below -3 x +0x648): the actor's own sink,
+-- else the host's Dig departure has finished.
+local function dugIn(scene, side)
+  local actor = scene and scene.actors and scene.actors[side]
+  local charge = actor and actor.nativeCharge
+  if charge and charge.kind == "dig" and not charge.digger then return charge.hidden == true end
+  local okC, c = pcall(function() return scene and scene.restCondition and scene:restCondition(side) end)
+  return okC and type(c) == "table" and c.underground == true
 end
 
 local function entranceEnded(scene, side)
@@ -472,6 +649,17 @@ function StadiumCamera:attack(scene, side, moveId)
   if moveId == 0x5B then
     -- Dig: family 15 (Dispatch_106 sets +0x7F6 = 5, then 84115E28)
     m:setU8(address + 0x7F6, 5)
+    -- 84115D98: at frame 0x19 (Diglett / Dugtrio: their clip's end) the
+    -- attacker's held particles are released (84108A10)
+    local species = m:s16(address + 0x1A)
+    if species == 0x32 or species == 0x33 then
+      self.runs[address] = { step = function(sc, s)
+        if clipEnded(sc, s) then self:statusOp(address, "releaseHeld"); return true end
+        return false
+      end }
+    else
+      self.timed[address] = { frame = 0, at = 0x19, run = function(actor) self:statusOp(actor, "releaseHeld") end }
+    end
     return self.cam:digState(address)
   elseif moveId == 0xA4 then
     -- Substitute: family 11 (Dispatch_078, Dispatch_079 with +0x7F6 = 1,
@@ -507,6 +695,7 @@ function StadiumCamera:attack(scene, side, moveId)
     -- substates; 8003EC34 is the host actor's clip having ended
     m:setU8(address + 0x7F6, 1)
     m:setU8(RECORD + 8, moveId)
+    self:statusOp(address, "releaseHeld") -- 84116460: 84108A10
     self.cam:beatUpState(address)
     local run = { substate = 1 }
     run.step = function(sc, side)
@@ -525,6 +714,12 @@ function StadiumCamera:attack(scene, side, moveId)
   if moveId ~= 0x9C then
     self.attacking = { actor = address }
     self.runs[address] = { step = function(sc, s)
+      -- 84114BF4 at the hit frame: Baton Pass (0xE2) by an asleep user
+      -- releases its held particles (84112290, 84108A10)
+      if moveId == 0xE2 and m:s16(address + 0x7E8) == m:s8(address + 0x619)
+          and bit.band((self:recordStatus(address)), 7) ~= 0 then
+        self:statusOp(address, "releaseHeld")
+      end
       local done = self.cam:attackFrame(address, clipEnded(sc, s))
       if done then
         self.attacking = nil
@@ -539,6 +734,13 @@ end
 
 -- A hit or dodge reported while the other side's attack state still runs
 -- waits for it (the record gate); `deferred` marks one released that way.
+-- The defender's hit / dodge state (84118138, family 4) has started.
+local function defenderStarted(scene, side, moveId, missed)
+  if scene and type(scene.stadiumDefenderStarted) == "function" then
+    pcall(scene.stadiumDefenderStarted, scene, side, moveId, missed)
+  end
+end
+
 function StadiumCamera:holdHit(kind, address, side, moveId, condition)
   if self.attacking and self.attacking.actor ~= address then
     self.heldHit = { kind = kind, side = side, moveId = moveId, condition = condition }
@@ -627,9 +829,37 @@ function StadiumCamera:turnCheck(scene, side, code, condition)
   if code == 0x26 then return self:confused(scene, side) end
   self:sync(scene)
   self:newFamily(address)
-  self.cam.mem:setU16(RECORD + 4, code)
+  local m = self.cam.mem
+  m:setU16(RECORD + 4, code)
   self.cam:endSplit() -- Dispatch_120 (family 17's first state): 8410B104
   self.cam:turnCheckState(address)
+  -- 84119CF0 (US asm): the frame counter from 0, the record's timer 0x3E
+  -- and the state's length (+0x61A) 0x3C; codes 7-9 (84124BA0's handoff)
+  -- 0x25 and 0x23. 84119F24 then ends the state at frame +0x61A (84111BEC:
+  -- the timer to 0) and, for code 7, shows the other battler (8411EF08 on
+  -- 8411E164) from frame 0x23.
+  -- 84119CF0: codes 3 / 5 take 84113D38, which runs 841136E8
+  if code == 3 or code == 5 then self:statusEnded(address) end
+  local handoff = code == 7 or code == 8 or code == 9
+  local length = handoff and 0x23 or 0x3C
+  self.cam:setTimer(handoff and 0x25 or 0x3E)
+  m:setU16(address + 0x7E8, 0)
+  local other = address == ACTOR.player and ACTOR.enemy or ACTOR.player
+  self.runs[address] = { step = function()
+    local frame = m:s16(address + 0x7E8)
+    if code == 7 and frame >= 0x23 then m:setU8(other + 1, bit.bor(m:u8(other + 1), 1)) end
+    -- the defrost (0x2C) when not underground: at frame 0x23, +0x7F4 loses
+    -- bits 1 and 5 (0x20, the frozen visual) and 84108CE8 releases the ice
+    if code == 0x2C and frame == 0x23 then
+      local _, flags = self:recordStatus(address)
+      if bit.band(flags, 4) == 0 then
+        m:setU16(address + 0x7F4, bit.band(m:u16(address + 0x7F4), bit.bnot(0x22)))
+        self:statusOp(address, "releaseHeldButDust")
+      end
+    end
+    if frame == length then self.cam:setTimer(0); return true end
+    return false
+  end }
 end
 
 -- A charge turn (8412C47C queues the code after its text; no move event
@@ -646,6 +876,8 @@ function StadiumCamera:chargeTurn(scene, side, code)
   self:newFamily(address)
   local m = self.cam.mem
   m:setU16(RECORD + 4, code)
+  self.chargeRecordSide = side
+  self:writeRecordFlags(scene)
   if code == 0x1A then
     self.cam:flyUpState(address)
     -- Dispatch_045: the rise (841156D0), then shot 8 / program 15 (841157D8)
@@ -669,8 +901,7 @@ function StadiumCamera:chargeTurn(scene, side, code)
       elseif run.substate == 1 then
         self.cam:digHoleShot(address); run.substate = 2
       else
-        local okC, c = pcall(function() return sc and sc.restCondition and sc:restCondition(side) end)
-        local sunk = okC and type(c) == "table" and c.underground == true
+        local sunk = dugIn(sc, side)
         local before = m:u8(address + 0x61F)
         run.substate = self.cam:digHoleFrame(address, run.substate, sunk, clipEnded(sc, side))
         if run.substate == 3 and m:s16(address + 0x7E8) == 0 and before ~= 0xFF and m:u8(address + 0x61F) == 0xFF then return true end
@@ -721,6 +952,8 @@ function StadiumCamera:dragOut(scene, side, code)
   self:newFamily(address)
   local m = self.cam.mem
   m:setU16(RECORD + 4, code)
+  -- Dispatch_177 (the new model ready) runs 841136E8
+  self:statusEnded(address)
   self.timed[address] = { frame = 0, at = 1, run = function(actor)
     self.cam:dragOutShot(actor)
     self.timed[actor] = { frame = 1, at = 66, run = function(a)
@@ -746,6 +979,7 @@ function StadiumCamera:battleEnd(scene, result)
   self.cam:setTimer(0x64)
   if standing then
     m:setU16(RECORD + 4, 0x67)
+    self:statusOp(address, "releaseHeld") -- 8411D2E4: 84108A10
     self.cam:victoryState(address)
     m:setU16(address + 0x7E8, 0)
     self.victory = { actor = address, substate = 0 }
@@ -764,6 +998,7 @@ function StadiumCamera:selfHit(scene, side)
   self:newFamily(address)
   self.cam.mem:setU16(RECORD + 4, 1)
   self.cam.mem:setU8(address + 0x618, 1) -- Dispatch_113
+  self:statusEnded(address) -- Dispatch_113 runs 841136E8
   self.cam:selfHitState(address)
   -- 84116AC4: the end on the row's frame (or the host clip's end)
   local run = { substate = 0 }
@@ -782,10 +1017,14 @@ function StadiumCamera:wokeUp(scene, side)
   self:newFamily(address)
   self.cam.mem:setU16(RECORD + 4, 0x1D)
   self.cam:wakeState(address)
+  self:statusOp(address, "releaseHeldButDust") -- 84119908: 84108CE8
   -- 84119AB4, the tail: the wake animation's end is the host's clip having
   -- ended (the actor back to idle); it ends the timer and resets the kind
   local substate = self.cam.mem:u8(address + 0x7F6)
   self.runs[address] = { step = function(sc, s)
+    if substate == 0 and self.cam.mem:s16(address + 0x7E8) == 0x14 then
+      self:statusOp(address, "releaseHeldButDust") -- 84119AB4: 84108CE8
+    end
     substate = self.cam:wakeFrame(address, substate, clipEnded(sc, s))
     return substate == 3 or substate == 5
   end }
@@ -814,6 +1053,9 @@ function StadiumCamera:recall(scene, side, condition)
   self:newFamily(address)
   condition = condition or {}
   self.cam.mem:setU16(RECORD + 4, condition.asleep and 0x1F or condition.frozen and 0x20 or 0x1E)
+  -- 8411ABAC: an asleep (0x1F) or frozen (0x20) Pokemon's held particles
+  -- are released (84108A10)
+  if condition.asleep or condition.frozen then self:statusOp(address, "releaseHeld") end
   self.cam:recallState(address)
 end
 
@@ -833,6 +1075,7 @@ function StadiumCamera:dodge(scene, side, moveId, condition, deferred)
   -- a dodge's state starts with the host's miss (its length is 0x3C); a miss
   -- keeps result 1 (841246AC, 84128298 / 84130E04)
   self:startHit(scene, side, address, moveId, false, 1)
+  defenderStarted(scene, side, moveId, true)
 end
 
 -- 841170A0 then 841187E4 each tick. The host reports a hit at its impact,
@@ -884,9 +1127,10 @@ function StadiumCamera:hit(scene, side, moveId, condition, deferred)
   self:newFamily(address)
   m:setU16(RECORD + 4, condition.asleep and 0x0B or condition.frozen and 0x0D or 0x0A)
   m:setU8(address + 0x618, moveId)
-  -- a hit held for the attack starts with its state (frame 0), as the
-  -- record does in Stadium; otherwise it is lined up with the host's impact
-  self:startHit(scene, side, address, moveId, not deferred)
+  -- the defender's record starts here (frame 0): its hit clip now and the
+  -- move's impact at its row byte 7 (Scene:stadiumDefenderStarted)
+  self:startHit(scene, side, address, moveId, false)
+  defenderStarted(scene, side, moveId, false)
 end
 
 -- A turn begins: 8411F94C's camera part (event 0x5A, side 0).
@@ -894,6 +1138,8 @@ function StadiumCamera:turnStart(scene)
   self:sync(scene)
   self:newFamily(nil) -- 8411F94C puts both actors in family 0
   self.cam.mem:setU16(RECORD + 4, 0x5A)
+  -- family 0's 84113BE8 runs 841136E8 on each battler
+  self:statusEnded(ACTOR.player); self:statusEnded(ACTOR.enemy)
   self.cam:setTimer(0x64) -- 8411F94C: 8411FEE8(0x64)
   self.cam:turnStart(ACTOR.player)
   -- 841347A0 runs the turn body (841343FC) right after queuing 0x5A, which
@@ -914,6 +1160,8 @@ function StadiumCamera:firstMover(scene, side)
   self:newFamily(nil)
   self.cam.mem:setU16(RECORD + 4, 0x5B)
   self.cam:firstMoverState(ACTOR[side])
+  -- family 27's 84113C54 runs 841136E8 on each battler
+  self:statusEnded(ACTOR.player); self:statusEnded(ACTOR.enemy)
 end
 
 -- 8413543C's idle cycle (fork C): the step (D_8419A006) picks the battler and
@@ -966,6 +1214,7 @@ function StadiumCamera:faint(scene, side)
   self:sync(scene)
   self:newFamily(address)
   self.cam.mem:setU16(RECORD + 4, 0x1C)
+  self:statusOp(address, "releaseHeld") -- Dispatch_036 / 8411A544: 84108A10
   self.cam:faintState(address)
 end
 
@@ -990,6 +1239,9 @@ function StadiumCamera:newFamily(address)
   if address == ACTOR.player or address == nil then self:cutIntro() end
   if self.sendingOut and (address == nil or self.sendingOut.actor == address) then
     self.sendingOut = nil
+  end
+  if self.sendOutTail and (address == nil or self.sendOutTail.actor == address) then
+    self.sendOutTail = nil
   end
   if self.timed then
     for actor in pairs(self.timed) do
@@ -1024,6 +1276,11 @@ function StadiumCamera:sendOut(scene, side)
   self:sync(scene)
   self:newFamily(address)
   self.cam:sendOutStart(address)
+  -- 8411BB04 / 8411BC28: the battler hidden (8411EE74) until its send-out
+  -- state runs (8411BCC8 shows it, StadiumCamera:update)
+  self.cam:hideActor(address)
+  -- 8411BC28 (the send-out's second state) runs 841136E8
+  self:statusEnded(address)
   self.sendingOut = { actor = address, frame = 1 }
 end
 
@@ -1037,8 +1294,37 @@ function StadiumCamera:update(scene, dt)
     -- the actors' states run before the camera (84112648, then 84111774)
     local out = self.sendingOut
     if out then
-      if self.cam:sendOutFrame(out.actor, out.frame) then self.sendingOut = nil
+      -- 8411BCC8 substate 1, once 84113430 lets it run: shown (8411EF08),
+      -- alpha 0 (the send-out entry 0x122 fades it in)
+      if out.frame == 1 then
+        local m = self.cam.mem
+        m:setU8(out.actor + 1, bit.bor(m:u8(out.actor + 1), 1))
+      end
+      if self.cam:sendOutFrame(out.actor, out.frame) then
+        self.sendingOut = nil
+        self.sendOutTail = { actor = out.actor }
       else out.frame = out.frame + 1 end
+    end
+    -- 8411BCC8 substates 3-5 (US asm): the next tick zeroes the counter
+    -- (3), 4 moves on at counter 5, and 5, for an asleep / frozen Pokemon
+    -- (the send-out codes 84124CC4 picks by status), signals the sleep
+    -- visual 0x100 / the ice 0xFE at counter 6 (0x10 for a shiny one,
+    -- 8006456C)
+    local tail = self.sendOutTail
+    if tail and not out then
+      tail.counter = tail.counter and tail.counter + 1 or 0
+      local side = SIDE_OF[tail.actor]
+      local actor = scene and scene.actors and scene.actors[side]
+      local at = actor and actor.variant == "shiny" and 0x10 or 6
+      if tail.counter >= at then
+        self.sendOutTail = nil
+        local status = self:recordStatus(tail.actor)
+        local entry = bit.band(status, 7) ~= 0 and 0x100 or status == 0x20 and 0xFE or nil
+        local fx = scene and scene.battleFx
+        if entry and fx and type(fx.signalEffect) == "function" then
+          pcall(fx.signalEffect, fx, entry, side)
+        end
+      end
     end
     local due = {}
     for actor, t in pairs(self.timed) do
@@ -1111,7 +1397,11 @@ function StadiumCamera:update(scene, dt)
       if opening.substate == 2 and m:s16(C1 + 0x9E) == 30 and not self.wildBattle then
         signalEffect(scene, 0x124, "enemy")
       end
-      if opening.substate == 6 then self.opening = nil end
+      if opening.substate == 6 then
+        self.opening = nil
+        -- 8411C418's end: both battlers' held particles released (84108A10)
+        self:statusOp(ACTOR.player, "releaseHeld"); self:statusOp(ACTOR.enemy, "releaseHeld")
+      end
     end
     local intro = self.intro
     if intro then

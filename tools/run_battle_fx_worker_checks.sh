@@ -61,7 +61,9 @@ for test_path in "$mod_root"/tests/stadium2_battle_fx_*_test.lua; do
 done
 
 for test_name in stadium2_gen1_battle_fx_test.lua stadium2_battle_evolution_test.lua \
-    stadium2_gen2_battle_fx_integration_test.lua; do
+    stadium2_gen2_battle_fx_integration_test.lua stadium2_turn_handoff_test.lua \
+    stadium2_battle_special_moves_test.lua stadium2_behaviour_kinds_rom_test.lua \
+    stadium2_status_particles_test.lua; do
   if [ -f "$mod_root/tests/$test_name" ]; then
     "$lua_bin" "mods/STADIUM2_IMPORTER/tests/$test_name"
   fi

@@ -26,6 +26,11 @@ The architect owns changes to those shared layers until a packet explicitly
 assigns one of them. The architect also owns `main.lua`, `lib/importer.lua`,
 Gen 1/Gen 2 battle adapters, public exports, and final integration.
 
+Planned (proposal, not implemented): a Stadium record translation layer
+between the host engines and the presentation (host facts -> Stadium event
+records -> record gate -> camera / FX / battlers). See
+`docs/luna/architecture/record-translation-layer.md`.
+
 ## Dispatch procedure
 
 1. The architect freezes the public contract needed by the next wave.

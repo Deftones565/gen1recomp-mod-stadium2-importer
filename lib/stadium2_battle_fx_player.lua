@@ -261,6 +261,15 @@ function Player:releaseHeld(ownerSide)
   if self.released then return 0 end
   return self.runtime:releaseHeld(ownerSide)
 end
+-- The status-shape operations 84108AF8 / 84108CE8 / 84108E00 / 84108F88;
+-- see Runtime:releaseStatusEnded / releaseHeldButDust / hideStatusShape /
+-- showStatusShape.
+for _, name in ipairs({"releaseStatusEnded", "releaseHeldButDust", "hideStatusShape", "showStatusShape"}) do
+  Player[name] = function(self, ...)
+    if self.released then return 0 end
+    return self.runtime[name](self.runtime, ...)
+  end
+end
 -- 841089D8(1) failed-move cleanup; see Runtime:abortAll.
 -- The side's Pokemon model changed: see NativeObjects:resetModel.
 function Player:resetModel(side)
@@ -313,6 +322,12 @@ function Player:_frameSnapshot()
     self.frameSnapshot,self.frameSnapshotRevision=self.runtime:snapshot({shared=true}),revision
   end
   return self.frameSnapshot
+end
+-- The running terrain grid's water height / slope at Stadium (x, z).
+function Player:terrainHeightAt(x,z)
+  local manager=not self.released and self.runtime and self.runtime.lifecycle
+  if manager and manager.terrainHeightAt then return manager:terrainHeightAt(x,z) end
+  return nil
 end
 -- The native model colour/opacity state by side (mode-5 tracks), current
 -- for this tick; the scene reads it before the effects draw (shadows).

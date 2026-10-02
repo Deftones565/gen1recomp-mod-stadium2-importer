@@ -132,7 +132,11 @@ function Packets.build(snapshot,options)
   for _,particle in ipairs(not options.skipParticles and snapshot.particles or{})do
     -- 841029DC builds the draw from the update it just ran: a particle that
     -- has had no update yet (created after this tick's pass) is not drawn.
-    if not particle.nativeHidden and particle.nativePending~=true
+    -- nativeStatusHidden: 84108E00's linked-renderer bit 0 (shapes 0xD3 /
+    -- 0x13D) or object flag 0x100000 (shape 0x12, in 84103394's exclusion
+    -- mask 0x102800), until 84108F88 restores it
+    if not particle.nativeHidden and not particle.nativeStatusHidden
+        and particle.nativePending~=true
         and not (groups and groups[liteKey(particle)]>LITE_GROUP
         and not liteKeep(particle)) then
     if particle.event and particle.event.mode==7 then

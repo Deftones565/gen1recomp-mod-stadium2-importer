@@ -340,7 +340,15 @@ function Camera.arenaFrame(width,height,opts)
       return {origin[1]+x*ct+z*st,origin[2]+y,origin[3]-x*st+z*ct}
     end
     local eye,focus=scene(native.eye),scene(native.focus)
-    local view=Renderer.lookAt(eye[1],eye[2],eye[3],focus[1],focus[2],focus[3])
+    -- the GeoCamera's up vector (+0xC0), turned like the scene (a roll:
+    -- Seismic Toss, 84121B18); (0, 1, 0) when absent
+    local up=native.up
+    local ux,uy,uz=0,1,0
+    if type(up)=="table" and tonumber(up[1]) and tonumber(up[2]) and tonumber(up[3])
+        and (up[1]~=0 or up[2]~=0 or up[3]~=0) then
+      ux,uy,uz=up[1]*ct+up[3]*st,up[2],-up[1]*st+up[3]*ct
+    end
+    local view=Renderer.lookAt(eye[1],eye[2],eye[3],focus[1],focus[2],focus[3],ux,uy,uz)
     local fov=math.rad(native.fov)
     -- A split-screen view (the Stadium intro) covers its rectangle of the
     -- game's 320 x 240 screen, stretched to the canvas like the full view:

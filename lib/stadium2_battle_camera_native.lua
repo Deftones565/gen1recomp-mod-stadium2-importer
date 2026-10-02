@@ -61,6 +61,7 @@ function Native.load(rom, fragment79, options)
     markerPosition = options.markerPosition, attachmentPoint = options.attachmentPoint,
     onStatusVisibility = options.onStatusVisibility,
     onActorReset = options.onActorReset, onActorHome = options.onActorHome,
+    onActorHidden = options.onActorHidden,
     onEventTimer = options.onEventTimer, warn = options.warn,
     random = options.random }, { __index = Native })
 end
@@ -157,6 +158,15 @@ Native.RECORD = 0x84193DD0      -- D_84193DD0: the current battle record
 Native.SHOTS = 0x8418455C       -- D_8418455C: 39 shot rows of 0x1C bytes
 Native.SHOT_LEAD = 0x84183970   -- D_84183970: shots with a forward lead
 Native.KIND_FACING = 0x8418393C -- D_8418393C: actor kinds facing sideways
+
+-- 8411EE74(actor): the battler hidden (+1 bit 0 clear); its status
+-- particles go with it (options.onActorHidden: 84108E00 by the record's
+-- status).
+function Native:hideActor(actor)
+  local m = self.mem
+  m:setU8(actor + 1, bit.band(m:u8(actor + 1), 0xFE))
+  if self.onActorHidden then self.onActorHidden(actor) end
+end
 
 -- 8410B330: the controller whose GeoCamera is `gc`.
 function Native:controllerFor(gc)
@@ -1152,7 +1162,7 @@ function Native:resetShotDig(gc, actor)
   m:setVec(gc + 0xC0, { 0, 1, 0 })
   local species = m:s16(actor + 0x1A)
   if species ~= 0x32 and species ~= 0x33 then
-    m:setU8(actor + 1, bit.band(m:u8(actor + 1), 0xFE))
+    self:hideActor(actor)
     m:setF32(actor + 0x28, 30)
   end
   self:setJolt(0)
@@ -1372,7 +1382,7 @@ function Native:digHoleFrame(actor, substate, sunk, finished)
       if not finished then return 2 end
     else
       if not sunk then return 2 end
-      m:setU8(actor + 1, bit.band(m:u8(actor + 1), 0xFE))
+      self:hideActor(actor)
     end
     m:setU16(actor + 0x7E8, 0)
     return 3
@@ -1894,7 +1904,7 @@ function Native:arenaIntroSetup()
   self:introSetup(m:u32(c1), m:u32(Native.ENEMY))
   for _, global in ipairs({ Native.PLAYER, Native.ENEMY }) do
     local a = m:u32(global)
-    m:setU8(a + 1, bit.band(m:u8(a + 1), 0xFE))
+    self:hideActor(a)
   end
 end
 
@@ -2024,7 +2034,7 @@ function Native:openingSetup()
   m:setU8(player + 1, bit.bor(m:u8(player + 1), 1))
   m:setU8(player + 0x1D, 0)
   m:setU16(enemy + 0x18, 3)
-  m:setU8(enemy + 1, bit.band(m:u8(enemy + 1), 0xFE))
+  self:hideActor(enemy)
 end
 
 -- 8411C418(substate), camera part, on the player's frame counter
@@ -2059,9 +2069,9 @@ function Native:openingFrame(substate, playerReady, foeReady)
       self:clearProgram()
       m:setU16(c1 + 0x98, 0)
       self:sendOutShot(m:u32(c1), enemy, 0)
-      m:setU8(enemy + 1, bit.band(m:u8(enemy + 1), 0xFE))
+      self:hideActor(enemy)
       self:keepSecondView()
-      m:setU8(player + 1, bit.band(m:u8(player + 1), 0xFE))
+      self:hideActor(player)
       m:setU8(enemy + 1, bit.bor(m:u8(enemy + 1), 1))
       m:setU8(enemy + 0x1D, 0)
       m:setU16(player + 0x7E8, 0)
@@ -2253,7 +2263,7 @@ function Native:resetOverShoulder(actor)
   local other = actor == m:u32(Native.PLAYER) and m:u32(Native.ENEMY) or m:u32(Native.PLAYER)
   m:setU16(actor + 0x7EA, 0)
   if self.onActorHome then self.onActorHome(other) end
-  m:setU8(actor + 1, bit.band(m:u8(actor + 1), 0xFE))
+  self:hideActor(actor)
   m:setU8(other + 1, bit.bor(m:u8(other + 1), 1))
   if self.onActorReset then self.onActorReset(other) end
   self:setJolt(0)
@@ -2349,7 +2359,7 @@ function Native:victoryState(actor)
   local other = actor == m:u32(Native.PLAYER) and m:u32(Native.ENEMY) or m:u32(Native.PLAYER)
   self:setTimer(0x154)
   m:setU8(actor + 1, bit.bor(m:u8(actor + 1), 1))
-  m:setU8(other + 1, bit.band(m:u8(other + 1), 0xFE))
+  self:hideActor(other)
   m:setU16(actor + 0x7EA, 0)
   self:setProgram(actor, 0x18)
 end
@@ -2890,11 +2900,68 @@ end
 -- 84111BEC (the counter 0, the timer 0, the kind reset). Returns true once
 -- it has ended.
 Native.ATTACK_JOLT = { [0x59] = 45, [0x5A] = 45, [0xDE] = 55, [0xAF] = 55, [0xDA] = 55, [0xD8] = 55 }
+-- 84120310(ptr, target, step): a 16-bit angle one step toward target
+-- (|step|), wrapping, snapping to it when the step would pass it.
+function Native:angleStep(address, target, step)
+  local m = self.mem
+  local function s16v(v) v = v % 0x10000; return v >= 0x8000 and v - 0x10000 or v end
+  target, step = s16v(target), s16v(step)
+  if step < 0 then step = s16v(-step) end
+  local diff = s16v(target - m:s16(address))
+  if diff > 0 then
+    diff = s16v(diff - step)
+    m:setU16(address, (diff < 0 and target or target - diff) % 0x10000)
+  else
+    diff = s16v(diff + step)
+    m:setU16(address, (diff > 0 and target or target - diff) % 0x10000)
+  end
+end
+
+-- Kind 8 (Seismic Toss, move 0x45): start 84121AB8 (fork C 15201a6): the
+-- controller's GeoCamera up (+0xC0) = (0, 1, 0), +0x5FE / +0x600 / +0x5FC
+-- / +0x623 = 0, +0x60C = 0. Update 84121B18 (US asm): +0x5FC steps toward
+-- 0x5B0 by 0x3C, the roll +0x600 toward -0x8000 by +0x5FC (84120310); the
+-- up vector becomes (0, 1, 0) turned by the roll around the view direction
+-- (focus - eye, normalised); the battler never goes below Y 0.
+function Native:seismicStart(actor)
+  local m = self.mem
+  local gc = m:u32(m:u32(Native.CONTROLLER0))
+  m:setVec(gc + 0xC0, { 0, 1, 0 })
+  m:setU16(actor + 0x5FE, 0); m:setU16(actor + 0x600, 0); m:setU16(actor + 0x5FC, 0)
+  m:setU8(actor + 0x623, 0); m:setF32(actor + 0x60C, 0)
+end
+function Native:seismicUpdate(actor)
+  local m = self.mem
+  self:angleStep(actor + 0x5FC, 0x5B0, 0x3C)
+  self:angleStep(actor + 0x600, -0x8000, m:s16(actor + 0x5FC))
+  local gc = m:u32(m:u32(Native.CONTROLLER0))
+  local roll = m:u16(actor + 0x600)
+  local dx = f32(m:f32(gc + 0xB4) - m:f32(gc + 0xA8))
+  local dy = f32(m:f32(gc + 0xB8) - m:f32(gc + 0xAC))
+  local dz = f32(m:f32(gc + 0xBC) - m:f32(gc + 0xB0))
+  local len = f32(math.sqrt(f32(f32(f32(dx * dx) + f32(dy * dy)) + f32(dz * dz))))
+  local c, s = self:cos(roll), self:sin(roll)
+  local k = f32(1.0 - c)
+  local nx, ny, nz = f32(dx / len), f32(dy / len), f32(dz / len)
+  local kx, ky = f32(k * nx), f32(k * ny)
+  m:setF32(gc + 0xC0, f32(f32(kx * ny) - f32(s * nz)))
+  m:setF32(gc + 0xC4, f32(c + f32(ky * ny)))
+  m:setF32(gc + 0xC8, f32(f32(s * nx) + f32(ky * nz)))
+  if m:f32(actor + 0x28) < 0 then m:setF32(actor + 0x28, 0) end
+end
+
 function Native:attackFrame(actor, finished)
   local m = self.mem
   if m:u8(actor + 0x7F6) ~= 0 then return true end
   local move = m:u8(actor + 0x618)
   local ctrl = m:u32(Native.CONTROLLER0)
+  -- 84114BF4: the attacker's behaviour kind, start at the hit frame and its
+  -- update from then on; only Seismic Toss's (8) acts on the camera
+  if m:u8(actor + 0x61F) == 8 then
+    local counter, hit = m:s16(actor + 0x7E8), m:s8(actor + 0x619)
+    if counter == hit then self:seismicStart(actor) end
+    if counter >= hit then self:seismicUpdate(actor) end
+  end
   -- the frame after the hit frame, on shot 4: FOV goal 60
   if m:s8(actor + 0x619) + 1 == m:s16(actor + 0x7E8) and m:s16(ctrl + 0x98) == 4 then
     m:setF32(ctrl + 0x88, 60)

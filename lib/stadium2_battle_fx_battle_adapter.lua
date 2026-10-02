@@ -716,12 +716,19 @@ function Adapter:signalEffect(id, owner)
   local effect, err = self.player:playEntry(id, {sourceSide = source,
     targetSide = target, condition = 0})
   if not effect and err then self:_warn(err) end
+  -- the states that signal the sleep (0x100) / frozen (0xFE) visual also
+  -- mark it on the actor (+0x7F4 bit 0x40 / 0x20; StadiumCamera:statusEntry)
+  if (tonumber(id) == 0x100 or tonumber(id) == 0xFE) and type(self.onStatusEntry) == "function" then
+    pcall(self.onStatusEntry, source, tonumber(id))
+  end
   return effect, err
 end
 
 -- 841087B8 at the attacker's hit frame. `nativeResult` is the raw battle
 -- result byte (D_84193DD0+9); nil is treated as an ordinary result.
-function Adapter:impact(moveId, source, nativeResult)
+-- `reaction` false: the defender's hit state already started (the scene
+-- played its hit clip); otherwise this impact also reports it (onImpact).
+function Adapter:impact(moveId, source, nativeResult, reaction)
   if not self.player then return nil, "battle FX player is unavailable" end
   local action = Sequence.impactAction(moveId, nativeResult)
   local effect, err
@@ -735,7 +742,7 @@ function Adapter:impact(moveId, source, nativeResult)
     if not effect and err then self:_warn(err) end
     self.routeMove, self.routeMode = tonumber(moveId), 2
     self:_routeSignal(1)
-    self:_defenderReaction(target, source, moveId)
+    if reaction ~= false then self:_defenderReaction(target, source, moveId) end
     -- FREE CAMERA ADDITION: Stadium cuts to the defender here, taking the
     -- attacker's camera-placed particles off screen.
     local cut = self.cameraCutEffects and self.cameraCutEffects[source]
@@ -783,10 +790,7 @@ function Adapter:_defenderReaction(target, source, moveId)
     self:_warn({code = "unsupported-defender-reaction", message = tostring(played)})
     return false
   end
-  if played then
-    self:_warn({code = "approximate-defender-reaction-timing", message =
-      "defender hit clip (context 254) starts with the impact; the ROM starts it when the defender's hit state begins"})
-  elseif reason then
+  if not played and reason then
     self:_warn({code = "unresolved-defender-reaction", message = tostring(reason)})
   end
   return played and true or false
@@ -796,6 +800,16 @@ end
 function Adapter:releaseHeld(owner)
   if not self.player or type(self.player.releaseHeld) ~= "function" then return 0 end
   return self.player:releaseHeld(sides(owner))
+end
+
+-- The status-shape operations on a battler's particles (84108AF8 /
+-- 84108CE8 / 84108E00 / 84108F88; Runtime:releaseStatusEnded ...).
+for _, name in ipairs({"releaseStatusEnded", "releaseHeldButDust", "hideStatusShape", "showStatusShape"}) do
+  Adapter[name] = function(self, owner, ...)
+    local player = self.player
+    if not player or type(player[name]) ~= "function" then return 0 end
+    return player[name](player, (sides(owner)), ...)
+  end
 end
 
 -- Dispatch hit frame (row +0x0B) for the attacker's current species model.
@@ -953,13 +967,56 @@ function Adapter:playMoveAndImpact(moveId, source, actor, nativeResult, target, 
   if routed then self:scheduleRoute(moveId, source, ticks) end
   -- 841153DC (Rest): at the hit frame, entry 0x100 on the user.
   if moveId == Sequence.REST then self:scheduleSignal(Sequence.REST_ENTRY, source, ticks, true) end
-  if timing.impact then
-    self:scheduleImpact(moveId, source, timing.impact, nativeResult, true)
+  -- 84135778 / 84118138: the impact plays in the defender's own hit state,
+  -- which starts only after the attack has ended; the scene reports that
+  -- start (Adapter:defenderStarted) and the impact follows at the
+  -- defender's row byte 7. Armed here; for a move the host reports no hit
+  -- for, a fallback at the native estimate (attack end + 1 + byte 7, plus
+  -- Adapter.HIT_GRACE ticks for the host's hit to arrive first).
+  self.armedImpact = {moveId = moveId, source = source, result = nativeResult,
+    gen = self.moveGen, defenderHit = timing.defenderHit}
+  local fallback = timing.impact
+  if not fallback and timing.defenderHit then
+    -- +0x61A is 0: the attack ends with its clip
+    local okP, Pack = pcall(require, "mods.STADIUM2_IMPORTER.lib.pack")
+    local index = okP and model and Pack.moveIndex(model, moveId)
+    local anim = index and model.anims and model.anims[index]
+    if anim and tonumber(anim.frames) then
+      fallback = math.max(0, anim.frames - (timing.clipStart or 0)) + (timing.preRoll or 0)
+        + 1 + timing.defenderHit
+    end
+  end
+  if fallback then
+    self:scheduleImpact(moveId, source, fallback + Adapter.HIT_GRACE, nativeResult, true)
+    self.pendingImpacts[#self.pendingImpacts].fallback = true
   else
     self:_warn({code = "approximate-impact-timing", message =
-      "defender row unavailable; impact timed from the attacker's hit frame"})
-    self:scheduleImpact(moveId, source, timing.route, nativeResult, true)
+      "defender row or attack length unavailable; the impact waits for the host's hit only"})
   end
+  return true
+end
+
+Adapter.HIT_GRACE = 6
+
+-- The defender's hit (or dodge) state has started (84118138 counter 0):
+-- the current move's impact at the defender's row byte 7 from now. Each hit
+-- of a multi-hit move is its own record and plays its own impact. Returns
+-- whether an impact was scheduled.
+function Adapter:defenderStarted(target)
+  local armed = self.armedImpact
+  local t = sides(target)
+  if not armed or armed.gen ~= self:_moveGeneration() or sides(armed.source) ~= other(t) then
+    return false
+  end
+  if armed.fallbackFired then return false end
+  local kept = {}
+  for _, item in ipairs(self.pendingImpacts or {}) do
+    if not (item.fallback and item.moveGen == armed.gen) then kept[#kept + 1] = item end
+  end
+  self.pendingImpacts = kept
+  self:scheduleImpact(armed.moveId, armed.source, math.max(0, tonumber(armed.defenderHit) or 0),
+    armed.result, true)
+  self.pendingImpacts[#self.pendingImpacts].reaction = false
   return true
 end
 
@@ -999,6 +1056,18 @@ function Adapter:scheduleSignal(entry, owner, ticks, moveWork)
   return true
 end
 
+-- `fn` `ticks` frames from now on the effect clock (dropped like a signal
+-- when its owner's model is replaced).
+function Adapter:scheduleCall(owner, ticks, fn)
+  if not self.player then return nil, "battle FX player is unavailable" end
+  self.pendingSignals = self.pendingSignals or {}
+  local s = sides(owner)
+  self.pendingSignals[#self.pendingSignals + 1] = {call = fn, owner = owner,
+    frame = (self.player.runtime and self.player.runtime.frame or 0) + math.max(0, math.floor(tonumber(ticks) or 0)),
+    ownerSide = s, ownerGen = self:_modelGeneration(s)}
+  return true
+end
+
 -- Faint effects on the fainting side, timed from its context-253 row
 -- (Sequence.faintFrames). The counter starts with the host's faint clip.
 function Adapter:playFaint(side, actor)
@@ -1023,7 +1092,8 @@ function Adapter:_firePendingSignals()
   for _, item in ipairs(pending) do
     if self:_stale(item, item.ownerSide, item.ownerGen) then
       -- dropped: a newer move, or its owner's model was replaced
-    elseif frame >= item.frame then self:signalEffect(item.entry, item.owner)
+    elseif frame >= item.frame then
+      if item.call then pcall(item.call) else self:signalEffect(item.entry, item.owner) end
     else kept[#kept + 1] = item end
   end
   self.pendingSignals = kept
@@ -1037,7 +1107,11 @@ function Adapter:_firePendingImpacts()
   for _, item in ipairs(pending) do
     if self:_stale(item, item.target, item.targetGen) then
       -- dropped: a newer move, or the target's model was replaced
-    elseif frame >= item.frame then self:impact(item.moveId, item.source, item.result)
+    elseif frame >= item.frame then
+      if item.fallback and self.armedImpact and self.armedImpact.gen == item.moveGen then
+        self.armedImpact.fallbackFired = true
+      end
+      self:impact(item.moveId, item.source, item.result, item.reaction)
     else kept[#kept + 1] = item end
   end
   self.pendingImpacts = kept
@@ -1174,6 +1248,11 @@ function Adapter:draw(sceneContext)
   end
   if not ok then self:_warn(result); return nil end
   return result
+end
+
+function Adapter:terrainHeightAt(x, z)
+  if not (self.player and self.player.terrainHeightAt) then return nil end
+  return self.player:terrainHeightAt(x, z)
 end
 
 function Adapter:modelColors()
